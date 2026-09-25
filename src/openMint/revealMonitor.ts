@@ -3,7 +3,7 @@ export const REVEAL_MONITOR_SCRIPT = String.raw`(() => {
   const root = document.querySelector('[data-reveal-monitor]');
   if (!root || root.dataset.revealBound) return;
   root.dataset.revealBound = 'true';
-  const { revealHandle: handle, revealToken: token, revealArtifact: artifact } = root.dataset;
+  const { revealHandle: handle, revealToken: token, revealArtifact: artifact, revealInput: input, revealRenderer: renderer } = root.dataset;
   const badge = root.querySelector('[data-mint-state-label]');
   const feedback = root.querySelector('[data-reveal-feedback]');
   const artwork = root.querySelector('[data-reveal-artwork]');
@@ -22,7 +22,9 @@ export const REVEAL_MONITOR_SCRIPT = String.raw`(() => {
     feedback.append(document.createTextNode(text));
   };
   const unavailable = () => say('Confirmation unavailable', 'Confirmation status is temporarily unavailable. Checking again. No new mint will be submitted.', true);
-  if (!/^[a-z0-9_]{1,15}$/.test(handle || '') || !/^[0-9]{1,78}$/.test(token || '') || !/^0x[0-9a-f]{64}$/i.test(artifact || '')) { unavailable(); return; }
+  const digest = value => /^0x[0-9a-f]{64}$/i.test(value || '');
+  if (!/^[a-z0-9_]{1,15}$/.test(handle || '') || !/^[0-9]{1,78}$/.test(token || '')
+    || (input !== undefined ? !digest(input) || !digest(renderer) || artifact !== undefined : !digest(artifact))) { unavailable(); return; }
   const poll = async () => {
     if (stopped) return;
     const mine = ++generation;
@@ -50,7 +52,8 @@ export const REVEAL_MONITOR_SCRIPT = String.raw`(() => {
       if (stopped || mine !== generation) return;
       if (state?.handle !== handle || state.tokenId !== token) throw new Error('binding');
       if (state.state === 'minted' || state.state === 'confirming') {
-        if (state.artifactDigest !== artifact) throw new Error('artifact');
+        if (input !== undefined ? state.inputDigest !== input || state.rendererIdentity !== renderer || state.artifactDigest !== undefined
+          : state.artifactDigest !== artifact || state.inputDigest !== undefined) throw new Error('commitment');
         if (state.state === 'minted') { stopped = true; location.reload(); return; }
         artwork.hidden = false; provenance.hidden = false; root.dataset.mintState = 'confirming';
         say('Confirming', 'Your signature is revealed. The mint is included in a block and still confirming. It will appear in the gallery once confirmed.');

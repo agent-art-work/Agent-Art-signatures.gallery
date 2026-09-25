@@ -1,7 +1,7 @@
 import type { GalleryPage, OpenMintProjection } from "./postgres.js";
 import { ProjectionCursorError, ProjectionSafetyHaltError } from "./model.js";
 import { WriterUnavailableError } from "../persistence/writer.js";
-import { createProjectionObserver, type ProjectionObservation } from "./observer.js";
+import { createProjectionObserver, createStagingProjectionObserver, type ProjectionObservation } from "./observer.js";
 
 /** One fenced writer / one coordinator. No public request is allowed to trigger
  * sync: an operator-owned scheduler supplies cancellation and bounded cadence.
@@ -9,7 +9,12 @@ import { createProjectionObserver, type ProjectionObservation } from "./observer
  * freshness intentionally; a persisted 'available' flag alone reveals nothing.
  */
 export function createProjectionCoordinator(projection: OpenMintProjection, options: Parameters<typeof createProjectionObserver>[0]) {
-  const observe = createProjectionObserver(options);
+  return coordinator(projection, createProjectionObserver(options));
+}
+export function createStagingProjectionCoordinator(projection: OpenMintProjection, options: Parameters<typeof createProjectionObserver>[0]) {
+  return coordinator(projection, createStagingProjectionObserver(options));
+}
+function coordinator(projection: OpenMintProjection, observe: ReturnType<typeof createProjectionObserver>) {
   let witness: ProjectionObservation | undefined, running = false, generation = 0;
   return Object.freeze({
     /** Immediate read withdrawal on drain/lost ownership, with no DB or RPC I/O.

@@ -22,6 +22,7 @@ async function harness() {
   let now = Date.parse("2026-09-20T00:00:00Z"), inTransaction = false;
   const gate = eligibilityFixture(ns.id, deploymentId, () => now), events: string[] = [], attemptId = randomUUID();
   const state = { healthy: true, claimed: false, finished: false, accepted: undefined as Assessment | undefined,
+    fences: new Set<ProviderLeg>(),
     terminal: undefined as AssessmentTerminal | undefined, receipt: new Map<ProviderLeg, ProviderReceipt>(),
     session: { generation: "1", wallet: account.address, csrf, revoked: false, expires_at: new Date(now + 86400000), proof_wallet: account.address,
       proof_code_hash: null as string | null, proof_expires_at: new Date(now + 600000), active_challenge_hash: null as string | null },
@@ -38,14 +39,16 @@ async function harness() {
   const assertHealthy = () => { if (!state.healthy) throw new Error("writer lost"); };
   const writer = { epoch: "1", assertHealthy, transaction: async <T>(work: (connection: typeof tx) => Promise<T>): Promise<T> => {
     assertHealthy(); inTransaction = true; events.push("begin");
+    const priorFences = new Set(state.fences), priorClaim = state.claimed;
     try { const result = await work(tx); assertHealthy(); events.push("commit"); return result; }
-    catch (error) { events.push("rollback"); throw error; }
+    catch (error) { state.fences = priorFences; state.claimed = priorClaim; events.push("rollback"); throw error; }
     finally { inTransaction = false; }
   } };
   const operations: ExecutionTransaction = {
+    inspectDispatch: async () => { throw new Error("Not used by the legacy worker path"); },
     getAssessment: async () => state.accepted,
     claimInitial: async () => { if (state.claimed) throw new Error("already claimed"); state.claimed = true; events.push("claim"); state.afterClaim?.(); },
-    beforeDispatch: async (_id, leg) => { if (state.finished || state.fail === "fence") throw new Error("fence failed"); events.push(`fence:${leg}`); state.afterFence?.(); },
+    beforeDispatch: async (_id, leg) => { if (state.finished || state.fail === "fence") throw new Error("fence failed"); state.fences.add(leg); events.push(`fence:${leg}`); state.afterFence?.(); },
   };
   const repository = { namespace: ns, writer,
     executionTransaction: <T>(work: (connection: typeof tx, operations: ExecutionTransaction) => Promise<T>) => writer.transaction(connection => work(connection, operations)),
@@ -56,11 +59,11 @@ async function harness() {
     getReceipt: async (_id: string, leg: ProviderLeg) => state.receipt.get(leg),
     finishAttempt: vi.fn(async (_id: string, outcome: TerminalOutcome) => {
       if (state.fail === "terminal") throw new Error("terminal failed"); state.finished = true;
-      const phase = events.includes("fence:grok") ? "grok" : events.includes("fence:x-identity") ? "x-identity" : "before-dispatch";
+      const phase = state.fences.has("grok") ? "grok" : state.fences.has("x-identity") ? "x-identity" : "before-dispatch";
       state.terminal = { ...outcome, phase }; events.push(`terminal:${outcome.kind}`); return state.terminal;
     }),
     interruptAttempt: async () => {
-      const phase = events.includes("fence:grok") ? "grok" : events.includes("fence:x-identity") ? "x-identity" : "before-dispatch";
+      const phase = state.fences.has("grok") ? "grok" : state.fences.has("x-identity") ? "x-identity" : "before-dispatch";
       state.finished = true; state.terminal = { kind: phase === "before-dispatch" ? "blocked-before-dispatch" : "uncertain", phase }; return state.terminal;
     },
   } as unknown as OpenMintRepository;
@@ -215,5 +218,19 @@ describe("explicit durable assessment worker", () => {
     try { await expect(h.worker.run(h.input)).rejects.toThrow("deadline exceeded"); }
     finally { spy.mockRestore(); }
     expect(h.resolver.resolve).not.toHaveBeenCalled(); expect(h.events).toContain("rollback");
+  });
+  it("cancelled input cannot claim or call a provider", async () => {
+    const h = await harness(), abort = new AbortController(); abort.abort();
+    await expect(h.worker.run(h.input, abort.signal)).rejects.toThrow("cancelled");
+    expect(h.state.claimed).toBe(false); expect(h.resolver.resolve).not.toHaveBeenCalled();
+  });
+  it("records interruption from committed fences after cancellation and rejects late persistence", async () => {
+    const h = await harness(), abort = new AbortController(); let received!: () => void, release!: () => void, execution: AssessmentExecution | undefined;
+    const ready = new Promise<void>(r => { received = r; }), hold = new Promise<void>(r => { release = r; });
+    vi.mocked(h.provider.assess).mockImplementation(async (_handle, _identity, value) => { execution = value; received(); await hold; throw Error("late failure"); });
+    const pending = h.worker.run(h.input, abort.signal); await ready; abort.abort();
+    await expect(pending).resolves.toMatchObject({ kind: "terminal", outcome: { kind: "uncertain", phase: "grok" } });
+    await expect(execution!.recordReceipt(receipt("grok"))).rejects.toThrow("cancelled"); release();
+    expect(h.state.accepted).toBeUndefined();
   });
 });

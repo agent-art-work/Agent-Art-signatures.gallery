@@ -25,7 +25,7 @@ async function harness() {
     fence: "1" as string | undefined,
     dispatchLegs: ["x-identity", "grok"] as ProviderLeg[],
     terminal: undefined as { kind: string; reason: string | null; phase: string } | undefined,
-    joined: false, inserted: 1, unresolved: false,
+    joined: false, inserted: 1, unresolved: false, alreadyDispatched: false,
     totals: { total: "0", daily: "0", exposure: "0" }, counts: { active: "0", queued: "0" },
   };
   const calls: { sql: string; values: unknown[] }[] = [];
@@ -37,6 +37,7 @@ async function harness() {
       else if (sql.includes("FROM open_mint.assessment_terminals")) rows = state.terminal ? [state.terminal] : [];
       else if (sql.startsWith("INSERT INTO open_mint.assessment_terminals")) state.terminal = { kind: values[2] as string, reason: values[3] as string | null, phase: values[4] as string };
       else if (sql.startsWith("SELECT leg FROM open_mint.dispatch_fences")) rows = state.dispatchLegs.map(leg => ({ leg }));
+      else if (sql.startsWith("SELECT 1 FROM open_mint.dispatch_fences")) rows = state.alreadyDispatched ? [{}] : [];
       else if (sql.includes("FROM open_mint.budget_policies")) rows = state.policy ? [state.policy] : [];
       else if (sql.includes("clock_timestamp")) rows = [{ now: new Date("2026-09-20T00:00:00.000Z") }];
       else if (sql.includes("FROM open_mint.assessments")) rows = state.assessment ? [{ payload: state.assessmentBytes ?? bytes(state.assessment), handle: state.assessment.handle, assessment_id: state.assessment.id, digest: state.assessmentDigest ?? state.assessment.digest }] : [];
@@ -116,6 +117,29 @@ describe("open-mint repository ingestion and boundaries", () => {
     await expect(h.repo.getAssessment("alice")).rejects.toThrow("commitment mismatch");
     h.state.assessmentDigest = undefined; h.state.assessmentBytes = Buffer.from([0xc3, 0x28]);
     await expect(h.repo.getAssessment("alice")).rejects.toThrow();
+  });
+  it("provenance reads select only the accepted namespace/handle/commitment, without work admission", async () => {
+    const h = await harness(), c = new AbortController(); h.state.assessment = assessment(); h.state.policy = undefined;
+    expect(await h.repo.getAcceptedAssessment("alice", h.state.assessment.digest, c.signal)).toEqual(h.state.assessment);
+    expect(h.calls).toHaveLength(1); expect(h.calls[0].values).toEqual([h.ns.id, "alice", h.state.assessment.digest]);
+    expect(h.calls[0].sql).toContain("a.state='accepted'"); expect(h.calls[0].sql).toContain("s.digest=$3");
+    await expect(h.repo.getAcceptedAssessment("alice", `0x${"12".repeat(32)}`, c.signal)).rejects.toThrow("commitment mismatch");
+    h.state.assessment = undefined;
+    expect(await h.repo.getAcceptedAssessment("alice", `0x${"12".repeat(32)}`, c.signal)).toBeUndefined();
+  });
+  it("provenance rejects invalid keys and cancellation before or while queued, before querying", async () => {
+    const h = await harness(), digest = `0x${"12".repeat(32)}`, c = new AbortController();
+    expect(() => h.repo.getAcceptedAssessment("ALICE", digest, c.signal)).toThrow("lookup");
+    expect(() => h.repo.getAcceptedAssessment("alice", "invalid", c.signal)).toThrow("lookup");
+    const queued = h.repo.getAcceptedAssessment("alice", digest, c.signal); c.abort();
+    await expect(queued).rejects.toThrow();
+    expect(() => h.repo.getAcceptedAssessment("alice", digest, c.signal)).toThrow();
+    expect(h.calls).toHaveLength(0);
+  });
+  it("provenance cancellation after the query withholds the result", async () => {
+    const h = await harness(), c = new AbortController(); h.state.assessment = assessment();
+    const pending = h.repo.getAcceptedAssessment("alice", h.state.assessment.digest, c.signal);
+    await Promise.resolve(); c.abort(); await expect(pending).rejects.toThrow(); expect(h.calls).toHaveLength(1);
   });
   it("claims only one untouched job and refuses duplicate dispatch markers", async () => {
     const h = await harness(); await h.repo.claimInitial(h.id); await h.repo.beforeDispatch(h.id, "x-identity");

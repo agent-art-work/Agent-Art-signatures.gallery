@@ -30,6 +30,18 @@ describe("read-only projection HTTP contract", () => {
     expect(r.status).toBe(200); expect(r.value.state).toBe(state === "confirmed" ? "minted" : "confirming"); expect(r.body).not.toContain("SECRET");
     expect(r.value).not.toHaveProperty("mbti"); expect(f.reads.gallery).not.toHaveBeenCalled();
   });
+  it.each(["confirming", "confirmed"] as const)("exposes %s input and renderer binding, not legacy output identity", async state => {
+    const f = fixture(), item = { ...f.item, artifactDigest: undefined, inputDigest: `0x${"d".repeat(64)}`, rendererIdentity: `0x${"e".repeat(64)}`, renderHandle: "Alice" };
+    f.reads.lookup.mockResolvedValue({ state, item });
+    const r = await f.call("/api/signatures/alice/status");
+    expect(r.status).toBe(200); expect(r.value).toMatchObject({ inputDigest: item.inputDigest, rendererIdentity: item.rendererIdentity });
+    for (const field of ["artifactDigest", "tokenURIHash", "mbti", "signature"]) expect(r.value).not.toHaveProperty(field);
+    f.reads.gallery.mockResolvedValue({ state: "confirmed", items: [item] });
+    expect((await f.call()).value.items[0]).toMatchObject({ renderHandle: "Alice", inputDigest: item.inputDigest });
+    for (const patch of [{ rendererIdentity: undefined }, { artifactDigest: f.item.artifactDigest }, { tokenURIHash: item.inputDigest }]) {
+      f.reads.lookup.mockResolvedValue({ state, item: { ...item, ...patch } }); expect((await f.call("/api/signatures/alice/status")).status).toBe(503);
+    }
+  });
   it.each(["unknown", "safety-halted", "pending"] as const)("%s never means unminted and never leaks artwork commitments", async state => {
     const f = fixture(); f.reads.lookup.mockResolvedValue({ state, item: f.item }); const r = await f.call("/api/signatures/alice/status");
     expect(r.status).toBe(503); expect(r.value.state).toBe("unknown"); expect(r.value).not.toHaveProperty("artifactDigest");

@@ -24,7 +24,7 @@ function facts(rows: readonly Fact[]): string {
 }
 const text = (value: string | undefined): string | undefined => value === undefined ? undefined : e(value);
 
-/** Called only by the confirmed-mint page; no transport, storage or runtime-mode attribution. */
+/** Called by verified inclusion/finalized pages; no transport, storage or runtime-mode attribution. */
 export function provenanceBody(model: AssessmentPageModel, handle: string): string {
   const grok = model.assessmentProvenance === "grok";
   const fixture = model.assessmentProvenance === "development-fixture";
@@ -54,6 +54,8 @@ export function provenanceBody(model: AssessmentPageModel, handle: string): stri
 <section class="signature-provenance-section"><h2>Artwork</h2>${facts([
     ["Handle", handleLink(handle)], ["Renderer", text(model.rendererVersion)],
     ["SVG SHA-256", text(model.svgSha256)], ["PNG SHA-256", text(model.pngSha256)],
+    ["Input commitment", text(model.inputDigest)], ["Renderer identity", text(model.rendererIdentity)],
+    ["Assessment commitment", text(model.assessmentDigest)],
   ])}</section>
 <section class="signature-provenance-section"><h2>Mint</h2>${facts([
     ["Token", text(model.mint?.tokenId ?? model.tokenId)], ["Transaction", text(model.mint?.transactionHash)],

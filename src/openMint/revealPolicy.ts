@@ -3,7 +3,7 @@
  * finalized on staging; the existing confirmation count on isolated Anvil.
  * Only the latter belongs in finalized galleries/sharing/ownership queries.
  */
-export type MintConfidence = "unminted" | "pending" | "confirming" | "minted";
+export type MintConfidence = "unknown" | "unminted" | "pending" | "confirming" | "minted";
 
 /** Presentation only; the caller must authenticate chain and artifact evidence. */
 export function canRevealMint(state: unknown): boolean {

@@ -1,0 +1,50 @@
+# Isolated generative mint recovery
+
+Implemented September 21, extended September 22, 2026. **Local experimental or explicit RC profile only**: Anvil 31337, `local-real` namespace, accepted `grok` provenance, exact collection/renderer/deployment pins. The saved reservation version, input profile and configured contract profile must agree. This is an offline operator API, not a website endpoint, timer, startup migration, production tool or authorization to alter the current application's data.
+
+## Decision table
+
+| Observation | Action |
+| --- | --- |
+| Verified canonical mint | Let the projection reveal **Confirming**, then promote at finality. Never create replacement authority. |
+| Missing hash/receipt, lost wallet response, reported rejection, revert, or consumed wallet nonce | Preserve the reservation. None of these alone proves the signed mint authorization can no longer be used. |
+| Request/session expires, or local wall clock passes the authorization deadline | Preserve the reservation. This is not finalized chain evidence. |
+| Finalized timestamp equals the authorization deadline | Preserve it: the contract accepts a mint at the deadline. |
+| Both pinned sources prove finalized timestamp **strictly greater** than the deadline, with the handle unminted and authorization nonce unused/unrevoked at finalized and latest canonical blocks | Eligible for explicit operator retirement, subject to the database snapshot, role, policy and freshness checks below. |
+| RPCs disagree, tags are missing/stale, code/domain/renderer changes, contract is paused, authority is revoked, or observation times out | Keep blocked for investigation. This implementation does not relax its checks or substitute elapsed blocks for finality. |
+
+The accepted assessment and compact rendering inputs are never rerolled. A nonce consumed by a reverted wallet transaction does **not** consume the contract's signed authorization nonce. The conservative implemented route therefore waits for finalized authorization expiry even when a revert is known. Earlier recovery using proven on-chain revocation is not implemented.
+
+Signer rotation and pause are not authorization retirement. Restoring a prior signer can revive its unused, unexpired permissions; pausing and unpausing preserves them too. **Never restore a compromised signer:** it may have signed unknown future-dated windows, so waiting one 900-second window is insufficient. These behaviors now have [explicit candidate-contract regression tests and review notes](generative-numerical-security-review.md#security-findings-and-operating-consequences). This operator API still retires only the exact known reservation under its existing finalized-expiry conditions; it is not a general key-compromise remedy.
+
+## Operator procedure
+
+1. Select the explicit **disposable/isolated deployment and database**, not the active application by inference. Back up operational records. Stop new preparation, close/drain the site and observer, and release its exclusive writer. If shutdown cannot drain, investigate; do not steal the writer lock.
+2. With the migration/policy owner, disable `generative_issuance_profiles.enabled` for that namespace/deployment. Install `generative-recovery-schema.sql` explicitly, after the wallet-submission schema. It upgrades populated old wallet-plan tables, preserves payloads, and creates an append-only recovery ledger. It is not automatically run by any server.
+3. Provision a **separate non-owner recovery login** using the SQL returned by `generativeRecoveryGrants(role)`. Use `search_path=pg_catalog` and the bounded connection settings. The role can inspect the relevant records, own the existing writer fence, append recovery evidence, retire a wallet nonce lease and delete the matching active authorization pointer. It cannot read session/challenge secrets, provider receipts, budgets or the projection; enable issuance; edit assessments/inputs/signatures; create authorization/session/provider work; delete history; migrate; grant; or bypass triggers. The browser role cannot execute these recovery mutations.
+4. Acquire a new `ExclusiveWriter` with that login. Open the matching repository, requests, input journal and issuer in read-only inspection mode. Construct `GenerativeRecoveryChain` with the exact durable pins and two explicitly configured read-only RPC sources. `PostgresGenerativeRecovery.open(issuer, chain)` performs the recovery-role audit and refuses enabled issuance or public profiles.
+5. Call `plan(authorizationId, shortReason, signal)`. Review its handle, recipient, old deadline, wallet nonce, submission status/hash, finalized block and snapshot hash. Record the returned `recoveryId` **before applying**. This step performs reads only. Do not include credentials or private capabilities in the reason.
+6. Call `apply(theOriginalPlanObject)` explicitly. The process-local plan cannot be replaced by JSON or edited fields. Evidence is short-lived; if review takes too long, get a fresh plan. The transaction verifies the unchanged reservation/inputs/dispatch reports, disabled issuance, database-clock freshness and the same owner epoch; appends evidence; retires the old nonce lease; and removes exactly the old active head. A failure rolls back all of these changes.
+7. If the commit response is lost, stop. Under newly acquired operator ownership, call `outcome(recoveryId)` first. It checks both the durable audit record and completed retirement state. Do not infer rollback from a network error or replay SQL blindly. Repeated application in the same process is idempotent; a plan from a previous process is not reusable.
+8. Close the operator writer. Only after separate operational checks should the policy owner re-enable issuance and restart the site with its browser role. The user starts a **new explicit mint request** and supplies current wallet proof. The original request stays retired; its assessment and inputs are reused byte-for-byte. The usual fresh chain/nonce checks and wallet approval still apply. Recovery itself does not resume a browser intent, sign, spend, or send.
+
+The unchanged progress page for an old submitted request is not a recovery control: operators direct the user to a fresh mint entry only after verified retirement. No public “clear pending” endpoint is added. This operation does not clear wallet history, replace/cancel transactions, fill nonce gaps, reset Anvil, promise a gas refund, or repair an independently stale wallet queue.
+
+## Persistence and compatibility
+
+- Authorization reservations, signature bytes, accepted assessments, input commitments, requests, wallet plans, dispatches and reports survive unchanged. Only the **active head pointer** is removed and the plan's `nonce_active` lease flag transitions one way from true to false.
+- A partial unique index prevents two active plans using the same wallet/deployment/nonce; wallet addresses are compared case-insensitively. Old populated-schema upgrades fail atomically if existing data conflicts rather than discarding a row.
+- New plans must begin active. Runtime SQL grants cannot update the lease. SQL guards permit retirement only after an immutable recovery record exists with disabled local issuance and past-deadline evidence. The database does not independently verify RPC truth; the audited offline operator and read-only chain observer remain part of the trust boundary.
+- A changed/late wallet report invalidates a reviewed snapshot. A report arriving after completed retirement remains historical evidence, not new authority. Old requests cannot be signed again even if their sessions are still valid.
+- The recovery transaction holds a shared lock on the issuance policy until commit. The operator may lock its immutable key but cannot change the enable switch.
+- Both browser profiles deliberately reject the old wallet schema in their exact-layout audit until the explicit recovery upgrade is installed. The independent `generative-release-profile-schema.sql` upgrade follows the input schema when configuring a new RC deployment; it permits the RC profile without relabelling any existing row. Recovery may not change profiles, renderer pins, assessment bytes or old signatures. No active migration or active-app switch happened as part of development.
+
+## Validation scope
+
+`generativeRecoveryChain.test.ts` exercises read-only source agreement, finalized expiry, strict deadline boundary, wrong code/pins, minted/used/revoked/paused state, malformed headers, changing heads, opaque evidence, cancellation and hung transports. No missing transaction is interpreted as permission to retry.
+
+`generativePipeline.postgres.test.ts` runs both experimental and RC profiles using real disposable PostgreSQL and real ECDSA with public test keys and offline X/Grok mocks. It lets a genuine short-lived authorization expire without rewriting clocks or historical rows. It verifies populated old-schema migration, distinct role permissions, unknown dispatch preservation, late-report invalidation, wrong deployment pins, stale evidence, policy changes, atomic rollback after evidence insertion, one-way retirement, restart/outcome lookup and a fresh request reusing the original assessment/inputs and released wallet nonce. Provider counts stay at one each; a second signer call happens only in the separately explicit fresh-request portion, not in recovery.
+
+Contract tests verify that deadline equality remains mintable, expired authority cannot compete with a new signed reservation, and one-handle uniqueness/input commitments remain enforced. The normal disposable Anvil mint/read-generated-artwork rehearsal is rerun separately; PostgreSQL recovery tests use scripted finalized RPC evidence, **not independent public providers or live Sepolia finality**.
+
+Remaining boundaries: approval of the locked renderer-port candidate, public read-limit/numerical/security review, observed-deployment/public-startup admission and separately approved Sepolia provisioning/deployment; actual wallet-extension QA and a reviewed hosted operator interface remain outside this local implementation.

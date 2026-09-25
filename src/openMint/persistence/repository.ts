@@ -37,7 +37,12 @@ export function validateAssessmentTerminal(row: { kind: string; reason: string |
 export interface ExecutionTransaction {
   getAssessment(handle: string): Promise<Assessment | undefined>;
   claimInitial(id: string, expected: { handle: string; model: string }): Promise<void>;
+  inspectDispatch(id: string, leg: ProviderLeg, expectedModel: string): Promise<DispatchReadiness>;
   beforeDispatch(id: string, leg: ProviderLeg, expectedModel: string): Promise<void>;
+}
+export interface DispatchReadiness {
+  readonly handle: string; readonly profileVersion: string; readonly model: string;
+  readonly now: number; readonly validUntil: number; readonly identity: XIdentitySnapshot | null;
 }
 
 function uuid(value: string): string {
@@ -97,6 +102,26 @@ export class OpenMintRepository {
     return this.writer.transaction(tx => this.#getAssessment(tx, handle));
   }
 
+  /** Read-only provenance join for a separately chain-verified mint. No job,
+   * reservation, input journal, generation policy or provider is invoked. */
+  getAcceptedAssessment(value: string, digest: string, signal: AbortSignal): Promise<Assessment | undefined> {
+    const handle = canonicalHandle(value);
+    if (handle !== value || !/^0x[0-9a-f]{64}$/.test(digest)) throw new PersistenceConflictError("Invalid assessment lookup.");
+    signal.throwIfAborted();
+    return this.writer.transaction(async tx => {
+      signal.throwIfAborted();
+      const row = (await tx.query<AssessmentRow>(`SELECT s.payload,s.handle,s.assessment_id,s.digest
+        FROM open_mint.assessments s JOIN open_mint.assessment_attempts a USING(namespace_id,attempt_id)
+        WHERE s.namespace_id=$1 AND s.handle=$2 AND s.digest=$3 AND a.state='accepted'`,
+      [this.#namespace.id, handle, digest])).rows[0];
+      signal.throwIfAborted();
+      if (!row) return undefined;
+      const assessment = this.#assessment(row, handle);
+      if (assessment.digest !== digest) throw new PersistenceConflictError("Stored assessment commitment mismatch.");
+      return assessment;
+    });
+  }
+
   async #policy(tx: Transaction, now: Date): Promise<Policy> {
     const policy = (await tx.query<Policy>("SELECT * FROM open_mint.budget_policies WHERE namespace_id = $1 FOR UPDATE", [this.#namespace.id])).rows[0];
     if (!policy || !policy.generation_enabled || policy.valid_until.getTime() <= now.getTime()) throw new AdmissionBlockedError("Generation disabled or policy expired.");
@@ -134,6 +159,7 @@ export class OpenMintRepository {
     return this.writer.transaction(tx => work(tx, {
       getAssessment: handle => this.#getAssessment(tx, canonicalHandle(handle)),
       claimInitial: (id, expected) => this.#claimInitial(tx, uuid(id), expected),
+      inspectDispatch: (id, leg, model) => this.#inspectDispatch(tx, uuid(id), leg, model),
       beforeDispatch: (id, leg, model) => this.#beforeDispatch(tx, uuid(id), leg, model),
     }));
   }
@@ -232,7 +258,7 @@ export class OpenMintRepository {
     if (leg !== "x-identity" && leg !== "grok") throw new Error("Invalid provider leg.");
     return this.writer.transaction(tx => this.#beforeDispatch(tx, attemptId, leg));
   }
-  async #beforeDispatch(tx: Transaction, attemptId: string, leg: ProviderLeg, expectedModel?: string): Promise<void> {
+  async #inspectDispatch(tx: Transaction, attemptId: string, leg: ProviderLeg, expectedModel?: string): Promise<DispatchReadiness> {
       if (leg !== "x-identity" && leg !== "grok") throw new Error("Invalid provider leg.");
       const now = await this.#now(tx), policy = await this.#policy(tx, now);
       if (expectedModel !== undefined && policy.expected_model !== expectedModel) throw new PersistenceConflictError("Worker model/profile mismatch.");
@@ -243,12 +269,20 @@ export class OpenMintRepository {
           WHERE p.namespace_id = r.namespace_id AND p.attempt_id = r.attempt_id), 0))), 0)::text AS exposure
         FROM open_mint.budget_reservations r WHERE r.namespace_id = $1`, [this.#namespace.id])).rows[0]!;
       if (BigInt(exposure.exposure) > BigInt(policy.max_exposure_usd_ticks)) throw new AdmissionBlockedError("Recorded exposure exceeds the policy limit.");
+      let identity: XIdentitySnapshot | null = null;
       if (leg === "grok") {
         const receipt = await this.#receipt(tx, attemptId, "x-identity");
-        if (!successful(receipt?.value) || !await this.#identity(tx, attemptId, attempt.handle)) throw new PersistenceConflictError("Grok requires durable successful X receipt and validated identity.");
+        identity = (await this.#identity(tx, attemptId, attempt.handle))?.value ?? null;
+        if (!successful(receipt?.value) || !identity) throw new PersistenceConflictError("Grok requires durable successful X receipt and validated identity.");
       }
+      if ((await tx.query("SELECT 1 FROM open_mint.dispatch_fences WHERE namespace_id=$1 AND attempt_id=$2 AND leg=$3", [this.#namespace.id, attemptId, leg])).rows.length)
+        throw new PersistenceConflictError("Provider leg possibly dispatched already; retry forbidden.");
+      return { handle: attempt.handle, profileVersion: policy.profile_version, model: policy.expected_model, now: now.getTime(), validUntil: policy.valid_until.getTime(), identity };
+  }
+  async #beforeDispatch(tx: Transaction, attemptId: string, leg: ProviderLeg, expectedModel?: string): Promise<void> {
+      const ready = await this.#inspectDispatch(tx, attemptId, leg, expectedModel);
       const inserted = await tx.query(`INSERT INTO open_mint.dispatch_fences(namespace_id, attempt_id, leg, owner_epoch, dispatched_at)
-        VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`, [this.#namespace.id, attemptId, leg, this.writer.epoch, now]);
+        VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`, [this.#namespace.id, attemptId, leg, this.writer.epoch, new Date(ready.now)]);
       if (inserted.rowCount !== 1) throw new PersistenceConflictError("Provider leg possibly dispatched already; retry forbidden.");
   }
 

@@ -1,3 +1,4 @@
+import { type GenerativeContractProfile } from "../generativeProfiles.js";
 import { randomBytes } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { encodeFunctionData, getAddress, type Address, type Hex } from "viem";
@@ -11,6 +12,12 @@ import { PostgresAuthorizationIssuer, type ReservedAuthorizationSigner } from ".
 import { PostgresPublicationJournal } from "./publication.js";
 import { PostgresMintRequests, type DurableMintRequest } from "./requests.js";
 import { capabilityHash, PostgresWalletSessions, type DurableSiteSession } from "./sessions.js";
+import type { Assessment } from "../assessment.js";
+import { PostgresGenerativeInputJournal } from "./generativeInputs.js";
+import { PostgresGenerativeAuthorizationIssuer, type IssuanceIntent, type ReservedAuthorizationSigner as GenerativeSigner } from "./generativeAuthorizations.js";
+import { generativeMintCalldata, normalizeGenerativeAuthorization } from "../generativeAuthorization.js";
+import { LocalAdmissionRuntime } from "./localAdmissionRuntime.js";
+import { type PostgresWalletSubmissions, type WalletMintPlan } from "./walletSubmissions.js";
 
 export interface RuntimeIntent {
   readonly session: DurableSiteSession;
@@ -20,6 +27,7 @@ export interface RuntimeIntent {
 export interface RuntimeEligibilityInput { readonly handle: string; readonly recipient: Address; readonly nonce: Hex }
 type Publication = Pick<Parameters<typeof publishPublicArtifact>[0], "uploader" | "reader" | "timeoutMs">;
 export interface DurableRuntimeOptions {
+  readonly contractProfile?: "external-v1";
   readonly sessions: PostgresWalletSessions;
   readonly requests: PostgresMintRequests;
   readonly worker: PostgresAssessmentWorker;
@@ -31,6 +39,15 @@ export interface DurableRuntimeOptions {
   readonly eligibilityTimeoutMs: number;
   readonly publication: Publication;
 }
+interface GenerativeRuntimeBase extends Omit<DurableRuntimeOptions, "contractProfile" | "journal" | "issuer" | "signer" | "publication"> {
+  readonly journal: PostgresGenerativeInputJournal;
+  readonly issuer: PostgresGenerativeAuthorizationIssuer;
+  readonly signer: GenerativeSigner;
+  readonly admission?: LocalAdmissionRuntime;
+}
+export type GenerativeRuntimeOptions = GenerativeRuntimeBase &
+  ({ readonly contractProfile: "generative-experimental-v1" } | { readonly contractProfile: "generative-v1-rc1" });
+interface MintTransaction { from: string; to: string; chainId: string; value: string; data: Hex }
 
 function context(input: RuntimeIntent) {
   return { sessionToken: input.session.id, sessionGeneration: input.session.generation, origin: input.origin, csrf: input.csrf };
@@ -52,35 +69,77 @@ function parseCode(value: unknown): string {
  * One bounded preparation runs at a time; PostgreSQL owns the durable fences.
  */
 export class DurableMintRuntime {
+  readonly contractProfile: "external-v1" | GenerativeContractProfile;
   readonly sessions: PostgresWalletSessions;
   readonly requests: PostgresMintRequests;
   readonly #worker: PostgresAssessmentWorker;
-  readonly #journal: PostgresPublicationJournal;
-  readonly #issuer: PostgresAuthorizationIssuer;
-  readonly #signer: ReservedAuthorizationSigner;
+  readonly #prepare: (assessment: Assessment) => Promise<void>;
+  readonly #ready: (handle: string) => Promise<boolean>;
+  readonly #preflightNonce: (input: Omit<IssuanceIntent, "eligibility">) => Promise<Hex>;
+  readonly #issue: (input: IssuanceIntent) => Promise<{ expiresAt: string; transaction: MintTransaction }>;
+  readonly #admission?: LocalAdmissionRuntime;
+  readonly #generativeIssuer?: PostgresGenerativeAuthorizationIssuer;
   readonly #eligibility: DurableRuntimeOptions["eligibility"];
   readonly #eligibilityTimeoutMs: number;
-  readonly #publication: Publication;
   readonly #tasks = new Map<string, Promise<void>>();
   #creating = false;
   #draining = false;
-  constructor(options: DurableRuntimeOptions) {
+  constructor(options: DurableRuntimeOptions | GenerativeRuntimeOptions) {
+    this.contractProfile = options.contractProfile ?? "external-v1";
     const { sessions, requests, worker, journal, issuer, signer } = options, { repository } = requests;
     if (repository.namespace.profile !== "local-real" || repository.namespace.provenance !== "grok" || requests.profile.chain_id !== "31337"
       || sessions.writer !== repository.writer || sessions.namespaceId !== repository.namespace.id || sessions.origin !== requests.profile.origin
       || String(sessions.chainId) !== requests.profile.chain_id || worker.requests !== requests || issuer.requests !== requests
       || issuer.journal !== journal || journal.writer !== repository.writer || journal.namespaceId !== repository.namespace.id
-      || journal.origin !== sessions.origin || getAddress(signer.address) !== getAddress(requests.profile.authorizer)) {
+      || ((options.contractProfile === "generative-experimental-v1" || options.contractProfile === "generative-v1-rc1") ? options.journal.deploymentId !== requests.profile.deployment_id : options.journal.origin !== sessions.origin)
+      || getAddress(signer.address) !== getAddress(requests.profile.authorizer)) {
       throw new Error("Durable HTTP integration requires matching isolated local components; public startup remains disabled.");
     }
     if (!Number.isSafeInteger(options.eligibilityTimeoutMs) || options.eligibilityTimeoutMs < 1 || options.eligibilityTimeoutMs > 30000) throw new Error("Invalid eligibility deadline.");
-    this.sessions = sessions; this.requests = requests; this.#worker = worker; this.#journal = journal; this.#issuer = issuer;
-    this.#signer = Object.freeze({ address: signer.address, signTypedData: signer.signTypedData.bind(signer) });
+    this.sessions = sessions; this.requests = requests; this.#worker = worker;
+    const admission = "admission" in options ? options.admission : undefined;
+    if (worker.admission !== admission || (admission && (!(admission instanceof LocalAdmissionRuntime) || admission.requests !== requests
+      || options.contractProfile !== "generative-v1-rc1"))) throw new Error("Explicit matching RC1 admission is required; no unguarded fallback.");
+    this.#admission = admission;
+    this.#preflightNonce = issuer.preflightNonce.bind(issuer);
     this.#eligibility = options.eligibility; this.#eligibilityTimeoutMs = options.eligibilityTimeoutMs;
-    const { uploader, reader, timeoutMs } = options.publication;
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw new Error("Invalid publication deadline.");
-    this.#publication = Object.freeze({ timeoutMs, uploader: Object.freeze({ id: uploader.id, upload: uploader.upload.bind(uploader) }),
-      reader: Object.freeze({ id: reader.id, retrieve: reader.retrieve.bind(reader) }) });
+    if ((options.contractProfile === "generative-experimental-v1" || options.contractProfile === "generative-v1-rc1")) {
+      const { journal, issuer, signer } = options, signing = Object.freeze({ address: signer.address, signTypedData: signer.signTypedData.bind(signer) });
+      if (!(journal instanceof PostgresGenerativeInputJournal) || !(issuer instanceof PostgresGenerativeAuthorizationIssuer) || journal.profile.contractProfile !== options.contractProfile) throw new Error("Explicit generative components required.");
+      this.#generativeIssuer = issuer;
+      this.#ready = async handle => !!await journal.load(handle);
+      this.#prepare = async assessment => { await journal.stage(assessment); };
+      this.#issue = async input => {
+        const { reservation: r, signature } = await (admission ? admission.issue(issuer, input, signing) : issuer.issue(input, signing));
+        this.#available();
+        const saved = await journal.load(r.handle);
+        if (!saved) throw new Error("Generative inputs unavailable.");
+        const { assessment: _assessment, ...inputs } = saved, a = normalizeGenerativeAuthorization(r.authorization);
+        const data = await generativeMintCalldata({ domain: r.domain, authorization: r.authorization, inputs, signature, authorizer: signing.address });
+        this.#available();
+        return { expiresAt: new Date(Number(a.deadline) * 1000).toISOString(), transaction: { from: a.recipient, to: r.domain.verifyingContract,
+          chainId: `0x${BigInt(r.domain.chainId).toString(16)}`, value: "0x0", data } };
+      };
+    } else {
+      const { journal, issuer, signer } = options, signing = Object.freeze({ address: signer.address, signTypedData: signer.signTypedData.bind(signer) });
+      const { uploader, reader, timeoutMs } = options.publication;
+      if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw new Error("Invalid publication deadline.");
+      const publication = Object.freeze({ timeoutMs, uploader: Object.freeze({ id: uploader.id, upload: uploader.upload.bind(uploader) }),
+        reader: Object.freeze({ id: reader.id, retrieve: reader.retrieve.bind(reader) }) });
+      this.#ready = async handle => !!await journal.load(handle, true);
+      this.#prepare = async assessment => {
+        const artifact = await journal.load(assessment.handle) ?? await preparePublicArtifact({ assessment, origin: sessions.origin });
+        this.#available();
+        if (!await journal.load(assessment.handle, true)) await publishPublicArtifact({ ...publication, artifact, journal });
+      };
+      this.#issue = async input => {
+        const { reservation: r, signature } = await issuer.issue(input, signing); this.#available();
+        const a = normalizeOpenMintAuthorization(r.authorization);
+        return { expiresAt: new Date(Number(a.deadline) * 1000).toISOString(), transaction: { from: a.recipient, to: r.domain.verifyingContract,
+          chainId: `0x${BigInt(r.domain.chainId).toString(16)}`, value: "0x0", data: encodeFunctionData({ abi: OPEN_MINT_ABI,
+            functionName: "mint", args: [r.handle, a, r.tokenURI, signature] }) } };
+      };
+    }
   }
   #available(): void {
     if (this.#draining) throw new PublicError(503, "SERVICE_DRAINING", "The service is restarting. Saved work is preserved.");
@@ -123,9 +182,7 @@ export class DurableMintRuntime {
           const result = await this.#worker.run({ ...captured, code: request.code, eligibility: witness });
           if (result.kind !== "accepted") return;
           this.#available();
-          const artifact = await this.#journal.load(canonical) ?? await preparePublicArtifact({ assessment: result.assessment, origin: this.sessions.origin });
-          this.#available();
-          if (!await this.#journal.load(canonical, true)) await publishPublicArtifact({ ...this.#publication, artifact, journal: this.#journal });
+          await this.#prepare(result.assessment);
         }).catch(() => {
           // The durable attempt/receipt/publication/reservation records own the
           // outcome. Do not log provider bodies or fabricate completion/retry.
@@ -138,7 +195,7 @@ export class DurableMintRuntime {
   }
   async status(code: unknown, session: DurableSiteSession) {
     const request = await this.requests.get(parseCode(code), session.id), now = Date.now();
-    const complete = request.status === "assessment-accepted" && !!await this.#journal.load(request.handle, true);
+    const complete = request.status === "assessment-accepted" && await this.#ready(request.handle);
     const active = this.#tasks.has(request.handle);
     const failed = !complete && (!active || !["pending-assessment", "assessment-accepted"].includes(request.status));
     // Explicit allowlist: never expose accepted MBTI, assessment, receipts,
@@ -157,20 +214,26 @@ export class DurableMintRuntime {
     if (consent !== true) throw new PublicError(400, "CONSENT_REQUIRED", "Choose Mint & reveal to continue.");
     const code = parseCode(value), captured = { ...context(intent), code, consent: true };
     const request: DurableMintRequest = await this.requests.get(code, intent.session.id);
-    const nonce = await this.#issuer.preflightNonce(captured);
+    const nonce = await this.#preflightNonce(captured);
     const eligibility = await this.#observe({ handle: request.handle, recipient: request.wallet, nonce });
-    const { reservation, signature } = await this.#issuer.issue({ ...captured, eligibility }, this.#signer);
+    const issued = await this.#issue({ ...captured, eligibility });
     this.#available();
-    const authorization = normalizeOpenMintAuthorization(reservation.authorization);
-    return { code, handle: request.handle, tokenId: BigInt(authorization.handleKey).toString(),
-      expiresAt: new Date(Number(authorization.deadline) * 1000).toISOString(), transaction: {
-        from: authorization.recipient, to: reservation.domain.verifyingContract, chainId: `0x${BigInt(reservation.domain.chainId).toString(16)}`,
-        value: "0x0", data: encodeFunctionData({ abi: OPEN_MINT_ABI, functionName: "mint", args: [request.handle, authorization, reservation.tokenURI, signature] }),
-      } };
+    return { code, handle: request.handle, tokenId: BigInt(handleDigest(request.handle)).toString(), ...issued };
+  }
+  /** Private browser dispatch: the guarded runtime cannot fall through to the
+   * legacy begin path. The released permit is not a transaction broadcast. */
+  async beginSubmission(submissions: PostgresWalletSubmissions, code: string, intent: RuntimeIntent, plan: WalletMintPlan, signal: AbortSignal) {
+    this.#available(); signal.throwIfAborted();
+    if (submissions.requests !== this.requests) throw new Error("Wallet runtime mismatch.");
+    if (!this.#admission) return submissions.begin(code, intent, plan);
+    const captured = { ...context(intent), code, consent: true }, request = await this.requests.get(code, intent.session.id);
+    const nonce = await this.#preflightNonce(captured), eligibility = await this.#observe({ handle: request.handle, recipient: request.wallet, nonce });
+    this.#available(); signal.throwIfAborted();
+    return this.#admission.submit(submissions, this.#generativeIssuer!, { ...captured, eligibility }, intent, plan, signal);
   }
   /** Stop accepting new work. Never reschedule jobs after drain/restart. The
    * owner must close the writer after this resolves, not underneath a task. */
-  async drain(): Promise<void> { this.#draining = true; await Promise.all([...this.#tasks.values()]); }
+  async drain(): Promise<void> { this.#draining = true; this.#admission?.halt(); await Promise.all([...this.#tasks.values()]); }
   /** Observation for local tests/controlled shutdown, not an HTTP operation. */
   async idle(): Promise<void> { await Promise.all([...this.#tasks.values()]); }
 }

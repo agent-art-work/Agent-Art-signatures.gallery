@@ -12,6 +12,9 @@ export type PublicPreviewState =
     renderHandle: string;
     mbti: MBTI;
     rendererVersion: string;
+    /** Generative tokens are read on chain; alternatives remain explicit, locked previews. */
+    previewRendererVersion?: string;
+    onchain?: boolean;
     imageUrl: string;
     url: string;
   };

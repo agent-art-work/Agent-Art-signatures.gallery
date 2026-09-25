@@ -1,3 +1,4 @@
+import { generativeProfile, isGenerativeProfile } from "../generativeProfiles.js";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
@@ -24,11 +25,26 @@ import { capabilityHash, PostgresWalletSessions } from "./sessions.js";
 import { ExclusiveWriter } from "./writer.js";
 import { preparationRuntimeGrants } from "./runtimeRole.js";
 import { auditPreparationRole } from "./roleAudit.js";
+import { generativeBrowserRuntimeGrants } from "./runtimeRole.js";
+import { auditGenerativeBrowserRole } from "./roleAudit.js";
+import { GenerativeMintBrowser } from "./generativeBrowser.js";
+import { GenerativeWalletChain } from "../walletChain.js";
+import { createGenerativeGalleryPages } from "../projection/generativePages.js";
+import type { ProjectionReads } from "../projection/http.js";
+import { PostgresGenerativeInputJournal } from "./generativeInputs.js";
+import { PostgresGenerativeAuthorizationIssuer } from "./generativeAuthorizations.js";
+import { GENERATIVE_MINT_ABI } from "../generativeAuthorization.js";
+import { fixturePinForProfile } from "./fixtures/eligibility.js";
+import type { GenerativeRuntimeOptions } from "./runtimeService.js";
 
 // Public test literals, never a funded/user wallet or live signing adapter.
 const signer = privateKeyToAccount(`0x${"0".repeat(63)}1`), wallet = privateKeyToAccount(`0x${"0".repeat(63)}2`);
 interface Reply { status: number; headers: Record<string, any>; body: Record<string, any> }
-describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1" || process.env.OPEN_MINT_TEST_HTTP !== "1")("durable HTTP pipeline on disposable PostgreSQL (no paid calls or chain writes)", () => {
+describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1" || process.env.OPEN_MINT_TEST_HTTP !== "1").each(["external-v1", "generative-experimental-v1", "generative-v1-rc1"] as const)("%s durable HTTP pipeline on disposable PostgreSQL (no paid calls or chain writes)", contractProfile => {
+  const generative = isGenerativeProfile(contractProfile), prefix = generative ? "generative_" : "";
+  const fixtureRendererPin = fixturePinForProfile(generative ? contractProfile : "generative-experimental-v1");
+  const inputProfile = generativeProfile(generative ? contractProfile : "generative-experimental-v1").inputProfile;
+  const gateProfile = generative ? { contractProfile, generativeRenderer: fixtureRendererPin } : {};
   let cluster: ReturnType<typeof disposablePostgres>, admin: Client;
   const resources: { runtime: DurableMintRuntime; writer: ExclusiveWriter; server: Server }[] = [];
   const factory = () => new Client(cluster.config);
@@ -36,8 +52,13 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1" || process.env.OPEN_
   beforeAll(async () => {
     cluster = disposablePostgres(); admin = factory(); await admin.connect(); await installSchema(admin);
     for (const file of ["requests-schema.sql", "publication-schema.sql", "authorization-schema.sql"]) await admin.query(readFileSync(new URL(file, import.meta.url), "utf8"));
+    if (generative) {
+      for (const file of ["generative-input-schema.sql", "generative-release-profile-schema.sql", "generative-authorization-schema.sql", "wallet-submission-schema.sql", "../projection/projection-schema.sql", "../projection/projection-v2.sql", "../projection/projection-v3.sql"]) {
+        await admin.query(readFileSync(new URL(file, import.meta.url), "utf8"));
+      }
+    }
     await admin.query("CREATE ROLE sg_http_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS");
-    await admin.query(preparationRuntimeGrants("sg_http_runtime"));
+    await admin.query((generative ? generativeBrowserRuntimeGrants : preparationRuntimeGrants)("sg_http_runtime"));
   }, 30000);
   const close = async (item: typeof resources[number]) => {
     await new Promise<void>(resolve => { item.server.close(() => resolve()); item.server.closeAllConnections(); });
@@ -46,7 +67,7 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1" || process.env.OPEN_
   afterEach(async () => { for (const item of resources.splice(0)) await close(item); vi.unstubAllEnvs(); });
   afterAll(async () => { await admin?.end(); cluster?.stop(); });
 
-  async function harness() {
+  async function harness(browserEnabled = false) {
     const ns = { ...namespace(), profile: "local-real" as const, provenance: "grok" as const };
     const deployment = randomUUID(), gate = eligibilityFixture(ns.id, deployment);
     const p = { ...gate.profile, authorizer: signer.address.toLowerCase() }, remote = new Map<string, Uint8Array>();
@@ -59,6 +80,10 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1" || process.env.OPEN_
       p.runtime_code_hash, p.authorizer, p.deployment_block, p.deployment_block_hash, p.max_evidence_age_ms, p.max_block_age_ms, p.max_future_skew_ms]);
     await admin.query("INSERT INTO open_mint.publication_profiles VALUES($1,$2,'mock-upload','mock-reader')", [ns.id, p.origin]);
     await admin.query("INSERT INTO open_mint.issuance_profiles VALUES($1,$2,true,600,5000,10000,120000,5000)", [ns.id, deployment]);
+    if (generative) {
+      await admin.query("INSERT INTO open_mint.generative_input_profiles VALUES($1,$2,$6,$3,$4,$5)", [ns.id, deployment, fixtureRendererPin.address, fixtureRendererPin.runtimeCodeHash, fixtureRendererPin.identity, inputProfile]);
+      await admin.query("INSERT INTO open_mint.generative_issuance_profiles VALUES($1,$2,true,600,5000,10000,120000,5000)", [ns.id, deployment]);
+    }
     const resolver: XIdentityResolver = { provenance: "x-api", resolve: vi.fn<XIdentityResolver["resolve"]>(async (handle, execution) => {
       await execution!.recordReceipt(receipt("x-identity", "1")); return { ...identity(handle), username: "Alice", provenance: "x-api" };
     }) };
@@ -67,22 +92,33 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1" || process.env.OPEN_
       return { handle, mbti: "INTJ", model: "grok-offline-test", providerResponseId: "offline-http-test", sourceUrls: ["https://x.com/Alice"], xUserId: snapshot!.userId };
     }) };
     const signing = { address: signer.address, signTypedData: vi.fn(data => signer.signTypedData(data)) };
-    const eligibility = vi.fn((input: RuntimeEligibilityInput, _signal: AbortSignal) => gate.witness(input.handle, input.recipient, { authorizer: signer.address }, undefined, input.nonce));
+    const eligibility = vi.fn((input: RuntimeEligibilityInput, _signal: AbortSignal) => gate.witness(input.handle, input.recipient, { authorizer: signer.address, ...gateProfile }, undefined, input.nonce));
     const uploader = { id: "mock-upload", upload: vi.fn(async (object: { uri: string }, bytes: Uint8Array) => { remote.set(object.uri, Uint8Array.from(bytes)); }) };
     const reader = { id: "mock-reader", retrieve: vi.fn(async (object: { uri: string }) => Uint8Array.from(remote.get(object.uri)!)) };
-    let item: typeof resources[number], port: number, options: DurableRuntimeOptions;
+    let item: typeof resources[number], port: number, options: DurableRuntimeOptions | GenerativeRuntimeOptions;
+    let browser: GenerativeMintBrowser | undefined, walletNonce: Hex = "0x0";
+    const reads: ProjectionReads = { gallery: async () => ({ state: "confirmed", items: [] }), lookup: vi.fn(async () => ({ state: "unknown" as const })) };
     const open = async () => {
       const writer = await ExclusiveWriter.acquire(runtimeFactory), repository = await OpenMintRepository.open(writer, ns);
       const requests = await PostgresMintRequests.open(repository, deployment);
       const sessions = await PostgresWalletSessions.open({ writer, namespaceId: ns.id, origin: p.origin, chainId: 31337 });
-      const journal = await PostgresPublicationJournal.open(writer, { namespaceId: ns.id, origin: p.origin, destination: uploader.id, source: reader.id });
-      const issuer = await PostgresAuthorizationIssuer.open(requests, journal);
       const worker = new PostgresAssessmentWorker(requests, { timeoutMs: 5000, provider, identityResolver: resolver,
-        refreshEligibility: input => gate.witness(input.handle, input.recipient, { authorizer: signer.address }) });
-      options = { sessions, requests, worker, journal, issuer, signer: signing, eligibility, eligibilityTimeoutMs: 1000,
-        publication: { uploader, reader, timeoutMs: 500 } };
+        refreshEligibility: input => gate.witness(input.handle, input.recipient, { authorizer: signer.address, ...gateProfile }) });
+      const common = { sessions, requests, worker, signer: signing, eligibility, eligibilityTimeoutMs: 1000 };
+      if (generative) {
+        const journal = await PostgresGenerativeInputJournal.open(writer, ns.id, deployment);
+        options = { ...common, contractProfile, journal, issuer: await PostgresGenerativeAuthorizationIssuer.open(requests, journal) };
+      } else {
+        const journal = await PostgresPublicationJournal.open(writer, { namespaceId: ns.id, origin: p.origin, destination: uploader.id, source: reader.id });
+        options = { ...common, journal, issuer: await PostgresAuthorizationIssuer.open(requests, journal), publication: { uploader, reader, timeoutMs: 500 } };
+      }
       const runtime = new DurableMintRuntime(options);
-      const server = createDurableMintApiServer(runtime); server.listen(0, "127.0.0.1"); await once(server, "listening");
+      if (browserEnabled) {
+        const config = { ...gate.config, authorizer: signer.address, ...gateProfile };
+        browser = new GenerativeMintBrowser(runtime, new GenerativeWalletChain(config, gate.sources(config, undefined, () => walletNonce)), reads);
+      }
+      const pages = browserEnabled ? createGenerativeGalleryPages({ projection: reads, artwork: { detail: async () => { throw new Error("No chain mint."); } } }) : undefined;
+      const server = createDurableMintApiServer(runtime, browserEnabled ? reads : undefined, undefined, pages, browser); server.listen(0, "127.0.0.1"); await once(server, "listening");
       port = (server.address() as { port: number }).port; item = { runtime, writer, server }; resources.push(item);
     };
     await open();
@@ -92,7 +128,7 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1" || process.env.OPEN_
         ...(raw !== undefined ? { "content-type": "application/json", "content-length": String(Buffer.byteLength(raw)), origin: p.origin } : {}),
         ...(auth?.cookie ? { cookie: auth.cookie } : {}), ...(auth?.csrf ? { "x-csrf-token": auth.csrf } : {}), ...headers } }, res => {
         const chunks: Buffer[] = []; res.on("data", chunk => chunks.push(chunk)); res.on("end", () => {
-          try { resolve({ status: res.statusCode!, headers: res.headers, body: JSON.parse(Buffer.concat(chunks).toString()) }); } catch (error) { reject(error); }
+          try { const raw = Buffer.concat(chunks).toString(); resolve({ status: res.statusCode!, headers: res.headers, body: res.headers["content-type"]?.startsWith("application/json") ? JSON.parse(raw) : { html: raw } }); } catch (error) { reject(error); }
         });
       }); req.on("error", reject); req.end(raw);
     });
@@ -110,6 +146,7 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1" || process.env.OPEN_
     const count = async (table: string) => (await admin.query(`SELECT count(*)::int AS n FROM open_mint.${table} WHERE namespace_id=$1`, [ns.id])).rows[0].n;
     return { ns, p, send, session, count, eligibility, resolver, provider, signing, uploader, reader,
       runtime: () => item.runtime, options: () => options,
+      browser: () => browser!, reads, setNonce: (v: Hex) => { walletNonce = v; },
       restart: async () => { await close(item); resources.splice(resources.indexOf(item), 1); await open(); },
       closeWriter: () => item.writer.close(),
     };
@@ -125,8 +162,9 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1" || process.env.OPEN_
     expect(status.status).toBe(200); expect(status.body).toMatchObject({ handle: "alice", renderHandle: "Alice", status: "ready", canMint: true });
     for (const forbidden of ["INTJ", "ipfs:", "providerResponseId", "sourceUrls", "authorization", "signature", "assessmentId", "walletProof", "sessionHash"]) expect(JSON.stringify(status.body)).not.toContain(forbidden);
     const authorized = await h.send("/api/mints/authorize", { code, consent: true }, auth); expect(authorized.status).toBe(200);
-    const decoded = decodeFunctionData({ abi: OPEN_MINT_ABI, data: authorized.body.transaction.data as Hex });
-    expect(decoded.functionName).toBe("mint"); expect(decoded.args![0]).toBe("alice");
+    const decoded = decodeFunctionData({ abi: generative ? GENERATIVE_MINT_ABI : OPEN_MINT_ABI, data: authorized.body.transaction.data as Hex });
+    expect(decoded.functionName).toBe("mint"); expect(decoded.args![0]).toBe(generative ? "Alice" : "alice");
+    if (generative) expect(decoded.args![1]).toBe("INTJ");
     expect(authorized.body.transaction).toMatchObject({ from: wallet.address, to: h.p.contract_address, value: "0x0", chainId: "0x7a69" });
     expect(JSON.stringify(authorized.body)).not.toMatch(/sessionHash|generation|csrf|namespaceId|deploymentId|providerResponseId/);
     const before = await admin.query("SELECT payload FROM open_mint.assessments WHERE namespace_id=$1", [h.ns.id]);
@@ -138,10 +176,105 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1" || process.env.OPEN_
     expect(h.signing.signTypedData).toHaveBeenCalledOnce(); expect(h.provider.assess).toHaveBeenCalledOnce(); expect(h.resolver.resolve).toHaveBeenCalledOnce();
     const calls = h.eligibility.mock.calls;
     expect(calls.at(-1)![0].nonce).toBe(calls.at(-2)![0].nonce);
-    for (const table of ["assessment_attempts", "budget_reservations", "assessments", "authorization_signatures"]) expect(await h.count(table)).toBe(1);
+    for (const table of ["assessment_attempts", "budget_reservations", "assessments", `${prefix}authorization_signatures`]) expect(await h.count(table)).toBe(1);
     expect((await admin.query("SELECT payload FROM open_mint.assessments WHERE namespace_id=$1", [h.ns.id])).rows[0].payload).toEqual(before.rows[0].payload);
-    expect(h.uploader.upload).toHaveBeenCalledTimes(3); expect(h.reader.retrieve).toHaveBeenCalledTimes(3);
+    expect(h.uploader.upload).toHaveBeenCalledTimes(generative ? 0 : 3); expect(h.reader.retrieve).toHaveBeenCalledTimes(generative ? 0 : 3);
+    if (generative) { expect(await h.count("public_artifacts")).toBe(0); expect(await h.count("authorizations")).toBe(0); expect(await h.count("generative_inputs")).toBe(1); }
   }, 30000);
+
+  async function readyBrowser() {
+    const h = await harness(true), auth = await h.session();
+    const created = await h.send("/api/assessments", { handle: "Alice" }, auth); expect(created.status).toBe(202);
+    await h.runtime().idle();
+    return { h, auth, code: created.body.code as string };
+  }
+  it.skipIf(!generative)("durable begin wins once across tabs/restart, and an arbitrary reported hash never reveals", async () => {
+    const { h, auth, code } = await readyBrowser();
+    const authorized = await h.send("/api/mints/authorize", { code, consent: true }, auth); expect(authorized.status, JSON.stringify(authorized.body)).toBe(200);
+    expect(authorized.body.transaction.nonce).toBe("0x0"); expect(authorized.body.network.nonce).toBe("0x0");
+    const both = await Promise.all([1, 2].map(() => h.send("/api/mints/begin", { code, consent: true }, auth)));
+    expect(both.map(r => r.status).sort()).toEqual([200, 409]);
+    const permit = both.find(r => r.status === 200)!.body.permit;
+    expect(await h.count("wallet_mint_dispatches")).toBe(1);
+    expect((await h.send(`/api/mints/status/${code}`, undefined, auth)).body).toEqual({ state: "pending", submissionBlocked: true, submissionUncertain: true });
+    await h.restart();
+    expect((await h.send("/api/mints/begin", { code, consent: true }, auth)).status).toBe(409);
+    expect((await h.send(`/api/assessments/${code}`, undefined, auth)).body).toMatchObject({ canMint: false, mint: { state: "pending" } });
+    const page = await h.send(`/mint/${code}`, undefined, auth);
+    expect(page.body.html).toContain('data-durable-wallet-submission="true"'); expect(page.body.html).not.toContain("INTJ");
+    expect(page.body.html).toContain("Checking your wallet submission"); expect(page.body.html).not.toContain("Mint submitted.");
+    const transactionHash = `0x${"4".repeat(64)}`;
+    expect((await h.send("/api/mints/report", { code, permit: opaqueCode(), transactionHash }, auth)).status).toBe(409);
+    expect((await h.send("/api/mints/report", { code, permit, transactionHash }, auth)).status).toBe(200);
+    expect((await h.send("/api/mints/report", { code, permit, transactionHash }, auth)).status).toBe(200);
+    expect((await h.send("/api/mints/reject", { code, permit }, auth)).status).toBe(409);
+    expect((await h.send(`/api/mints/status/${code}`, undefined, auth)).body).toEqual({ state: "pending", transactionHash, submissionBlocked: true, submissionUncertain: false });
+    expect(await h.count("wallet_mint_reports")).toBe(1);
+    expect(h.signing.signTypedData).toHaveBeenCalledOnce(); expect(h.provider.assess).toHaveBeenCalledOnce();
+    expect(await h.count("public_artifacts")).toBe(0);
+  }, 30000);
+  it.skipIf(!generative)("only a bounded explicit rejection retry can reuse the same nonce and calldata", async () => {
+    const { h, auth, code } = await readyBrowser();
+    let first: unknown;
+    for (let i = 1; i <= 5; i++) {
+      const begun = await h.send("/api/mints/begin", { code, consent: true }, auth); expect(begun.status, JSON.stringify(begun.body)).toBe(200);
+      first ??= begun.body.transaction; expect(begun.body.transaction).toEqual(first);
+      expect((await h.send("/api/mints/reject", { code, permit: begun.body.permit }, auth)).status).toBe(200);
+      expect((await h.send(`/api/mints/status/${code}`, undefined, auth)).body.state).toBe(i < 5 ? "unknown" : "pending");
+    }
+    expect((await h.send("/api/mints/begin", { code, consent: true }, auth)).status).toBe(409);
+    expect(h.signing.signTypedData).toHaveBeenCalledOnce(); expect(await h.count("wallet_mint_dispatches")).toBe(5);
+  });
+  it.skipIf(!generative)("does not replace a saved nonce, and blocks session/CSRF/extra-field spoofing", async () => {
+    const { h, auth, code } = await readyBrowser(), other = await h.session();
+    expect((await h.send("/api/mints/authorize", { code, consent: true }, auth)).status).toBe(200);
+    for (const extra of [{ nonce: "0x9" }, { mbti: "ENFP" }, { transaction: {} },
+      { contractProfile: "generative-v1-rc1" }, { inputProfile: "sg-generative-inputs-v1-rc1" }]) {
+      expect((await h.send("/api/mints/begin", { code, consent: true, ...extra }, auth)).status).toBe(400);
+    }
+    expect((await h.send("/api/mints/begin", { code, consent: true }, { ...auth, csrf: opaqueCode() })).status).toBe(403);
+    expect((await h.send("/api/mints/begin", { code, consent: true }, other)).status).toBe(404);
+    expect((await h.send(`/api/mints/status/${code}`, undefined, other)).status).toBe(404);
+    h.setNonce("0x1");
+    expect((await h.send("/api/mints/begin", { code, consent: true }, auth)).body.code).toBe("WALLET_NONCE_CHANGED");
+    expect(await h.count("wallet_mint_dispatches")).toBe(0);
+    expect(h.signing.signTypedData).toHaveBeenCalledOnce();
+  });
+  it.skipIf(!generative)("renders private entry/assets without side effects and enforces browser database privileges", async () => {
+    const h = await harness(true), auth = await h.session();
+    const entry = await h.send("/mint?handle=Alice", undefined, auth);
+    expect(entry.status).toBe(200); expect(entry.body.html).toContain('value="Alice"');
+    expect(entry.headers["content-security-policy"]).toContain("script-src 'self'");
+    expect((await h.send("/assets/generative-wallet.js")).body.html).toContain("/api/mints/begin");
+    expect((await h.send("/api/wallet/context?address=" + wallet.address, undefined, auth)).body.nonce).toBe("0x0");
+    expect((await h.send("/api/wallet/context?address=garbage", undefined, auth)).status).toBe(404);
+    expect(await h.count("requests")).toBe(0); expect(h.provider.assess).not.toHaveBeenCalled(); expect(h.signing.signTypedData).not.toHaveBeenCalled();
+    const client = runtimeFactory(); await client.connect();
+    try {
+      await client.query("SET search_path=pg_catalog; SET statement_timeout='3s'");
+      expect((await auditGenerativeBrowserRole(client)).ok).toBe(true);
+      for (const table of ["wallet_mint_plans", "wallet_mint_dispatches", "wallet_mint_reports"]) {
+        await expect(client.query(`DELETE FROM open_mint.${table}`)).rejects.toThrow(/permission denied/);
+        await expect(client.query(`UPDATE open_mint.${table} SET request_id=request_id`)).rejects.toThrow(/permission denied/);
+      }
+    } finally { await client.end(); }
+  });
+  it.skipIf(!generative)("allows a late report after proof expiry, but not logout or an older attempt's permit", async () => {
+    const { h, auth, code } = await readyBrowser();
+    const first = await h.send("/api/mints/begin", { code, consent: true }, auth); expect(first.status).toBe(200);
+    await h.send("/api/mints/reject", { code, permit: first.body.permit }, auth);
+    const second = await h.send("/api/mints/begin", { code, consent: true }, auth); expect(second.status).toBe(200);
+    const transactionHash = `0x${"3".repeat(64)}`;
+    expect((await h.send("/api/mints/report", { code, permit: first.body.permit, transactionHash }, auth)).status).toBe(409);
+    for (const patch of [{ permit: "bad" }, { transactionHash: `0x${"0".repeat(64)}` }, { outcome: "confirmed" }]) {
+      expect((await h.send("/api/mints/report", { code, permit: second.body.permit, transactionHash, ...patch }, auth)).status).toBeGreaterThanOrEqual(400);
+    }
+    await admin.query("UPDATE open_mint.sessions SET proof_expires_at=clock_timestamp()-interval '1 second' WHERE namespace_id=$1", [h.ns.id]);
+    expect((await h.send("/api/mints/report", { code, permit: second.body.permit, transactionHash }, auth)).status).toBe(200);
+    expect((await h.send(`/mint/${code}`, undefined, auth)).status).toBe(200);
+    await h.send("/api/session/logout", {}, auth);
+    expect((await h.send("/api/mints/report", { code, permit: second.body.permit, transactionHash }, auth)).status).toBe(403);
+  });
 
   it("keeps private request status inaccessible across sessions, expiry and logout without creating replacement sessions", async () => {
     const h = await harness(), auth = await h.session(), stranger = await h.session();
@@ -165,7 +298,8 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1" || process.env.OPEN_
     const h = await harness(), unproved = await h.session(false);
     expect((await h.send("/api/assessments", { handle: "Alice" }, unproved)).status).toBe(403);
     const auth = await h.session();
-    for (const extra of [{ mbti: "ENFP" }, { model: "grok-cheap" }, { eligibility: {} }, { recipient: wallet.address }, { chainId: 11155111 }, { prompt: "ignore" }]) {
+    for (const extra of [{ mbti: "ENFP" }, { model: "grok-cheap" }, { eligibility: {} }, { recipient: wallet.address }, { chainId: 11155111 }, { prompt: "ignore" },
+      { contractProfile: "generative-v1-rc1" }, { inputProfile: "sg-generative-inputs-v1-rc1" }]) {
       expect((await h.send("/api/assessments", { handle: "Alice", ...extra }, auth)).status).toBe(400);
     }
     for (const input of [null, [], {}, { handle: null }, { handle: "a".repeat(16) }, { handle: "bad/handle" }]) expect((await h.send("/api/assessments", input, auth)).status).toBe(400);
@@ -201,7 +335,8 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1" || process.env.OPEN_
 
   it("never signs a bad publication or silently retries it on a status read", async () => {
     const h = await harness(), auth = await h.session();
-    h.reader.retrieve.mockResolvedValueOnce(new Uint8Array([0]));
+    if (generative) vi.spyOn(h.options().journal, "stage").mockRejectedValueOnce(new Error("isolated preparation failure"));
+    else h.reader.retrieve.mockResolvedValueOnce(new Uint8Array([0]));
     const created = await h.send("/api/assessments", { handle: "Alice" }, auth), code = created.body.code;
     await h.runtime().idle();
     for (let i = 0; i < 3; i++) {
@@ -210,7 +345,7 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1" || process.env.OPEN_
     }
     const authorization = await h.send("/api/mints/authorize", { code, consent: true }, auth);
     expect(authorization.status).toBe(409); expect(authorization.body.code).toBe("NOT_READY");
-    expect(h.reader.retrieve).toHaveBeenCalledOnce(); expect(h.provider.assess).toHaveBeenCalledOnce(); expect(h.signing.signTypedData).not.toHaveBeenCalled();
+    expect(h.reader.retrieve).toHaveBeenCalledTimes(generative ? 0 : 1); expect(h.provider.assess).toHaveBeenCalledOnce(); expect(h.signing.signTypedData).not.toHaveBeenCalled();
     // Explicit new request recovers the same accepted result/bytes, not a reroll.
     expect((await h.send("/api/assessments", { handle: "Alice" }, auth)).status).toBe(202); await h.runtime().idle();
     expect((await h.send(`/api/assessments/${code}`, undefined, auth)).body.status).toBe("ready");
@@ -226,8 +361,8 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1" || process.env.OPEN_
     expect(uncertain.body.code).toBe("SIGNING_UNCERTAIN"); expect(uncertain.status).toBe(409);
     await h.restart();
     expect((await h.send("/api/mints/authorize", { code, consent: true }, auth)).body.code).toBe("SIGNING_UNCERTAIN");
-    expect(h.signing.signTypedData).toHaveBeenCalledOnce(); expect(await h.count("authorizations")).toBe(1);
-    expect(await h.count("authorization_signatures")).toBe(0);
+    expect(h.signing.signTypedData).toHaveBeenCalledOnce(); expect(await h.count(`${prefix}authorizations`)).toBe(1);
+    expect(await h.count(`${prefix}authorization_signatures`)).toBe(0);
   });
 
   it("coalesces concurrent preparation and bounds different-handle work without a queue", async () => {
@@ -261,10 +396,11 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1" || process.env.OPEN_
     const h = await harness(), options = h.options();
     for (const invalid of [0, -1, NaN, 30001, 1.5]) {
       expect(() => new DurableMintRuntime({ ...options, eligibilityTimeoutMs: invalid })).toThrow("deadline");
-      expect(() => new DurableMintRuntime({ ...options, publication: { ...options.publication, timeoutMs: invalid } })).toThrow("deadline");
+      if ((options.contractProfile === undefined || options.contractProfile === "external-v1")) expect(() => new DurableMintRuntime({ ...options, publication: { ...options.publication, timeoutMs: invalid } })).toThrow("deadline");
     }
-    expect(() => new DurableMintRuntime({ ...options, signer: { ...options.signer, address: wallet.address } })).toThrow("matching isolated");
-    expect(() => new DurableMintRuntime({ ...options, journal: { ...options.journal, origin: "https://wrong.example" } as never })).toThrow("matching isolated");
+    const wrongSigner = { ...options, signer: { ...options.signer, address: wallet.address } } as typeof options;
+    expect(() => new DurableMintRuntime(wrongSigner)).toThrow("matching isolated");
+    expect(() => new DurableMintRuntime({ ...options, journal: { ...options.journal, origin: "https://wrong.example", deploymentId: "wrong" } as never })).toThrow("matching isolated");
     expect(() => new DurableMintRuntime({ ...options, worker: { requests: {} } as never })).toThrow("matching isolated");
     expect(() => new DurableMintRuntime({ ...options, sessions: { ...options.sessions, chainId: 11155111 } as never })).toThrow("matching isolated");
   });
@@ -309,7 +445,7 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1" || process.env.OPEN_
     expect(await h.count("requests")).toBe(0); expect(h.provider.assess).not.toHaveBeenCalled();
   });
 
-  it("audits the actual restricted preparation login and denies policy/commitment rewriting", async () => {
+  it.skipIf(generative)("audits the actual restricted preparation login and denies policy/commitment rewriting", async () => {
     const client = runtimeFactory(); await client.connect();
     try {
       await client.query("SET search_path=pg_catalog; SET statement_timeout='5s'");

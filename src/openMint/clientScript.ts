@@ -32,6 +32,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
   const handle = page?.dataset.assessmentHandle || '';
   const tokenId = page?.dataset.tokenId || '';
   const local = root.dataset.localChain === 'true';
+  const durableSubmission = root.dataset.durableWalletSubmission === 'true';
   const addressPattern = /^0x[0-9a-f]{40}$/i;
   const hashPattern = /^0x[0-9a-f]{64}$/i;
   const codePattern = /^[A-Za-z0-9_-]{43}$/;
@@ -47,6 +48,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
   let stopped = false, timer, bootTimer, expiryTimer, sessionPromise, verified = null, walletMode = 'injected';
   let walletBusy = false, mintBusy = false, requestBusy = false, walletGeneration = 0;
   let submittedHash = null, uncertainSubmission = false, reportNeeded = false;
+  let submissionPermit = null;
   let submittedWallet = null, submittedAt = 0, expectedNonce = null;
   let inspectionGeneration = 0;
   let booting = true;
@@ -63,7 +65,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
   const abort = new AbortController();
   const retryDelay = failures => Math.min(30000, 2500 * 2 ** Math.min(failures, 4));
   const requestExpired = () => Boolean(page && (page.dataset.requestExpired === 'true' || (requestDeadline > 0 && Date.now() >= requestDeadline)));
-  const ui = () => mintUiState({ assessmentStatus: page?.dataset.assessmentState, mintState: page?.dataset.mintState,
+  const ui = () => mintUiState({ assessmentStatus: page?.dataset.assessmentState, mintState: durableSubmission && uncertainSubmission && !submittedHash ? 'unknown' : page?.dataset.mintState,
     requestExpired: requestExpired(), canMint: page?.dataset.canMint === 'true', walletVerified: Boolean(verified),
     submitted: Boolean(submittedHash), uncertain: uncertainSubmission, awaitingApproval, booting, walletBusy, mintBusy,
     hasIntent: Boolean(storageGet(intentKey)), readUnavailable });
@@ -356,7 +358,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
   };
   const pendingFeedback = (text, status = 'Mint submitted. Waiting to reveal your signature…') => {
     feedback(text); message('[data-assessment-status]', status);
-    message('[data-poll-feedback]', 'Transaction: ' + submittedHash);
+    message('[data-poll-feedback]', durableSubmission && one('[data-mint-transaction]') ? '' : 'Transaction: ' + submittedHash);
   };
   const inspectSubmissionRead = async (mintState, inspection) => {
     if (!submittedHash || walletMode !== 'injected' || stopped) return false;
@@ -447,8 +449,14 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
       }
       if (stopped || generation !== mintGeneration) return;
       if (canRevealMint(result?.state)) { reveal(result.state); return; }
+      if (durableSubmission && result?.state === 'pending') {
+        page.dataset.mintState = 'pending'; storageRemove(intentKey);
+        if (!submittedHash && hashPattern.test(result.transactionHash || '')) setPending(result.transactionHash, submittedWallet || verified);
+        uncertainSubmission = !submittedHash;
+        if (uncertainSubmission) feedback('A wallet submission was started, but its outcome is unknown. Check wallet activity. No new transaction will be sent automatically.');
+      }
       if (submittedHash && reportNeeded) {
-        try { await boundedCheck(post('/api/mints/report', { code, transactionHash: submittedHash })); reportNeeded = false; } catch {}
+        try { await boundedCheck(post('/api/mints/report', { code, transactionHash: submittedHash, ...(durableSubmission ? { permit: submissionPermit } : {}) })); reportNeeded = false; } catch {}
       }
       if (stopped || generation !== mintGeneration) return;
       if (await inspectSubmission(result?.state)) return;
@@ -458,7 +466,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
   const setPending = (hash, wallet, nonce = null) => {
     submittedHash = hash; uncertainSubmission = false;
     submittedWallet = wallet; submittedAt = Date.now(); expectedNonce = nonce;
-    storageSet(submissionKey, { hash, wallet, mode: walletMode, submittedAt, expectedNonce });
+    storageSet(submissionKey, { hash, wallet, mode: walletMode, submittedAt, expectedNonce, ...(durableSubmission ? { permit: submissionPermit } : {}) });
     if (page) page.dataset.mintState = 'pending';
     message('[data-assessment-status]', 'Mint submitted. Waiting to reveal your signature…');
     feedback('Transaction submitted. Waiting for confirmation to reveal your signature.'); updateButtons();
@@ -483,7 +491,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
     if (stopped || mintBusy || submittedHash || uncertainSubmission || !verified || walletMode !== mode || requestExpired() || readUnavailable || reservedUntil > Date.now()) { updateButtons(); return; }
     mintBusy = true; storageRemove(intentKey); updateButtons();
     const recipient = verified, generation = walletGeneration;
-    let sending = false;
+    let sending = false, walletInvoked = false;
     try {
       assertContext();
       const state = await session();
@@ -523,20 +531,38 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
         awaitingApproval = true; updateButtons();
         feedback('Confirm the mint transaction in your wallet.' + (local ? ' Transaction nonce: ' + BigInt(transaction.nonce) + '.' : ''));
         sending = true; storageSet(submissionKey, { uncertain: true, wallet: recipient, mode });
+        if (durableSubmission) {
+          // A lost begin response is also uncertain: the server may have committed.
+          const begun = await post('/api/mints/begin', { code, consent: true });
+          if (!codePattern.test(begun?.permit || '') || !begun.transaction || ['from', 'to', 'data', 'value', 'chainId', 'nonce'].some(k => String(begun.transaction[k]).toLowerCase() !== String(transaction[k]).toLowerCase())) throw new Error('The saved submission does not match this transaction. Nothing was sent by this page; check progress before any retry.');
+          submissionPermit = begun.permit;
+          storageSet(submissionKey, { uncertain: true, wallet: recipient, mode, permit: submissionPermit });
+          await walletUnchanged(ethereum, state, recipient, generation);
+          if (stopped || generation !== walletGeneration) throw new Error('The wallet changed. Check progress before continuing.');
+        }
+        walletInvoked = true;
         const hash = await ethereum.request({ method: 'eth_sendTransaction', params: [transaction] });
         if (!hashPattern.test(hash || '')) throw new Error('The wallet returned an invalid transaction hash.');
         setPending(hash, recipient, transaction.nonce);
-        try { await boundedCheck(post('/api/mints/report', { code, transactionHash: hash })); }
+        try { await boundedCheck(post('/api/mints/report', { code, transactionHash: hash, ...(durableSubmission ? { permit: submissionPermit } : {}) })); }
         catch { reportNeeded = true; feedback('Transaction submitted. Saving its status will retry. Transaction: ' + hash); }
         await inspectSubmission();
       }
       schedule(pollMint);
     } catch (error) {
       recoverError(error);
+      let safeRejection = !durableSubmission;
+      if (durableSubmission && walletInvoked && submissionPermit && (error?.code === 4001 || error?.code === 'ACTION_REJECTED')) {
+        try { await boundedCheck(post('/api/mints/reject', { code, permit: submissionPermit })); safeRejection = true; submissionPermit = null; } catch {}
+      }
       const localRejectedBeforeSend = mode === 'local' && ['REQUEST_EXPIRED', 'WALLET_PROOF_REQUIRED', 'NOT_READY', 'CONSENT_REQUIRED', 'CSRF_INVALID', 'CSRF_FAILED', 'SESSION_REQUIRED', 'SESSION_EXPIRED', 'REQUEST_SESSION_MISMATCH', 'MINT_RESERVED', 'CHAIN_CLOCK', 'MINT_UNAVAILABLE', 'MINT_NETWORK_UNAVAILABLE'].includes(error?.code);
-      if (sending && !submittedHash && error?.code !== 4001 && error?.code !== 'ACTION_REJECTED' && !localRejectedBeforeSend) {
+      if (sending && !submittedHash && (!(error?.code === 4001 || error?.code === 'ACTION_REJECTED') || !safeRejection) && !localRejectedBeforeSend) {
         uncertainSubmission = true;
-        feedback('The wallet response is uncertain. Check wallet activity before any retry. This page will check for a confirmed mint.'); schedule(pollMint);
+        feedback(durableSubmission && !walletInvoked
+          ? 'The mint submission could not be verified. This page has not sent a wallet transaction. Check progress before any retry.'
+          : 'The wallet response is uncertain. Check wallet activity before any retry. This page will check for a confirmed mint.'); schedule(pollMint);
+      } else if (durableSubmission && error?.code === 'SUBMISSION_UNRESOLVED') {
+        uncertainSubmission = true; page.dataset.mintState = 'pending'; storageRemove(intentKey); feedback(errorText(error)); schedule(pollMint, 100);
       } else {
         if (!submittedHash) storageRemove(submissionKey);
         feedback(errorText(error));
@@ -709,6 +735,18 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
     const generation = ++bootGeneration, wallet = walletGeneration;
     try {
       const state = await session(); if (stopped || generation !== bootGeneration) return;
+      // Server guard survives storage loss, another tab and process restart.
+      if (durableSubmission && code) {
+        const saved = await readJson('/api/mints/status/' + encodeURIComponent(code), { cache: 'no-store' });
+        if (stopped || generation !== bootGeneration) return;
+        if (canRevealMint(saved?.state)) { reveal(saved.state); return; }
+        if (saved?.state === 'pending') {
+          page.dataset.mintState = 'pending'; storageRemove(intentKey);
+          if (hashPattern.test(saved.transactionHash || '')) setPending(saved.transactionHash, walletAddress(state));
+          else uncertainSubmission = true;
+          schedule(pollMint, 100);
+        }
+      }
       readUnavailable = false; bootFailures = 0;
       if (bootFeedback && one(bootFeedback.selector)?.textContent === bootFeedback.copy) message(bootFeedback.selector, '');
       bootFeedback = null;
@@ -744,9 +782,10 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
   });
   // Restore the durable submission guard before session boot can hang or fail.
   const submission = code ? storageGet(submissionKey) : null;
+  if (durableSubmission && codePattern.test(submission?.permit || '')) submissionPermit = submission.permit;
   if (submission && (hashPattern.test(submission.hash || '') || submission.uncertain === true)) {
     if (hashPattern.test(submission.hash || '')) {
-      submittedHash = submission.hash; reportNeeded = true;
+      submittedHash = submission.hash; reportNeeded = !durableSubmission || Boolean(submissionPermit);
       submittedWallet = addressPattern.test(submission.wallet || '') ? submission.wallet : null;
       submittedAt = Number.isFinite(submission.submittedAt) && submission.submittedAt > 0 && submission.submittedAt <= Date.now() ? submission.submittedAt : Date.now();
       expectedNonce = isQuantity(submission.expectedNonce) ? submission.expectedNonce : null;

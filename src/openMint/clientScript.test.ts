@@ -43,6 +43,7 @@ class Element {
   }
 }
 type SetupOptions = {
+  durable?: boolean;
   entry?: boolean;
   preview?: boolean;
   pending?: boolean;
@@ -71,7 +72,7 @@ function setup(options: SetupOptions = {}) {
   const selectors = ['[data-open-mint]', '[data-connect-wallet]', '[data-mint-feedback]', '[data-poll-feedback]', '[data-wallet-label]', '[data-disconnect-wallet]', '[data-copy-handoff]', '[data-handoff-prompt]', '[data-copy-feedback]', ...(options.preview ? [] : options.entry ? ['[data-assessment-request]', '[data-request-feedback]'] : ['[data-assessment-code]', '[data-assessment-status]', '[data-submit-mint]', '[data-mint-form]', '[data-request-recovery]', '[data-request-recovery-message]', '[data-check-progress]', '[data-mint-transaction]', '[data-mint-network]']), ...(options.local ? ['[data-dev-wallet]', '[data-dev-mint]', '[data-dev-feedback]'] : [])];
   const elements: Record<string, Element> = Object.fromEntries(selectors.map(selector => [selector, new Element()]));
   if (options.support) { elements['[data-assessment-support]'] = new Element(); elements['[data-assessment-support]'].hidden = true; }
-  elements['[data-open-mint]'].dataset = { chainId: "31337", contract: CONTRACT, localChain: String(Boolean(options.local)) };
+  elements['[data-open-mint]'].dataset = { chainId: "31337", contract: CONTRACT, localChain: String(Boolean(options.local)), durableWalletSubmission: String(Boolean(options.durable)) };
   if (elements['[data-assessment-code]']) elements['[data-assessment-code]'].dataset = { assessmentCode: "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr", assessmentHandle: "agent_art", tokenId: "123", assessmentState: options.pending ? "pending" : "ready", canMint: "true", mintState: options.mintState ?? "unminted", walletProved: String(Boolean(options.walletProved)), requestExpired: String(Boolean(options.expired)), requestExpiresAt: String(options.expiresAt ?? ''), walletProofExpiresAt: String(options.proofExpiresAt ?? ''), serverNow: String(options.serverNow ?? '') };
   if (elements['[data-assessment-code]']) elements['[data-assessment-code]'].dataset.mintTransactionHash = options.mintHash ?? '';
   if (elements['[data-mint-network]']) elements['[data-mint-network]'].hidden = true;
@@ -171,6 +172,61 @@ const tick = (test: ReturnType<typeof setup>, delay: number) => {
   expect(timer, `Expected a ${delay}ms timer`).toBeDefined();
   return timer!();
 };
+
+describe('durable generative wallet submission protocol', () => {
+  const permit = 'p'.repeat(43), transaction = { from: WALLET, to: CONTRACT, chainId: '0x7a69', data: '0x1234', value: '0x0', nonce: '0x1' };
+  const api = (path: string) => path.startsWith('/api/mints/status/') ? { state: 'unminted' }
+    : path === '/api/mints/begin' ? { permit, transaction } : undefined;
+  it('commits a guard before sending, then reports with its permit', async () => {
+    const test = setup({ durable: true, walletProved: true, storage: intent(), api }); await flush();
+    expect(sends(test)).toHaveLength(1);
+    expect(test.requests.find(r => r.path === '/api/mints/begin')?.body).toEqual({ code: 'r'.repeat(43), consent: true });
+    expect(test.requests.find(r => r.path === '/api/mints/report')?.body).toEqual({ code: 'r'.repeat(43), permit, transactionHash: HASH });
+    expect(JSON.parse(test.storage.get(SUBMISSION_KEY)!)).toMatchObject({ permit, hash: HASH });
+    expect(test.elements['[data-mint-transaction]'].textContent).toContain(HASH);
+    expect(test.elements['[data-poll-feedback]'].textContent).not.toContain(HASH);
+  });
+  it.each(['lost', 'bad-permit', 'changed-transaction', 'conflict'])('does not send after %s begin response', async kind => {
+    const test = setup({ durable: true, walletProved: true, storage: intent(), api(path) {
+      if (path === '/api/mints/begin') {
+        if (kind === 'lost') throw new Error('network lost');
+        if (kind === 'bad-permit') return { permit: 'invalid', transaction };
+        if (kind === 'changed-transaction') return { permit, transaction: { ...transaction, nonce: '0x2' } };
+        return { error: 'Already started', code: 'SUBMISSION_UNRESOLVED' };
+      }
+      return api(path);
+    } }); await flush();
+    expect(sends(test)).toHaveLength(0); expect(test.elements['[data-submit-mint]'].disabled).toBe(true);
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('This page has not sent a wallet transaction.');
+    expect(test.elements['[data-mint-feedback]'].textContent).not.toContain('wallet response is uncertain');
+    expect(test.storage.has(INTENT_KEY)).toBe(false);
+    expect(test.requests.some(r => r.path === '/api/mints/reject')).toBe(false);
+    await test.elements['[data-mint-form]'].emit('submit'); expect(sends(test)).toHaveLength(0);
+  });
+  it.each([true, false])('wallet rejection requires a saved rejection before offering retry (%s)', async saved => {
+    const test = setup({ durable: true, walletProved: true, storage: intent(), api(path) {
+      if (path === '/api/mints/reject' && !saved) throw new Error('lost report');
+      return api(path);
+    }, walletRequest(method) { if (method === 'eth_sendTransaction') throw Object.assign(new Error('Rejected'), { code: 4001 }); } }); await flush();
+    expect(sends(test)).toHaveLength(1);
+    expect(test.requests.filter(r => r.path === '/api/mints/reject')).toHaveLength(1);
+    expect(test.elements['[data-submit-mint]'].disabled).toBe(!saved);
+    expect(test.storage.has(SUBMISSION_KEY)).toBe(!saved);
+  });
+  it.each([true, false])('server pending guard survives missing browser storage; hash known=%s', async known => {
+    const test = setup({ durable: true, walletProved: true, storage: intent(), api(path) {
+      if (path.startsWith('/api/mints/status/')) return { state: 'pending', ...(known ? { transactionHash: HASH } : {}) };
+      return api(path);
+    } }); await flush();
+    expect(sends(test)).toHaveLength(0); expect(test.storage.has(INTENT_KEY)).toBe(false);
+    expect(test.requests.some(r => r.path === '/api/mints/authorize')).toBe(false);
+    expect(test.elements['[data-submit-mint]'].disabled).toBe(true);
+  });
+  it('failed server guard read discards automatic intent before any wallet prompt', async () => {
+    const test = setup({ durable: true, walletProved: true, storage: intent(), api(path) { if (path.startsWith('/api/mints/status/')) throw new Error('offline'); return api(path); } });
+    await flush(); expect(sends(test)).toHaveLength(0); expect(test.storage.has(INTENT_KEY)).toBe(false);
+  });
+});
 
 describe('injected wallet selection and account scope', () => {
   const extraWallet = (request?: (request: { method: string; params?: unknown }) => Promise<unknown>) => {

@@ -1,8 +1,12 @@
 # Public open-mint architecture proposal
 
+**Superseding decision (September 21):** canonical artwork is generated at read time by immutable EVM code from immutable handle/MBTI inputs. Follow [Generative on-chain artwork](generative-onchain-artwork.md). All publisher, IPFS/HTTPS canonical artifact, finished-SVG storage and mint-time output-hash requirements below are historical proposals, not current implementation instructions. The private operational durability and security requirements still apply.
+
 Status: **Ethereum Sepolia and `https://staging.signatures.gallery` approved as the staging target/origin on 2026-09-20; remaining operating decisions are under review. Local integration work may proceed.**
 
 Recorded: 2026-09-20. Scope: E16 and the implementation boundaries for E17–E22 in [the development plan](development-plan.md). This document does not complete E16's review, authorize paid dispatch, select an account/vendor, provision infrastructure, deploy a contract, or authorize a public transaction. The current local startup refusal remains in force until its reviewed replacement exists.
+
+September 23 implementation update: [paused Sepolia readiness](generative-staging-readiness.md) now has a separate read-only, resource-limited loopback entrypoint, cross-bound to signed review, exact database policy and fresh locked-deployment evidence. It provides health/readiness only, not the effect-capable application topology below. Public mint/runtime admission remains unimplemented; local-only guards and the active site are unchanged.
 
 User decisions: “yes, use Ethereum Sepolia as staging target” and “agree with staging.signatures.gallery.” The exact intended origin is `https://staging.signatures.gallery`, on Ethereum Sepolia (`11155111`), not another chain's Sepolia deployment. These decisions do not provision DNS/TLS/hosting. RPC accounts, finality policy, infrastructure, key custody, deployment/funding and production authorization remain separate decisions. Do not infer an existing deployment or populate unknown chain/deployment hashes from this approval.
 
@@ -168,7 +172,9 @@ Separate `OpenMintChainReader`, transaction construction, and `AuthorizationSign
 
 The durable session adapter will be asynchronous: adapt server call sites and tests deliberately rather than pretending the synchronous `WalletSessions` map persists. Store only opaque token/code hashes for lookup; no log or public projection may contain the raw cookie, CSRF material, challenge message containing a private capability, or request code. Existing live-cookie recovery supplies the original token. If the UI needs a reusable request link from a hash-only lookup, issue a new session-bound request for the same saved result or use a separately reviewed protected capability store; do not reverse or expose hashes as new capabilities.
 
-## 6. Immutable public URI and artifact profile
+## 6. Immutable public URI and artifact profile — superseded proposal
+
+**September 21 decision:** canonical artwork must be fully on-chain. The [selected on-chain architecture](fully-onchain-artwork.md) supersedes this section's IPFS/HTTPS proposal and its publication prerequisites for new public deployments. The text below documents the historical implementation only; do not provision pinning/storage or issue new public external-URI mints from it. The new contract/domain, embedded SVG metadata, chain recovery and integration order are specified in the selected architecture. Existing immutable contracts/records remain unchanged.
 
 **Proposed default, awaiting URI/storage review:** content-addressed `ipfs://<canonical CIDv1>` token metadata, PNG and SVG, using the existing deterministic UnixFS importer profile as the starting point. Compute CIDs locally before publication. Pin/retrieve adapters are vendor-independent. Maintain two independently recoverable copies, with at least one serving the public URI and a verification path independent of the upload response. The concrete replication/pinning operators and retention budget require approval; an upload acknowledgment alone is insufficient.
 

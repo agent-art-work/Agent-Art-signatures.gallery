@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createProjectionPoller } from "./poller.js";
+import { performance } from "node:perf_hooks";
 
 const config = { intervalMs: 1000, maxBackoffMs: 8000, passTimeoutMs: 5000 };
 const signal = () => new AbortController().signal;
 describe("bounded read-only chain polling lifecycle", () => {
   beforeEach(() => vi.useFakeTimers());
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
   const setup = () => {
     const coordinator = { sync: vi.fn(async (_signal: AbortSignal) => "observed" as const), withdraw: vi.fn() };
     const poller = createProjectionPoller(coordinator, config);
@@ -30,6 +31,16 @@ describe("bounded read-only chain polling lifecycle", () => {
     }
     expect(p.snapshot()).toEqual({ state: "waiting", failures: 0, lastOutcome: "observed", nextDelayMs: 1000 }); p.stop();
   });
+  it.each([false, true])("owner can defer the first refresh; cancellation %s still removes its timer", async cancelled => {
+    const coordinator = { sync: vi.fn(async () => "observed" as const), withdraw: vi.fn() };
+    const p = createProjectionPoller(coordinator, { ...config, initialDelayMs: 1000 }), c = new AbortController();
+    p.start(c.signal);
+    expect(p.snapshot()).toEqual({ state: "waiting", failures: 0, nextDelayMs: 1000 });
+    await vi.advanceTimersByTimeAsync(999); expect(coordinator.sync).not.toHaveBeenCalled();
+    if (cancelled) c.abort();
+    await vi.advanceTimersByTimeAsync(1); expect(coordinator.sync).toHaveBeenCalledTimes(cancelled ? 0 : 1);
+    await p.drain(); expect(vi.getTimerCount()).toBe(0);
+  });
   it("does not overlap slow passes or accumulate missed ticks", async () => {
     let resolve!: (value: "observed") => void;
     const sync = vi.fn((_s: AbortSignal) => new Promise<"observed">(r => { resolve = r; }));
@@ -38,6 +49,13 @@ describe("bounded read-only chain polling lifecycle", () => {
     resolve("observed"); await vi.advanceTimersByTimeAsync(0); expect(p.snapshot().state).toBe("waiting");
     await vi.advanceTimersByTimeAsync(999); expect(sync).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(1); expect(sync).toHaveBeenCalledTimes(2); p.stop();
+  });
+  it("withdraws late success when the event loop delays the deadline callback", async () => {
+    let time = 0; vi.spyOn(performance, "now").mockImplementation(() => time);
+    const withdraw = vi.fn(), sync = vi.fn(async () => { time = 5001; return "observed" as const; });
+    const p = createProjectionPoller({ sync, withdraw }, config); p.start(signal()); await vi.advanceTimersByTimeAsync(0);
+    expect(p.snapshot()).toEqual({ state: "failed", failures: 1, lastOutcome: "deadline" });
+    expect(withdraw).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
   });
   it.each(["resolve", "reject"])("halts on a hung pass and ignores its late %s", async mode => {
     let resolve!: (v: "observed") => void, reject!: (e: Error) => void;
@@ -79,6 +97,7 @@ describe("bounded read-only chain polling lifecycle", () => {
     { intervalMs: 0 }, { intervalMs: 249 }, { intervalMs: 60001 }, { intervalMs: NaN },
     { maxBackoffMs: 999 }, { maxBackoffMs: 300001 }, { maxBackoffMs: 1000.5 },
     { passTimeoutMs: 0 }, { passTimeoutMs: 60001 }, { passTimeoutMs: Infinity },
+    { initialDelayMs: -1 }, { initialDelayMs: 1001 }, { initialDelayMs: 0.5 }, { initialDelayMs: NaN },
   ])("rejects invalid policy %j", change => {
     expect(() => createProjectionPoller({ sync: vi.fn(), withdraw: vi.fn() }, { ...config, ...change })).toThrow("polling policy");
   });

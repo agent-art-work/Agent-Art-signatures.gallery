@@ -24,6 +24,10 @@ interface ChallengeRow {
   code_hash: string | null; expires_at: Date; consumed_at: Date | null;
 }
 type VerifySignature = (digest: Hex, signature: string, address: Address) => Promise<unknown>;
+type SessionOptions = { writer: ExclusiveWriter; namespaceId: string; origin: string; chainId: number; verifySignature?: VerifySignature };
+const STAGING_ORIGIN = "https://staging.signatures.gallery";
+const LOCAL_COOKIE = Object.freeze({ name: "sg_open_session", sameSite: "Lax" as const });
+const STAGING_COOKIE = Object.freeze({ name: "__Host-sg-staging", sameSite: "Strict" as const });
 
 /** Digests are private lookup values, never replacement capability URLs. */
 export function capabilityHash(value: string): string {
@@ -32,11 +36,12 @@ export function capabilityHash(value: string): string {
 }
 function sessionError(): PublicError { return new PublicError(403, "SESSION_REQUIRED", "Refresh this page and try again."); }
 function challengeError(replaced = false): PublicError { return new PublicError(409, replaced ? "CHALLENGE_REPLACED" : "CHALLENGE_EXPIRED", "Connect your wallet again."); }
-function cookieToken(cookie?: string): string | undefined {
+function cookieToken(name: string, cookie?: string): string | undefined {
   if (cookie !== undefined && cookie.length > 8192) throw new PublicError(400, "INVALID_INPUT", "Cookie header exceeds the size limit.");
-  const tokens = cookie?.split(";").map(value => value.trim()).filter(value => value.startsWith("sg_open_session=")) ?? [];
+  const prefix = `${name}=`;
+  const tokens = cookie?.split(";").map(value => value.trim()).filter(value => value.startsWith(prefix)) ?? [];
   if (tokens.length > 1) throw new PublicError(400, "INVALID_INPUT", "Ambiguous session cookie.");
-  const token = tokens[0]?.slice(16);
+  const token = tokens[0]?.slice(prefix.length);
   return isCode(token) ? token : undefined;
 }
 
@@ -45,10 +50,25 @@ function cookieToken(cookie?: string): string | undefined {
  * a hash, so call sites must compare codeHash, not expect a recoverable code.
  */
 export class PostgresWalletSessions {
+  readonly #policy: typeof LOCAL_COOKIE | typeof STAGING_COOKIE;
   private constructor(readonly writer: ExclusiveWriter, readonly namespaceId: string, readonly origin: string,
-    readonly chainId: number, readonly verifySignature: VerifySignature) {}
+    readonly chainId: number, readonly verifySignature: VerifySignature, staging: boolean) { this.#policy = staging ? STAGING_COOKIE : LOCAL_COOKIE; }
 
-  static async open(options: { writer: ExclusiveWriter; namespaceId: string; origin: string; chainId: number; verifySignature?: VerifySignature }): Promise<PostgresWalletSessions> {
+  get cookiePolicy() { return this.#policy; }
+
+  static async open(options: SessionOptions): Promise<PostgresWalletSessions> {
+    if (options.origin === STAGING_ORIGIN || options.chainId === 11155111) throw new Error("Use the explicit staging session factory.");
+    return this.#open(options, false);
+  }
+  /** Fixed host-only Secure/Strict policy; not selected from request input.
+   * No legacy cookie fallback or automatic migration of browser authority. */
+  static async openStaging(options: SessionOptions): Promise<PostgresWalletSessions> {
+    if (options.origin !== STAGING_ORIGIN || options.chainId !== 11155111) throw new Error("Invalid staging session binding.");
+    return this.#open(options, true);
+  }
+
+  static async #open(options: SessionOptions, staging: boolean): Promise<PostgresWalletSessions> {
+    options = { ...options }; // Capture the binding before the database await.
     const origin = new URL(options.origin);
     if (origin.origin !== options.origin || origin.username || origin.password || options.origin.length > 2048
       || (origin.protocol !== "https:" && !(origin.protocol === "http:" && ["127.0.0.1", "[::1]"].includes(origin.hostname)))
@@ -57,7 +77,7 @@ export class PostgresWalletSessions {
       const row = (await tx.query<{ origin: string; chain_id: string }>("SELECT origin, chain_id::text FROM open_mint.session_profiles WHERE namespace_id = $1", [options.namespaceId])).rows[0];
       if (row?.origin !== options.origin || row.chain_id !== String(options.chainId)) throw new PersistenceConflictError("Session origin/chain profile mismatch.");
     });
-    return new PostgresWalletSessions(options.writer, options.namespaceId, options.origin, options.chainId, options.verifySignature ?? requireCanonicalSignatureFrom);
+    return new PostgresWalletSessions(options.writer, options.namespaceId, options.origin, options.chainId, options.verifySignature ?? requireCanonicalSignatureFrom, staging);
   }
   async #now(tx: Transaction): Promise<Date> { return (await tx.query<{ now: Date }>("SELECT clock_timestamp() AS now")).rows[0]!.now; }
   async #row(tx: Transaction, token: string): Promise<SessionRow | undefined> {
@@ -72,7 +92,7 @@ export class PostgresWalletSessions {
   #live(row: SessionRow | undefined, now: Date): row is SessionRow { return !!row && !row.revoked && row.expires_at.getTime() > now.getTime(); }
 
   async session(cookie?: string): Promise<{ session: DurableSiteSession; created: boolean }> {
-    const token = cookieToken(cookie);
+    const token = cookieToken(this.#policy.name, cookie);
     return this.writer.transaction(async tx => {
       const now = await this.#now(tx), row = token && isCode(token) ? await this.#row(tx, token) : undefined;
       if (token && this.#live(row, now)) return { session: this.#view(row, token), created: false };
@@ -85,7 +105,7 @@ export class PostgresWalletSessions {
   }
   /** Private reads and mutations must never create a replacement session. */
   async requireSession(cookie?: string): Promise<DurableSiteSession> {
-    const token = cookieToken(cookie);
+    const token = cookieToken(this.#policy.name, cookie);
     if (!token) throw sessionError();
     return this.writer.transaction(async tx => {
       const row = await this.#row(tx, token), now = await this.#now(tx);
@@ -95,7 +115,11 @@ export class PostgresWalletSessions {
   }
   cookie(session: DurableSiteSession): string {
     capabilityHash(session.id);
-    return `sg_open_session=${session.id}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400${this.origin.startsWith("https:") ? "; Secure" : ""}`;
+    return this.#cookie(session.id, 86400);
+  }
+  clearCookie(): string { return this.#cookie("", 0); }
+  #cookie(value: string, age: number): string {
+    return `${this.#policy.name}=${value}; HttpOnly; SameSite=${this.#policy.sameSite}; Path=/; Max-Age=${age}${this.origin.startsWith("https:") ? "; Secure" : ""}`;
   }
   authorizePost(token: string, origin: string | undefined, csrf: string | undefined): Promise<void> {
     return this.writer.transaction(async tx => {

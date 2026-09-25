@@ -1,0 +1,280 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:signatures:onchain-deployment:v1",
+  "title": "Offline OnchainSignatures deployment record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifestVersion",
+    "contract",
+    "abiVersion",
+    "environment",
+    "chain",
+    "deployment",
+    "domain",
+    "constructor",
+    "roleSeparation",
+    "roleOwners",
+    "build",
+    "collection"
+  ],
+  "properties": {
+    "manifestVersion": {
+      "const": "sg-onchain-signatures-deployment-v1"
+    },
+    "contract": {
+      "const": "OnchainSignatures"
+    },
+    "abiVersion": {
+      "const": "sg-onchain-signatures-abi-v1"
+    },
+    "environment": {
+      "enum": [
+        "local-anvil",
+        "public-testnet-draft"
+      ]
+    },
+    "chain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chainId",
+        "genesisHash"
+      ],
+      "properties": {
+        "chainId": {
+          "$ref": "#/$defs/uint"
+        },
+        "genesisHash": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "address",
+        "transactionHash",
+        "blockNumber",
+        "blockHash",
+        "deployer",
+        "nonce",
+        "initcodeHash",
+        "runtimeCodeHash"
+      ],
+      "properties": {
+        "address": {
+          "$ref": "#/$defs/address"
+        },
+        "transactionHash": {
+          "$ref": "#/$defs/hash"
+        },
+        "blockNumber": {
+          "$ref": "#/$defs/uint"
+        },
+        "blockHash": {
+          "$ref": "#/$defs/hash"
+        },
+        "deployer": {
+          "$ref": "#/$defs/address"
+        },
+        "nonce": {
+          "$ref": "#/$defs/uint"
+        },
+        "initcodeHash": {
+          "$ref": "#/$defs/hash"
+        },
+        "runtimeCodeHash": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "domain": {
+      "$ref": "#/$defs/domain"
+    },
+    "constructor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "symbol",
+        "adminDelay",
+        "delayedAdmin",
+        "authorizerManager",
+        "pauser",
+        "nonceRevoker",
+        "authorizer"
+      ],
+      "properties": {
+        "name": {
+          "const": "Signatures Gallery"
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "adminDelay": {
+          "$ref": "#/$defs/uint"
+        },
+        "delayedAdmin": {
+          "$ref": "#/$defs/address"
+        },
+        "authorizerManager": {
+          "$ref": "#/$defs/address"
+        },
+        "pauser": {
+          "$ref": "#/$defs/address"
+        },
+        "nonceRevoker": {
+          "$ref": "#/$defs/address"
+        },
+        "authorizer": {
+          "$ref": "#/$defs/address"
+        }
+      }
+    },
+    "roleSeparation": {
+      "const": "six-distinct-principals-v1"
+    },
+    "roleOwners": {
+      "$ref": "#/$defs/roles"
+    },
+    "build": {
+      "$ref": "#/$defs/build"
+    },
+    "collection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "bytesSha256"
+      ],
+      "properties": {
+        "profile": {
+          "const": "sg-onchain-collection-data-v1"
+        },
+        "bytesSha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "address": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{40}$"
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{64}$"
+    },
+    "uint": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,77})$"
+    },
+    "reference": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "domain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "chainId",
+        "verifyingContract"
+      ],
+      "properties": {
+        "name": {
+          "const": "SignaturesOnchainMint"
+        },
+        "version": {
+          "const": "1"
+        },
+        "chainId": {
+          "$ref": "#/$defs/uint"
+        },
+        "verifyingContract": {
+          "$ref": "#/$defs/address"
+        }
+      }
+    },
+    "roles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deployer",
+        "delayedAdmin",
+        "authorizerManager",
+        "pauser",
+        "nonceRevoker",
+        "authorizer"
+      ],
+      "properties": {
+        "deployer": {
+          "$ref": "#/$defs/reference"
+        },
+        "delayedAdmin": {
+          "$ref": "#/$defs/reference"
+        },
+        "authorizerManager": {
+          "$ref": "#/$defs/reference"
+        },
+        "pauser": {
+          "$ref": "#/$defs/reference"
+        },
+        "nonceRevoker": {
+          "$ref": "#/$defs/reference"
+        },
+        "authorizer": {
+          "$ref": "#/$defs/reference"
+        }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "compilerVersion",
+        "sourceSha256",
+        "metadataSha256",
+        "settingsSha256",
+        "abiSha256",
+        "creationCodeHash",
+        "runtimeTemplateHash"
+      ],
+      "properties": {
+        "compilerVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "sourceSha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "metadataSha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "settingsSha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "abiSha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "creationCodeHash": {
+          "$ref": "#/$defs/hash"
+        },
+        "runtimeTemplateHash": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    }
+  }
+}

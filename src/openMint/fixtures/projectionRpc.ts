@@ -68,7 +68,7 @@ export async function projectionRpcFixture(provided?: { evidence: MintProjection
     else throw new Error("Unexpected RPC method.");
     return mutate(structuredClone(result), call);
   } })) as unknown as Parameters<typeof createProjectionObserver>[0]["rpcs"];
-  const options: Parameters<typeof createProjectionObserver>[0] = { deployment, config: { namespaceId: deployment.namespaceId, deploymentId: deployment.id,
+  const options: Parameters<typeof createProjectionObserver>[0] & { resolveMint: NonNullable<Parameters<typeof createProjectionObserver>[0]["resolveMint"]> } = { deployment, config: { namespaceId: deployment.namespaceId, deploymentId: deployment.id,
     chainId: 31337n, genesisHash: blockHash(0), deploymentBlock: { number: 10n, hash: blockHash(10) }, contract: testAddress(10),
     runtimeCodeHash: keccak256("0x6001"), authorizer: account.address, maxBlockAgeMs: 600_000, maxFutureSkewMs: 1000, evidenceTtlMs: 30_000, observationTimeoutMs: 5000,
     ...provided?.config },

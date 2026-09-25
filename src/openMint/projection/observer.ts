@@ -1,8 +1,13 @@
+import { isGenerativeProfile } from "../generativeProfiles.js";
 import { performance } from "node:perf_hooks";
 import { decodeFunctionResult, encodeFunctionData, getAddress, keccak256, numberToHex, type Hex } from "viem";
-import { PUBLIC_CHAIN_READ_ABI, PublicChainGate, type PublicChainGateConfig } from "../publicChain.js";
+import { PUBLIC_CHAIN_READ_ABI, PublicChainGate, createStagingEligibilityReader, type PublicChainGateConfig } from "../publicChain.js";
 import type { PublicChainRpc, PublicChainReadMethod } from "../publicChainRpc.js";
 import { decodeOpenSignaturesBlock, normalizeProjectionLog, OPEN_PROJECTION_TOPICS } from "./decode.js";
+import { decodeGenerativeSignaturesBlock, GENERATIVE_PROJECTION_TOPICS } from "./generativeDecode.js";
+import { createGenerativeArtworkReader, createStagingGenerativeArtworkReader } from "../generativeReads.js";
+import { GENERATIVE_MINT_ABI } from "../generativeAuthorization.js";
+import { profileForRenderer } from "../generativeInputs.js";
 import { fields, hash, MAX_BATCH_BLOCKS, MAX_BATCH_EVENTS, MAX_BLOCK_EVENTS, quantity, stable, validateBatch, validateDeployment,
   type ProjectionDeployment, type ValidatedBatch } from "./model.js";
 
@@ -81,19 +86,33 @@ export function readProjectionObservation(value: unknown, deployment: Projection
  * Only Ethereum's finalized tag promotes; counts/elapsed time never substitute.
  * One call = one bounded pass. No background loops, retries or transactions.
  */
-export function createProjectionObserver(options: {
+export interface ProjectionObserverOptions {
   deployment: ProjectionDeployment; config: PublicChainGateConfig;
   rpcs: readonly [PublicChainRpc, PublicChainRpc];
   maxHeadLag: number; maxFinalizedLag: number; maxFinalizedAgeMs: number;
-  resolveMint: Parameters<typeof decodeOpenSignaturesBlock>[0]["resolveMint"];
-}, now: () => number = Date.now) {
+  resolveMint?: Parameters<typeof decodeOpenSignaturesBlock>[0]["resolveMint"];
+}
+export function createProjectionObserver(options: ProjectionObserverOptions, now: () => number = Date.now) {
+  return projectionObserver(options, now, false);
+}
+export function createStagingProjectionObserver(options: ProjectionObserverOptions, now: () => number = Date.now) {
+  return projectionObserver(options, now, true);
+}
+function projectionObserver(options: ProjectionObserverOptions, now: () => number, staging: boolean) {
   const deployment = freeze(validateDeployment(options.deployment)), config = freeze(structuredClone(options.config));
+  const contractProfile = config.contractProfile;
+  const generative = isGenerativeProfile(contractProfile);
+  if (generative !== !!deployment.generativeRenderer || (generative && (options.resolveMint !== undefined
+    || stable(deployment.generativeRenderer) !== stable(config.generativeRenderer)))) fail();
+  const readGenerative = generative ? (staging ? createStagingGenerativeArtworkReader : createGenerativeArtworkReader)(options) : undefined;
+  const topics = generative ? GENERATIVE_PROJECTION_TOPICS : OPEN_PROJECTION_TOPICS;
   // Reuse all explicit chain-configuration validation; do not use its unminted
   // eligibility preflight to verify already-minted works.
-  new PublicChainGate(config, options.rpcs, now);
+  if (staging) createStagingEligibilityReader(config, options.rpcs, now);
+  else new PublicChainGate(config, options.rpcs, now);
   if (deployment.id !== config.deploymentId || deployment.namespaceId !== config.namespaceId || deployment.chainId !== String(config.chainId)
     || deployment.contractAddress !== config.contract.toLowerCase() || deployment.deploymentBlock !== String(config.deploymentBlock.number)
-    || deployment.deploymentBlockHash !== config.deploymentBlock.hash || typeof options.resolveMint !== "function") fail();
+    || deployment.deploymentBlockHash !== config.deploymentBlock.hash || (!generative && typeof options.resolveMint !== "function")) fail();
   const { maxHeadLag, maxFinalizedLag, maxFinalizedAgeMs, resolveMint } = options;
   for (const [v, min, max] of [[maxHeadLag, 0, 64], [maxFinalizedLag, 0, 128], [maxFinalizedAgeMs, 1, 3_600_000]]) {
     if (!Number.isSafeInteger(v) || v < min || v > max) fail();
@@ -141,9 +160,19 @@ export function createProjectionObserver(options: {
         };
         const [signer, domain] = await Promise.all([read("trustedAuthorizer"), read("eip712Domain")]);
         if (typeof signer !== "string" || getAddress(signer) !== getAddress(config.authorizer) || !Array.isArray(domain) || domain.length !== 7
-          || domain[0] !== "0x0f" || domain[1] !== "SignaturesOpenMint" || domain[2] !== "1" || domain[3] !== config.chainId
+          || domain[0] !== "0x0f" || domain[1] !== (generative ? profileForRenderer(config.generativeRenderer!).domainName : config.contractProfile === "onchain-v1" ? "SignaturesOnchainMint" : "SignaturesOpenMint") || domain[2] !== "1" || domain[3] !== config.chainId
           || getAddress(domain[4] as string) !== getAddress(config.contract) || domain[5] !== `0x${"00".repeat(32)}`
           || !Array.isArray(domain[6]) || domain[6].length) fail();
+        if (generative) {
+          const pin = config.generativeRenderer!;
+          const code = await request(r, "eth_getCode", [pin.address, selector]);
+          if (typeof code !== "string" || !/^0x(?:[0-9a-f]{2}){1,65536}$/.test(code) || keccak256(code as Hex) !== pin.runtimeCodeHash) fail();
+          for (const [name, expected] of [["renderer", getAddress(pin.address)], ["rendererIdentity", pin.identity], ["INPUT_PROFILE", profileForRenderer(config.generativeRenderer!).inputProfile]] as const) {
+            const raw = await request(r, "eth_call", [{ to: config.contract, data: encodeFunctionData({ abi: GENERATIVE_MINT_ABI, functionName: name }) }, selector]);
+            if (typeof raw !== "string" || raw.length > 4098 || !/^0x(?:[0-9a-f]{2})+$/.test(raw)
+              || decodeFunctionResult({ abi: GENERATIVE_MINT_ABI, functionName: name, data: raw as Hex }) !== expected) fail();
+          }
+        }
       }));
     };
     const work = async () => {
@@ -181,9 +210,9 @@ export function createProjectionObserver(options: {
           }
           await identity(block);
           const all = await Promise.all(rpcs.map(async r => {
-            const raw = await request(r, "eth_getLogs", [{ address: config.contract, blockHash: block.hash, topics: [OPEN_PROJECTION_TOPICS] }]);
+            const raw = await request(r, "eth_getLogs", [{ address: config.contract, blockHash: block.hash, topics: [topics] }]);
             if (!Array.isArray(raw) || raw.length > MAX_BLOCK_EVENTS) return fail();
-            return raw.map(log => normalizeProjectionLog(log, deployment, block));
+            return raw.map(log => normalizeProjectionLog(log, deployment, block, topics));
           }));
           if (stable(all[0]) !== stable(all[1]) || (totalEvents += all[0].length) > MAX_BATCH_EVENTS) fail();
           const logs = all[0];
@@ -197,14 +226,16 @@ export function createProjectionObserver(options: {
                 || !Array.isArray(receipt.logs) || receipt.logs.length > 1024) fail();
               const relevant = (receipt.logs as unknown[]).filter(raw => {
                 const l = record(raw);
-                return l.address === deployment.contractAddress && Array.isArray(l.topics) && OPEN_PROJECTION_TOPICS.includes(l.topics[0]);
-              }).map(l => normalizeProjectionLog(l, deployment, block));
+                return l.address === deployment.contractAddress && Array.isArray(l.topics) && topics.includes(l.topics[0]);
+              }).map(l => normalizeProjectionLog(l, deployment, block, topics));
               if (stable(relevant) !== stable(expected)) fail();
             }));
           }
-          const decoded = await decodeOpenSignaturesBlock({ deployment, authorizer: config.authorizer,
-            block: { number: block.number, hash: block.hash, parentHash: block.parentHash, timestamp: block.timestamp }, logs,
-            timeoutMs: config.observationTimeoutMs, signal: controller.signal, resolveMint });
+          const common = { deployment, block: { number: block.number, hash: block.hash, parentHash: block.parentHash, timestamp: block.timestamp }, logs,
+            timeoutMs: config.observationTimeoutMs, signal: controller.signal };
+          const decoded = readGenerative ? await decodeGenerativeSignaturesBlock({ ...common, read: readGenerative })
+            : await decodeOpenSignaturesBlock({ ...common, authorizer: config.authorizer,
+              contractProfile: contractProfile as "external-v1" | "onchain-v1" | undefined, resolveMint: resolveMint! });
           check(); blocks.push(decoded.block); previous = block;
         }
         batch = validateBatch({ chainId: deployment.chainId, contractAddress: deployment.contractAddress, manifestHash: deployment.manifestHash, blocks }, deployment);

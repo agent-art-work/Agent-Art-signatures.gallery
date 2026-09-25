@@ -48,10 +48,12 @@ export function createProjectionReadHandler(reads: ProjectionReads, artwork?: Pi
         const reveal = result.state === "confirmed" || result.state === "confirming";
         // A corrupt or unavailable record never becomes an unminted result.
         const item = result.item, usable = reveal && item && item.availability !== "quarantined" && item.handle === handle
-          && item.tokenId === BigInt(handleDigest(handle)).toString() && item.artifactDigest && item.transactionHash;
+          && item.tokenId === BigInt(handleDigest(handle)).toString() && item.transactionHash
+          && (item.inputDigest ? item.rendererIdentity && !item.artifactDigest && !item.tokenURIHash : item.artifactDigest && !item.rendererIdentity);
         json(res, usable ? 200 : 503, { handle, tokenId: BigInt(handleDigest(handle)).toString(),
           state: usable ? result.state === "confirmed" ? "minted" : "confirming" : "unknown",
-          ...(usable ? { artifactDigest: item.artifactDigest, transactionHash: item.transactionHash } : {}) });
+          ...(usable ? { ...(item.inputDigest ? { inputDigest: item.inputDigest, rendererIdentity: item.rendererIdentity }
+            : { artifactDigest: item.artifactDigest }), transactionHash: item.transactionHash } : {}) });
         return true;
       }
       const query = new URL(raw, "https://route.invalid").searchParams;
@@ -71,7 +73,8 @@ export function createProjectionReadHandler(reads: ProjectionReads, artwork?: Pi
         items: (confirmed ? result.items : []).map(item => ({ tokenId: item.tokenId, availability: item.availability,
           ...(item.availability === "quarantined" ? {} : { handle: item.handle, mbti: item.mbti,
             originalRecipient: item.originalRecipient, currentOwner: item.currentOwner,
-            assessmentDigest: item.assessmentDigest, artifactDigest: item.artifactDigest, tokenURIHash: item.tokenURIHash, transactionHash: item.transactionHash }) })),
+            assessmentDigest: item.assessmentDigest, artifactDigest: item.artifactDigest, tokenURIHash: item.tokenURIHash, transactionHash: item.transactionHash,
+            ...(item.inputDigest ? { inputDigest: item.inputDigest, rendererIdentity: item.rendererIdentity, renderHandle: item.renderHandle } : {}) }) })),
         ...(confirmed && result.nextCursor ? { nextCursor: result.nextCursor } : {}) });
     } catch (error) {
       req.resume();

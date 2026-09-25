@@ -1,0 +1,122 @@
+{
+  "schema": "sg-generative-release-lock-v1",
+  "status": "candidate-not-approved",
+  "renderer": "sg-evm-renderer-1.0.0-rc.1",
+  "collection": "sg-generative-mint-1.0.0-rc.1",
+  "inputProfile": "sg-generative-inputs-v1-rc1",
+  "domainName": "SignaturesGenerativeMintRC1",
+  "domainVersion": "1",
+  "oracle": {
+    "rendererVersion": "sg-renderer-2.0.0",
+    "upstream": {
+      "repository": "https://github.com/inshell-art/agent-art-Signature-prototype",
+      "tag": "v2.0.0",
+      "tagObject": "84992e64634ab8d35461122776b53d8da9bd1ccf",
+      "commit": "4bcc513b53edac6961e385604cd9fcc3ac913cbb"
+    },
+    "lockSha256": "5a4c428860205393bb1ae734e5e22cf33aa8a9a9663016217d43cb2a34dc8286"
+  },
+  "geometryAncestorSha256": "6af0fc0f12fd6576b2d750ced4e9de2be4b5dee15343c0ee26ab847befad80e1",
+  "foundryConfigSha256": "c8da2e4411e8c3ddd626ec2381f90331c02f978da8071bd7322369afe86092a6",
+  "builds": {
+    "SignatureRendererV1RC1": {
+      "compilerVersion": "0.8.30+commit.73712a01",
+      "sourceSha256": "12d813297510b7e0c84997e6b5f0518035c0ada8e51a73ed57d822fb75164368",
+      "metadataSha256": "0bd9589f8c985fd571822054016fbbe9718eb6359d9d3a6b86ecdc71f15f38a8",
+      "settingsSha256": "54c2d9610f6766e5c82ce28563d06442682c6835a8bd03b5edb88634944384f6",
+      "abiSha256": "c201c2b9326d136d5614e99db42394041655bc0398fbf2d488fc22007121cee0",
+      "creationCodeHash": "0xd8d43cfeb4e49c88cfb5ff51be628acfa95a1fe683cb21fa3f63fc83cab038cd",
+      "runtimeTemplateHash": "0xf6cb0e67c29b58ec55be33aba097b89e4877c13721739d8972d98f16053d7bec",
+      "creationBytes": 14764,
+      "runtimeBytes": 14736,
+      "immutableReferences": []
+    },
+    "GenerativeSignaturesV1RC1": {
+      "compilerVersion": "0.8.30+commit.73712a01",
+      "sourceSha256": "0875b3586dc25bd61321465b79aaf1592c593dc331e2002b87e23e209c6d16da",
+      "metadataSha256": "69dc0f50be8eda024bb88b8378f769af14a97da567da2dba16ab65ca3d0225cb",
+      "settingsSha256": "0785c01ae045411dc2e4de8508e8cc3133fe5ce0e405b8fa42c5b44b45599119",
+      "abiSha256": "a3fb3c2cc43a24e7bcac2691ef76138162d788c94c2658d5dfd1bebcd33efaca",
+      "creationCodeHash": "0xdc1dd4c372cf285bbcb2d198d3fcb8ccfac76534c29eb2372855a5080dc4de72",
+      "runtimeTemplateHash": "0x2904e5c725d0221cffbe194599f4f0e7e21b88d2a91214bb72466c310e49b19e",
+      "creationBytes": 33444,
+      "runtimeBytes": 16319,
+      "immutableReferences": [
+        [
+          {
+            "start": 1692,
+            "length": 32
+          },
+          {
+            "start": 3164,
+            "length": 32
+          },
+          {
+            "start": 4217,
+            "length": 32
+          },
+          {
+            "start": 4414,
+            "length": 32
+          }
+        ],
+        [
+          {
+            "start": 1994,
+            "length": 32
+          },
+          {
+            "start": 4638,
+            "length": 32
+          },
+          {
+            "start": 4865,
+            "length": 32
+          }
+        ],
+        [
+          {
+            "start": 7727,
+            "length": 32
+          }
+        ],
+        [
+          {
+            "start": 7772,
+            "length": 32
+          }
+        ],
+        [
+          {
+            "start": 11510,
+            "length": 32
+          }
+        ],
+        [
+          {
+            "start": 11552,
+            "length": 32
+          }
+        ],
+        [
+          {
+            "start": 11594,
+            "length": 32
+          }
+        ],
+        [
+          {
+            "start": 11675,
+            "length": 32
+          }
+        ],
+        [
+          {
+            "start": 11715,
+            "length": 32
+          }
+        ]
+      ]
+    }
+  }
+}

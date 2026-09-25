@@ -75,6 +75,61 @@ export function preparationRuntimeGrants(role: string): string {
 export function projectionRuntimeGrants(role: string): string {
   return runtimeGrants(role, PROJECTION_RUNTIME_PRIVILEGES);
 }
+/** Generative preparation + projection, without any finished-artifact store,
+ * publication or output-authorization permissions. No operator policy writes. */
+export const GENERATIVE_RUNTIME_PRIVILEGES: readonly RuntimeTablePrivileges[] = Object.freeze([
+  ...FOUNDATION_RUNTIME_PRIVILEGES,
+  ...PREPARATION_RUNTIME_PRIVILEGES.filter(t => t.name === "requests" || t.name === "request_profiles"),
+  ...PROJECTION_RUNTIME_PRIVILEGES.filter(t => t.name.startsWith("projection_")),
+  ...([
+    ["generative_input_profiles", "namespace_id deployment_id profile renderer_address renderer_code_hash renderer_identity", false, ""],
+    ["generative_inputs", "namespace_id deployment_id handle digest payload", true, ""],
+    ["generative_issuance_profiles", "namespace_id deployment_id enabled lifetime_seconds signer_timeout_ms max_evidence_age_ms max_block_age_ms max_future_skew_ms", false, ""],
+    ["generative_authorizations", "namespace_id authorization_id deployment_id handle request_id session_hash session_generation recipient assessment_id input_digest nonce authorization_digest issued_at deadline payload state signing_epoch", true, "state signing_epoch"],
+    ["generative_authorization_heads", "namespace_id deployment_id handle authorization_id", true, ""],
+    ["generative_authorization_signatures", "namespace_id authorization_id signature recorded_at", true, ""],
+  ] as const).map(([name, columns, insert, updates]) => Object.freeze({ name, columns: Object.freeze(columns.split(" ").sort()), insert,
+    updates: Object.freeze(updates ? updates.split(" ") : []) })),
+]);
+export function generativeRuntimeGrants(role: string): string {
+  return runtimeGrants(role, GENERATIVE_RUNTIME_PRIVILEGES);
+}
+/** Browser dispatch recovery adds only immutable plans, fences and observations. */
+export const GENERATIVE_BROWSER_RUNTIME_PRIVILEGES: readonly RuntimeTablePrivileges[] = Object.freeze([
+  ...GENERATIVE_RUNTIME_PRIVILEGES,
+  ...[
+    ["wallet_mint_plans", "namespace_id deployment_id request_id authorization_id recipient wallet_nonce payload nonce_active"],
+    ["wallet_mint_dispatches", "namespace_id request_id attempt permit_hash owner_epoch dispatched_at"],
+    ["wallet_mint_reports", "namespace_id request_id attempt outcome transaction_hash recorded_at"],
+  ].map(([name, columns]) => Object.freeze({ name, columns: Object.freeze(columns.split(" ").sort()), insert: true, updates: Object.freeze([]) })),
+]);
+export function generativeBrowserRuntimeGrants(role: string): string { return runtimeGrants(role, GENERATIVE_BROWSER_RUNTIME_PRIVILEGES); }
+/** Offline operator only. No signer, provider dispatch, policy toggle, new
+ * authorization, session mutation or historical-row deletion privileges. */
+export const GENERATIVE_RECOVERY_PRIVILEGES: readonly RuntimeTablePrivileges[] = Object.freeze([
+  ...GENERATIVE_BROWSER_RUNTIME_PRIVILEGES.filter(t => ["schema_version", "writer_epoch", "namespaces", "session_profiles", "request_profiles",
+    "assessment_attempts", "assessments", "generative_input_profiles", "generative_inputs", "generative_issuance_profiles",
+    "generative_authorizations", "generative_authorization_heads", "generative_authorization_signatures",
+    "wallet_mint_plans", "wallet_mint_dispatches", "wallet_mint_reports"].includes(t.name)).map(t => Object.freeze({ ...t, insert: false,
+    updates: Object.freeze(t.name === "writer_epoch" ? ["epoch"] : t.name === "wallet_mint_plans" ? ["nonce_active"]
+      : t.name === "generative_issuance_profiles" ? ["namespace_id"] : []),
+    delete: t.name === "generative_authorization_heads" })),
+  Object.freeze({ name: "generative_recoveries", columns: Object.freeze("namespace_id recovery_id deployment_id authorization_id request_id snapshot_hash finalized_number finalized_hash finalized_timestamp evidence owner_epoch recorded_at".split(" ").sort()), insert: true, updates: Object.freeze([]) }),
+]);
+export function generativeRecoveryGrants(role: string): string { return runtimeGrants(role, GENERATIVE_RECOVERY_PRIVILEGES); }
+/** Sepolia retirement principal, deliberately distinct from local recovery. */
+export const STAGING_RECOVERY_PRIVILEGES: readonly RuntimeTablePrivileges[] = Object.freeze([
+  ...GENERATIVE_BROWSER_RUNTIME_PRIVILEGES.filter(t => ["schema_version", "writer_epoch", "namespaces", "budget_policies",
+    "request_profiles", "assessment_attempts", "assessments", "generative_input_profiles", "generative_inputs",
+    "generative_issuance_profiles", "generative_authorizations", "generative_authorization_heads",
+    "generative_authorization_signatures", "wallet_mint_plans", "wallet_mint_dispatches", "wallet_mint_reports",
+    "projection_checkpoints"].includes(t.name)).map(t => Object.freeze({ ...t, insert: false,
+      updates: Object.freeze(t.name === "writer_epoch" ? ["epoch"] : t.name === "wallet_mint_plans" ? ["nonce_active"]
+        : ["budget_policies", "generative_issuance_profiles"].includes(t.name) ? ["namespace_id"] : []),
+      delete: t.name === "generative_authorization_heads" })),
+  Object.freeze({ name: "staging_generative_recoveries", columns: Object.freeze("namespace_id recovery_id deployment_id authorization_id request_id authorization_digest snapshot_hash approval_revision target_digest database_binding active_policy_digest operator_reference evidence_reference finalized_number finalized_hash finalized_timestamp latest_number latest_hash latest_timestamp source_ids observed_at valid_until evidence owner_epoch recorded_at".split(" ").sort()), insert: true, updates: Object.freeze([]) }),
+]);
+export function stagingRecoveryGrants(role: string): string { return runtimeGrants(role, STAGING_RECOVERY_PRIVILEGES); }
 function runtimeGrants(role: string, profile: readonly RuntimeTablePrivileges[]): string {
   if (!/^[a-z][a-z0-9_]{0,62}$/.test(role) || role.startsWith("pg_") || role === "public") throw new Error("Invalid dedicated runtime role.");
   const target = `"${role}"`;

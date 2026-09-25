@@ -16,10 +16,11 @@ class Element {
   append(...nodes: Element[]) { this.nodes.push(...nodes); }
   text(): string { return this.textContent + this.nodes.map(node => node.text()).join(""); }
 }
-function setup(options: { dataset?: Record<string, string>; missing?: string; fetch?: typeof fetch; absent?: boolean } = {}) {
+function setup(options: { dataset?: Record<string, string>; missing?: string; fetch?: typeof fetch; absent?: boolean; generative?: boolean } = {}) {
   vi.useFakeTimers();
   const root = new Element();
   root.dataset = { revealHandle: "alice", revealToken: "123", revealArtifact: digest, mintState: "confirming", ...options.dataset };
+  if (options.generative) { delete root.dataset.revealArtifact; root.dataset.revealInput = digest; root.dataset.revealRenderer = `0x${"b".repeat(64)}`; }
   for (const key of ["mint-state-label", "reveal-feedback", "reveal-artwork", "reveal-provenance"]) root.children[`[data-${key}]`] = new Element();
   if (options.missing) delete root.children[options.missing];
   const events: Record<string, (event?: any) => void> = {};
@@ -45,6 +46,18 @@ const flush = async () => { for (let i = 0; i < 100; i++) await Promise.resolve(
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 
 describe("read-only early reveal monitoring", () => {
+  it("binds generative Confirming to inputs and renderer, never an old artifact hash", async () => {
+    const f = setup({ generative: true });
+    const state = { handle: "alice", tokenId: "123", state: "confirming", inputDigest: digest, rendererIdentity: `0x${"b".repeat(64)}` };
+    await flush(); f.set(state); await vi.advanceTimersByTimeAsync(10000); expect(f.badge.textContent).toBe("Confirming");
+    f.set({ ...state, state: "minted", rendererIdentity: digest }); await vi.advanceTimersByTimeAsync(5000);
+    expect(f.badge.textContent).toBe("Confirmation unavailable"); expect(f.reload).not.toHaveBeenCalled();
+    f.set({ ...state, state: "minted", artifactDigest: digest }); await vi.advanceTimersByTimeAsync(10000); expect(f.reload).not.toHaveBeenCalled();
+    f.set({ ...state, state: "minted" }); await vi.advanceTimersByTimeAsync(20000); expect(f.reload).toHaveBeenCalledOnce();
+  });
+  it("rejects mixed input/artifact markup without fetching", async () => {
+    const f = setup({ dataset: { revealInput: digest, revealRenderer: digest } }); await flush(); expect(f.fetcher).not.toHaveBeenCalled();
+  });
   it("polls only a bounded, uncached, same-origin read; no wallet/session work or duplicate binding", async () => {
     const f = setup(); await flush(); f.run();
     expect(f.badge.textContent).toBe("Confirming");

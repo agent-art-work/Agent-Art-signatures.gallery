@@ -4,6 +4,8 @@ import { decodeFunctionData, encodeFunctionResult, keccak256, numberToHex, type 
 import { openMintHandleKey, openMintTokenURIHash, type OpenMintAuthorizationInput } from "./authorization.js";
 import { PUBLIC_CHAIN_READ_ABI, PublicChainGate, readPublicChainEligibility, type PublicChainGateConfig } from "./publicChain.js";
 import { createPublicChainHttpRpc, type PublicChainReadMethod, type PublicChainRpc } from "./publicChainRpc.js";
+import { privateKeyToAccount } from "viem/accounts";
+import { onchainMintDigest, onchainMintTypedData } from "./onchainAuthorization.js";
 
 const bytes32 = (byte: string): Hex => `0x${byte.repeat(32)}`;
 const contract = "0x1111111111111111111111111111111111111111" as Address;
@@ -60,6 +62,22 @@ function fixture() {
 afterEach(() => vi.useRealTimers());
 
 describe("public chain eligibility gate (mocked independent sources)", () => {
+  it("requires an explicitly selected on-chain domain and verifies its signature and digest", async () => {
+    const f = fixture(); f.config.contractProfile = "onchain-v1";
+    const gate = new PublicChainGate(f.config, f.rpcs, () => f.expected().now);
+    const d = { chainId: 31337n, verifyingContract: contract }, onchainDigest = onchainMintDigest(d, authorization);
+    const key = privateKeyToAccount(`0x${"1".padStart(64, "0")}`);
+    const onchainSignature = await key.signTypedData(onchainMintTypedData(d, authorization));
+    f.overrides.push((request, result) => readName(request) === "eip712Domain"
+      ? encoded("eip712Domain", ["0x0f", "SignaturesOnchainMint", "1", 31337n, contract, bytes32("00"), []])
+      : readName(request) === "authorizationDigest" ? encoded("authorizationDigest", onchainDigest) : result);
+    const result = await gate.verifyAuthorization({ ...signedInput(), signature: onchainSignature });
+    expect(result.authorizationDigest).toBe(onchainDigest);
+    expect(readPublicChainEligibility(result.eligibility, f.expected()).contractProfile).toBe("onchain-v1");
+    await expect(gate.verifyAuthorization(signedInput())).rejects.toThrow("Invalid authorizer");
+    await expect(f.gate.preflight(input())).rejects.toThrow("domain disagrees");
+    expect(() => new PublicChainGate({ ...f.config, contractProfile: "auto" as never }, f.rpcs)).toThrow("Unknown contract profile");
+  });
   it("pins every state read to exactly one explicit canonical block and issues immutable evidence", async () => {
     const f = fixture(), witness = await f.gate.preflight(input());
     const evidence = readPublicChainEligibility(witness, f.expected());
@@ -250,6 +268,19 @@ describe("bounded actual viem HTTP read adapter (mock fetch only)", () => {
   it("rejects unsupported canonical hash selectors instead of falling back to numeric/latest", async () => {
     const f = transport(async (_url, init) => { const body = JSON.parse(String(init?.body)); return Response.json({ jsonrpc: "2.0", id: body.id, error: { code: -32602, message: "EIP-1898 unsupported" } }); });
     await expect(f.rpc.request("eth_getCode", [recipient, { blockHash: block.hash, requireCanonical: true }], new AbortController().signal)).rejects.toThrow();
+    expect(f.fetchRpc).toHaveBeenCalledOnce();
+  });
+  it("allows bounded read-only deployment transaction lookup without opening any signing method", async () => {
+    const transactionHash = "0x" + "12".repeat(32), value = { hash: transactionHash, type: "0x2" };
+    const f = transport(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.method).toBe("eth_getTransactionByHash"); expect(body.params).toEqual([transactionHash]);
+      return Response.json({ jsonrpc: "2.0", id: body.id, result: value });
+    }, 1000);
+    await expect(f.rpc.request("eth_getTransactionByHash", [transactionHash], new AbortController().signal)).resolves.toEqual(value);
+    for (const method of ["eth_sendTransaction", "eth_sendRawTransaction", "eth_sign", "personal_sign", "wallet_addEthereumChain"]) {
+      await expect(f.rpc.request(method as PublicChainReadMethod, [], new AbortController().signal)).rejects.toThrow("read-only");
+    }
     expect(f.fetchRpc).toHaveBeenCalledOnce();
   });
   it("never retries HTTP failures", async () => {

@@ -4,7 +4,7 @@ import { getAddress, type Address } from "viem";
 import { AssessmentCoordinator, type Assessment, type AssessmentProvider } from "../assessment.js";
 import type { AssessmentExecution, ProviderLeg } from "../assessmentOperations.js";
 import { ProviderResponseInvalidError } from "../grok.js";
-import { readPublicChainEligibility } from "../publicChain.js";
+import { readPublicChainEligibility, type PublicChainEvidence } from "../publicChain.js";
 import { isCode } from "../security.js";
 import { XIdentityResponseInvalidError, type XIdentityResolver } from "../xIdentity.js";
 import { PostgresMintRequests } from "./requests.js";
@@ -25,11 +25,30 @@ export interface AssessmentPreflight {
 }
 export type AssessmentWorkerResult = { readonly kind: "accepted"; readonly assessment: Assessment; readonly reused: boolean }
   | { readonly kind: "terminal"; readonly outcome: AssessmentTerminal };
+/** Trusted composition, not a browser-selected callback or approval. */
+export interface WorkerAdmission {
+  readonly requests: PostgresMintRequests;
+  reuse(input: AssessmentWorkerIntent, signal: AbortSignal): Promise<Assessment>;
+  dispatch<T>(input: AssessmentWorkerIntent, leg: ProviderLeg, model: string, signal: AbortSignal,
+    effect: (dispatch: NonNullable<AssessmentExecution["dispatch"]>) => Promise<T>): Promise<T>;
+  /** Optional for historical local callers; mandatory for staging. Database-
+   * only check inside the writer transaction, before AND after initial claim. */
+  validateClaim?(tx: Transaction, model: string, signal: AbortSignal): Promise<void>;
+}
 export class AssessmentWorkerBlockedError extends Error {
   constructor(readonly code: string) { super(code); this.name = "AssessmentWorkerBlockedError"; }
 }
 export class AssessmentWorkerDeadlineError extends Error {
   constructor() { super("Assessment execution deadline exceeded; no late dispatch or result is accepted."); this.name = "AssessmentWorkerDeadlineError"; }
+}
+export class AssessmentWorkerCancelledError extends Error {
+  constructor() { super("Assessment execution cancelled; no late dispatch or result is accepted."); this.name = "AssessmentWorkerCancelledError"; }
+}
+export interface AssessmentWorkerOptions {
+  timeoutMs: number;
+  provider?: AssessmentProvider; identityResolver?: XIdentityResolver;
+  refreshEligibility?: (input: AssessmentPreflight, signal: AbortSignal) => Promise<unknown>;
+  admission?: WorkerAdmission;
 }
 interface Captured extends AssessmentWorkerIntent { sessionHash: string; codeHash: string }
 interface Session {
@@ -45,20 +64,20 @@ const json = (value: unknown): Buffer => Buffer.from(JSON.stringify(value));
  * Injected generation transports must implement their own bounded request and
  * receipt protocol; they are server-owned, never request-selected callbacks.
  */
-export class PostgresAssessmentWorker {
+class AssessmentWorkerCore {
   readonly #provider?: AssessmentProvider;
   readonly #resolver?: XIdentityResolver;
   readonly #refresh?: (input: AssessmentPreflight, signal: AbortSignal) => Promise<unknown>;
   readonly #timeoutMs: number;
-  constructor(readonly requests: PostgresMintRequests, input: {
-    timeoutMs: number;
-    provider?: AssessmentProvider; identityResolver?: XIdentityResolver;
-    refreshEligibility?: (input: AssessmentPreflight, signal: AbortSignal) => Promise<unknown>;
-  }) {
+  readonly admission?: WorkerAdmission;
+  constructor(readonly requests: PostgresMintRequests, input: AssessmentWorkerOptions) {
     const namespace = requests.repository.namespace;
-    if (!["local-fixture", "local-real"].includes(namespace.profile)) blocked("PUBLIC_WORKER_DISABLED");
     if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1 || input.timeoutMs > 180000) blocked("INVALID_EXECUTION_DEADLINE");
     this.#timeoutMs = input.timeoutMs;
+    if (input.admission && input.admission.requests !== requests) blocked("ADMISSION_PROFILE_MISMATCH");
+    // Local runtime uses this object's identity to reject crossed admission
+    // instances. The separate staging composition supplies a frozen controller.
+    this.admission = input.admission;
     const provider = input.provider, resolver = input.identityResolver;
     if (provider) this.#provider = Object.freeze({ provenance: provider.provenance, model: provider.model, assess: provider.assess.bind(provider) });
     if (resolver) this.#resolver = Object.freeze({ provenance: resolver.provenance, resolve: resolver.resolve.bind(resolver) });
@@ -66,7 +85,7 @@ export class PostgresAssessmentWorker {
     if ((provider && provider.provenance !== namespace.provenance)
       || (resolver && (resolver.provenance === "development-fixture") !== (namespace.provenance === "development-fixture"))) blocked("PROVIDER_PROFILE_MISMATCH");
   }
-  async #context(tx: Transaction, input: Captured): Promise<{ request: Request; now: number }> {
+  async #context(tx: Transaction, input: Captured): Promise<{ request: Request; now: number; validUntil: number }> {
     const namespace = this.requests.repository.namespace.id;
     const now = (await tx.query<{ now: Date }>("SELECT clock_timestamp() AS now")).rows[0]!.now.getTime();
     const session = (await tx.query<Session>("SELECT *, generation::text FROM open_mint.sessions WHERE namespace_id=$1 AND session_hash=$2 FOR UPDATE", [namespace, input.sessionHash])).rows[0];
@@ -79,9 +98,9 @@ export class PostgresAssessmentWorker {
     if (session.generation !== input.sessionGeneration || session.wallet !== request.wallet) blocked("WALLET_CHANGED");
     if (session.proof_wallet !== request.wallet || !session.proof_expires_at || session.proof_expires_at.getTime() <= now || session.active_challenge_hash
       || (session.proof_code_hash !== null && session.proof_code_hash !== input.codeHash)) blocked("WALLET_PROOF_REQUIRED");
-    return { request, now };
+    return { request, now, validUntil: Math.min(request.expires_at.getTime(), session.expires_at.getTime(), session.proof_expires_at!.getTime()) };
   }
-  #chain(witness: unknown, request: Request, now: number): void {
+  #chain(witness: unknown, request: Request, now: number): PublicChainEvidence {
     const p = this.requests.profile;
     let evidence;
     try { evidence = readPublicChainEligibility(witness, { namespaceId: this.requests.repository.namespace.id,
@@ -94,23 +113,40 @@ export class PostgresAssessmentWorker {
     const blockTime = Number(evidence.block.timestamp) * 1000;
     if (now - evidence.observedAt >= p.max_evidence_age_ms || now - blockTime >= p.max_block_age_ms
       || blockTime - now > p.max_future_skew_ms) blocked("CHAIN_UNAVAILABLE");
+    return evidence;
   }
-  async run(value: AssessmentWorkerIntent): Promise<AssessmentWorkerResult> {
+  /** Internal database-only adapter boundary. Reuses the worker's actual
+   * session/proof/request/chain checks; not an HTTP or paid execution method.
+   * Caller must use this worker's repository execution transaction. */
+  async admissionContext(tx: Transaction, value: AssessmentWorkerIntent): Promise<{ request: Request; now: number; validUntil: number; evidence: PublicChainEvidence }> {
+    const input: Captured = { code: value.code, sessionToken: value.sessionToken, sessionGeneration: value.sessionGeneration,
+      origin: value.origin, csrf: value.csrf, eligibility: value.eligibility, codeHash: capabilityHash(value.code), sessionHash: capabilityHash(value.sessionToken) };
+    if (!/^(0|[1-9][0-9]{0,18})$/.test(input.sessionGeneration)) blocked("WALLET_CHANGED");
+    const context = await this.#context(tx, input), evidence = this.#chain(value.eligibility, context.request, context.now);
+    return { ...context, evidence, validUntil: Math.min(context.validUntil, evidence.validUntil,
+      evidence.observedAt + this.requests.profile.max_evidence_age_ms, Number(evidence.block.timestamp) * 1000 + this.requests.profile.max_block_age_ms) };
+  }
+  async run(value: AssessmentWorkerIntent, signal = new AbortController().signal): Promise<AssessmentWorkerResult> {
     const input: Captured = { code: value.code, sessionToken: value.sessionToken, sessionGeneration: value.sessionGeneration,
       origin: value.origin, csrf: value.csrf, eligibility: value.eligibility, codeHash: capabilityHash(value.code), sessionHash: capabilityHash(value.sessionToken) };
     if (!/^(0|[1-9][0-9]{0,18})$/.test(input.sessionGeneration)) blocked("WALLET_CHANGED");
     const repository = this.requests.repository, writer = repository.writer;
     const started = performance.now(), controller = new AbortController();
-    let active = true, timedOut = false, storageFailed = false, ownedAttempt: string | undefined;
+    let active = true, timedOut = false, cancelled = false, storageFailed = false, ownedAttempt: string | undefined;
     let pendingClaim: Promise<{ request: Request; accepted: Assessment | undefined }> | undefined;
     const expire = () => { active = false; timedOut = true; controller.abort(); };
     const assertActive = () => {
       if (performance.now() - started >= this.#timeoutMs) expire();
-      if (!active) { if (timedOut) throw new AssessmentWorkerDeadlineError(); blocked("EXECUTION_FINISHED"); }
+      if (!active) { if (cancelled) throw new AssessmentWorkerCancelledError(); if (timedOut) throw new AssessmentWorkerDeadlineError(); blocked("EXECUTION_FINISHED"); }
       writer.assertHealthy();
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { expire(); reject(new AssessmentWorkerDeadlineError()); }, this.#timeoutMs); });
+    let cancel!: () => void;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => { expire(); reject(new AssessmentWorkerDeadlineError()); }, this.#timeoutMs);
+      cancel = () => { active = false; cancelled = true; controller.abort(); reject(new AssessmentWorkerCancelledError()); };
+      signal.addEventListener("abort", cancel, { once: true }); if (signal.aborted) cancel();
+    });
     const work = async (): Promise<AssessmentWorkerResult> => {
     pendingClaim = repository.executionTransaction(async (tx, execution) => {
       assertActive();
@@ -122,7 +158,9 @@ export class PostgresAssessmentWorker {
       } else {
         if (!request.attempt_id || request.assessment_id !== null) throw new PersistenceConflictError("Request has no admitted initial attempt.");
         if (!this.#provider || !this.#resolver || !this.#refresh) blocked("GENERATION_NOT_CONFIGURED");
+        await this.admission?.validateClaim?.(tx, this.#provider!.model, controller.signal); assertActive();
         await execution.claimInitial(request.attempt_id, { handle: request.handle, model: this.#provider!.model });
+        await this.admission?.validateClaim?.(tx, this.#provider!.model, controller.signal); assertActive();
       }
       const end = await this.#context(tx, input); this.#chain(input.eligibility, end.request, end.now);
       assertActive();
@@ -134,9 +172,10 @@ export class PostgresAssessmentWorker {
       return claim;
     });
     const claim = await pendingClaim; assertActive();
-    if (claim.accepted) return { kind: "accepted", assessment: claim.accepted, reused: true };
+    if (claim.accepted) return { kind: "accepted", assessment: this.admission ? await this.admission.reuse(input, controller.signal) : claim.accepted, reused: true };
     const request = claim.request, id = request.attempt_id!;
-    let leg: ProviderLeg | undefined, terminal: AssessmentTerminal | undefined, accepted: Assessment | undefined;
+    let leg: ProviderLeg | undefined, terminal: AssessmentTerminal | undefined, accepted: Assessment | undefined, semanticFailure = false;
+    let preparedLeg: { leg: ProviderLeg; input: AssessmentWorkerIntent } | undefined;
     const progress: { stage: "claimed" | "identity-returned" | "identity-verified" | "provider-returned" | "accepted" } = { stage: "claimed" };
     const persist = async <T>(work: () => Promise<T>): Promise<T> => {
       assertActive();
@@ -149,6 +188,12 @@ export class PostgresAssessmentWorker {
         const witness = await this.#refresh!(Object.freeze({ namespaceId: repository.namespace.id, deploymentId: this.requests.profile.deployment_id,
           handle: request.handle, recipient: getAddress(request.wallet), leg: next }), controller.signal);
         assertActive();
+        if (this.admission) {
+          // The gate must encompass the actual provider call, not return a
+          // checkpoint from a completed (and therefore expired) gate execution.
+          preparedLeg = { leg: next, input: { ...input, eligibility: witness } };
+          return;
+        }
         await repository.executionTransaction(async (tx, operations) => {
           assertActive();
           const context = await this.#context(tx, input); this.#chain(witness, context.request, context.now);
@@ -168,15 +213,29 @@ export class PostgresAssessmentWorker {
       },
       assessmentPersisted: async assessment => { assertActive(); if (accepted?.digest !== assessment.digest) throw new PersistenceConflictError("Worker accepted linkage mismatch."); },
     };
+    const dispatch = async <T>(next: ProviderLeg, call: (execution: AssessmentExecution) => Promise<T>): Promise<T> => {
+      assertActive();
+      if (!this.admission) { if (leg !== next) blocked("DISPATCH_REQUIRED"); return call(execution); }
+      const prepared = preparedLeg; preparedLeg = undefined;
+      if (!prepared || prepared.leg !== next) blocked("DISPATCH_REQUIRED");
+      return this.admission.dispatch(prepared!.input, next, this.#provider!.model, controller.signal, checkpoint => {
+        // Called only after the gate acknowledged the durable leg fence.
+        assertActive(); leg = next;
+        return call({ ...execution, dispatch: checkpoint }).catch(error => {
+          // Admission sanitizes thrown errors. Retain only this boolean, not a
+          // provider body/secret, for terminal classification after its guard.
+          semanticFailure = error instanceof ProviderResponseInvalidError || error instanceof XIdentityResponseInvalidError;
+          throw error;
+        });
+      });
+    };
     // A fresh coordinator has no cross-run identity/result cache or unsaved retry.
     const coordinator = new AssessmentCoordinator({ expectedProvenance: repository.namespace.provenance,
       provider: { provenance: this.#provider!.provenance, model: this.#provider!.model, assess: async (...args) => {
-        assertActive(); if (leg !== "grok") blocked("DISPATCH_REQUIRED");
-        const result = await this.#provider!.assess(...args); progress.stage = "provider-returned"; return result;
+        const result = await dispatch("grok", e => this.#provider!.assess(args[0], args[1], e)); progress.stage = "provider-returned"; return result;
       } },
       identityResolver: { provenance: this.#resolver!.provenance, resolve: async (...args) => {
-        assertActive(); if (leg !== "x-identity") blocked("DISPATCH_REQUIRED");
-        const result = await this.#resolver!.resolve(...args); progress.stage = "identity-returned"; return result;
+        const result = await dispatch("x-identity", e => this.#resolver!.resolve(args[0], e)); progress.stage = "identity-returned"; return result;
       } },
       repository: { get: handle => repository.getAssessment(handle), putIfAbsent: async assessment => {
         accepted = await persist(() => repository.acceptAssessment(id, json(assessment), assertActive)); return accepted;
@@ -187,34 +246,58 @@ export class PostgresAssessmentWorker {
       await writer.transaction(async tx => { assertActive(); await this.#context(tx, input); assertActive(); });
       return { kind: "accepted", assessment: result, reused: false };
     } catch (error) {
-      if (timedOut) throw error;
+      if (timedOut || cancelled) throw error;
       if (terminal) return { kind: "terminal", outcome: terminal };
       // Lost receipt/outcome/result acknowledgment preserves claimed uncertainty;
       // never overwrite a validated abstention or a possibly accepted result.
       if (storageFailed || accepted) throw error;
       writer.assertHealthy();
-      let outcome: TerminalOutcome = { kind: leg ? "uncertain" : "blocked-before-dispatch" };
-      if (leg && (error instanceof ProviderResponseInvalidError || error instanceof XIdentityResponseInvalidError
+      let outcome: TerminalOutcome | undefined;
+      if (leg && (semanticFailure || error instanceof ProviderResponseInvalidError || error instanceof XIdentityResponseInvalidError
         || progress.stage === "identity-returned" || progress.stage === "provider-returned")) {
         const receipt = await repository.getReceipt(id, leg);
         if (receipt?.category === "success" && (receipt.httpStatus === undefined || (receipt.httpStatus >= 200 && receipt.httpStatus < 300))) outcome = { kind: "invalid" };
       }
-      terminal = await repository.finishAttempt(id, outcome, assertActive);
+      // A fence can commit even if admission refuses before entering the
+      // callback. Classify interruption from durable fences, not `leg` memory.
+      terminal = outcome ? await repository.finishAttempt(id, outcome, assertActive) : await repository.interruptAttempt(id);
+      if (!terminal) throw error;
       return { kind: "terminal", outcome: terminal };
     }
     };
     try { return await Promise.race([work(), deadline]); }
     catch (error) {
-      if (!timedOut || storageFailed) throw error;
+      if (!(timedOut || cancelled) || storageFailed) throw error;
       // Claim is database-only and bounded by owner statement/lock timeouts. A
       // lost acknowledgment makes the writer unhealthy, not a new execution.
-      try { await pendingClaim; } catch (claimError) { if (!(claimError instanceof AssessmentWorkerDeadlineError)) throw claimError; }
+      try { await pendingClaim; } catch (claimError) { if (!(claimError instanceof AssessmentWorkerDeadlineError || claimError instanceof AssessmentWorkerCancelledError)) throw claimError; }
       writer.assertHealthy();
       if (ownedAttempt) {
         const outcome = await repository.interruptAttempt(ownedAttempt);
         if (outcome) return { kind: "terminal", outcome };
       }
+      if (cancelled) throw new AssessmentWorkerCancelledError();
       throw new AssessmentWorkerDeadlineError();
-    } finally { active = false; clearTimeout(timer); controller.abort(); }
+    } finally { active = false; clearTimeout(timer); signal.removeEventListener("abort", cancel); controller.abort(); }
   }
+}
+
+/** Historical/local constructor remains closed to public profiles. */
+export class PostgresAssessmentWorker extends AssessmentWorkerCore {
+  constructor(requests: PostgresMintRequests, input: AssessmentWorkerOptions) {
+    if (!["local-fixture", "local-real"].includes(requests.repository.namespace.profile)) blocked("PUBLIC_WORKER_DISABLED");
+    super(requests, input);
+  }
+}
+
+/** Internal staging port; use only through the release-aware composition in
+ * generative-staging-worker.mjs. Mandatory guards are trusted application code,
+ * not a defense against code already controlling this process. No activation. */
+export function createGuardedStagingWorker(requests: PostgresMintRequests, input: AssessmentWorkerOptions): Pick<AssessmentWorkerCore, "run"> {
+  const ns = requests.repository.namespace, p = requests.profile;
+  if (ns.profile !== "staging-testnet" || ns.provenance !== "grok" || p.chain_id !== "11155111" || p.session_chain_id !== "11155111"
+    || p.origin !== "https://staging.signatures.gallery" || !input.admission || input.admission.requests !== requests
+    || typeof input.admission.validateClaim !== "function" || typeof input.admission.dispatch !== "function" || typeof input.admission.reuse !== "function") blocked("STAGING_WORKER_GUARDS_REQUIRED");
+  const worker = new AssessmentWorkerCore(requests, input);
+  return Object.freeze({ run: worker.run.bind(worker) });
 }

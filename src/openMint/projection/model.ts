@@ -1,6 +1,8 @@
+import { type GenerativeInputProfile } from "../generativeProfiles.js";
 import canonicalize from "canonicalize";
 import { openMintHandleKey } from "../authorization.js";
-import { isMbti } from "../identity.js";
+import { isMbti, canonicalHandle, preservedHandle } from "../identity.js";
+import { profileForRenderer, generativeInputDigest, validateGenerativeRendererPin, type GenerativeRendererPin } from "../generativeInputs.js";
 
 export const MAX_BATCH_BLOCKS = 32;
 export const MAX_BLOCK_EVENTS = 128;
@@ -16,6 +18,7 @@ export interface ProjectionDeployment {
   readonly contractAddress: string; readonly manifestHash: string;
   readonly deploymentBlock: string; readonly deploymentBlockHash: string;
   readonly policy: ProjectionPolicy;
+  readonly generativeRenderer?: GenerativeRendererPin;
 }
 interface EventPosition { readonly transactionHash: string; readonly transactionIndex: number; readonly logIndex: number; readonly tokenId: string }
 /** These are already decoded and provenance-validated inputs, NOT raw RPC logs.
@@ -27,7 +30,13 @@ export interface ValidatedMint extends EventPosition {
   readonly mbti: string; readonly evidenceReference: string;
 }
 export interface ValidatedTransfer extends EventPosition { readonly kind: "Transfer"; readonly from: string; readonly to: string }
-export type ValidatedEvent = ValidatedMint | ValidatedTransfer;
+export interface ValidatedGenerativeMint extends EventPosition {
+  readonly kind: "GenerativeSignatureMinted"; readonly handle: string; readonly renderHandle: string; readonly handleKey: string;
+  readonly recipient: string; readonly assessmentDigest: string; readonly inputDigest: string; readonly rendererIdentity: string;
+  readonly nonce: string; readonly authorizationDigest: string; readonly mbti: string; readonly evidenceReference: string;
+}
+export type AnyValidatedMint = ValidatedMint | ValidatedGenerativeMint;
+export type ValidatedEvent = AnyValidatedMint | ValidatedTransfer;
 export interface ValidatedBlock { readonly number: string; readonly hash: string; readonly parentHash: string; readonly events: readonly ValidatedEvent[] }
 export interface ValidatedBatch { readonly chainId: string; readonly contractAddress: string; readonly manifestHash: string; readonly blocks: readonly ValidatedBlock[] }
 export type GalleryFilter = { readonly kind: "home" } | { readonly kind: "mbti" | "owner"; readonly value: string };
@@ -63,7 +72,14 @@ function index(value: unknown): asserts value is number {
   if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > 2_147_483_647) throw new Error("Invalid event position.");
 }
 export function validateDeployment(value: ProjectionDeployment): ProjectionDeployment {
-  fields(value, ["id", "namespaceId", "chainId", "contractAddress", "manifestHash", "deploymentBlock", "deploymentBlockHash", "policy"]);
+  fields(value, ["id", "namespaceId", "chainId", "contractAddress", "manifestHash", "deploymentBlock", "deploymentBlockHash", "policy", ...(value.generativeRenderer ? ["generativeRenderer"] : [])]);
+  if (value.generativeRenderer) {
+    validateGenerativeRendererPin(value.generativeRenderer);
+    // Structural support is not observation authority. Sepolia witnesses can
+    // only be issued by the separate, explicitly selected RC1 observer.
+    if (value.chainId !== "31337" && !(value.chainId === "11155111"
+      && profileForRenderer(value.generativeRenderer).contractProfile === "generative-v1-rc1")) throw new Error("Unsupported generative projection chain.");
+  }
   uuid(value.id); uuid(value.namespaceId); quantity(value.chainId, 256, true); address(value.contractAddress); hash(value.manifestHash);
   quantity(value.deploymentBlock, 63); hash(value.deploymentBlockHash);
   fields(value.policy, ["id", "rollbackBlocks", "snapshotRetentionBlocks"]); reference(value.policy.id);
@@ -71,7 +87,7 @@ export function validateDeployment(value: ProjectionDeployment): ProjectionDeplo
     || !Number.isSafeInteger(value.policy.snapshotRetentionBlocks) || value.policy.snapshotRetentionBlocks < 1 || value.policy.snapshotRetentionBlocks > 100_000) throw new Error("Invalid explicit projection policy.");
   return structuredClone(value);
 }
-export function validateEvent(value: ValidatedEvent): void {
+export function validateEvent(value: ValidatedEvent, profile?: GenerativeInputProfile): void {
   const common = ["kind", "transactionHash", "transactionIndex", "logIndex", "tokenId"];
   if (value.kind === "Transfer") { fields(value, [...common, "from", "to"]); address(value.from, true); address(value.to); }
   else if (value.kind === "OpenSignatureMinted") {
@@ -79,9 +95,16 @@ export function validateEvent(value: ValidatedEvent): void {
     if (typeof value.handle !== "string" || !/^[a-z0-9_]{1,15}$/.test(value.handle) || value.handleKey !== openMintHandleKey(value.handle) || !isMbti(value.mbti)) throw new Error("Invalid mint identity.");
     address(value.recipient); reference(value.evidenceReference);
     for (const key of ["assessmentDigest", "artifactDigest", "tokenURIHash", "nonce", "authorizationDigest"] as const) hash(value[key]);
+  } else if (value.kind === "GenerativeSignatureMinted") {
+    fields(value, [...common, "handle", "renderHandle", "handleKey", "recipient", "assessmentDigest", "inputDigest", "rendererIdentity", "nonce", "authorizationDigest", "mbti", "evidenceReference"]);
+    if (preservedHandle(value.renderHandle) !== value.renderHandle || canonicalHandle(value.renderHandle) !== value.handle
+      || value.handleKey !== openMintHandleKey(value.handle) || !isMbti(value.mbti)) throw new Error("Invalid generative mint identity.");
+    address(value.recipient); reference(value.evidenceReference);
+    for (const key of ["assessmentDigest", "inputDigest", "rendererIdentity", "nonce", "authorizationDigest"] as const) hash(value[key]);
+    if (value.inputDigest !== generativeInputDigest(value.renderHandle, value.mbti, value.rendererIdentity as `0x${string}`, profile)) throw new Error("Invalid generative input commitment.");
   } else throw new Error("Unsupported projection event.");
   hash(value.transactionHash); index(value.transactionIndex); index(value.logIndex); quantity(value.tokenId, 256, true);
-  if (value.kind === "OpenSignatureMinted" && BigInt(value.tokenId) !== BigInt(value.handleKey)) throw new Error("Mint token does not equal its handle key.");
+  if (value.kind !== "Transfer" && BigInt(value.tokenId) !== BigInt(value.handleKey)) throw new Error("Mint token does not equal its handle key.");
 }
 export function validateBatch(input: ValidatedBatch, deployment: ProjectionDeployment): ValidatedBatch {
   const value = structuredClone(input);
@@ -99,7 +122,9 @@ export function validateBatch(input: ValidatedBatch, deployment: ProjectionDeplo
     if (!Array.isArray(block.events) || block.events.length > MAX_BLOCK_EVENTS || (total += block.events.length) > MAX_BATCH_EVENTS) throw new Error("Too many projection events.");
     const transactions = new Map<string, number>();
     for (let j = 0; j < block.events.length; j++) {
-      const event = block.events[j]; validateEvent(event);
+      const event = block.events[j]; validateEvent(event, deployment.generativeRenderer ? profileForRenderer(deployment.generativeRenderer).inputProfile : undefined);
+      if (event.kind !== "Transfer" && ((event.kind === "GenerativeSignatureMinted") !== !!deployment.generativeRenderer
+        || (event.kind === "GenerativeSignatureMinted" && event.rendererIdentity !== deployment.generativeRenderer!.identity))) throw new Error("Projection event/profile mismatch.");
       if (transactions.has(event.transactionHash) && transactions.get(event.transactionHash) !== event.transactionIndex) throw new Error("Transaction hash has conflicting event positions.");
       transactions.set(event.transactionHash, event.transactionIndex);
       const previous = block.events[j - 1];

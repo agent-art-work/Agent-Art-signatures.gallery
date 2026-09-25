@@ -24,6 +24,30 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1")("isolated PostgreSQ
   afterEach(async () => { await writer?.close(); });
   afterAll(async () => { await admin?.end(); cluster?.stop(); });
 
+  it("preserves strict staging proof across a new writer and refuses legacy cookie authority", async () => {
+    const staging = { ...namespace(), profile: "staging-testnet", provenance: "grok" };
+    const stagingOrigin = "https://staging.signatures.gallery";
+    await admin.query("INSERT INTO open_mint.namespaces VALUES ($1, $2, $3, $4)", [staging.id, staging.profile, staging.provenance, staging.policyVersion]);
+    await admin.query("INSERT INTO open_mint.session_profiles VALUES ($1, $2, 11155111)", [staging.id, stagingOrigin]);
+    const bound = () => ({ writer, namespaceId: staging.id, origin: stagingOrigin, chainId: 11155111 });
+    let stage = await PostgresWalletSessions.openStaging(bound());
+    const { session } = await stage.session(), cookie = stage.cookie(session), code = opaqueCode();
+    const challenge = await stage.challenge(session.id, alice.address, code);
+    const signature = await alice.signMessage({ message: challenge.message });
+    await writer.close(); writer = await ExclusiveWriter.acquire(factory); stage = await PostgresWalletSessions.openStaging(bound());
+    await stage.verify(session.id, challenge.challengeId, signature);
+    const proof = (await stage.requireSession(cookie)).walletProof;
+    expect(proof?.codeHash).toBe(capabilityHash(code));
+    await writer.close(); writer = await ExclusiveWriter.acquire(factory); stage = await PostgresWalletSessions.openStaging(bound());
+    expect((await stage.requireSession(cookie)).walletProof).toEqual(proof);
+    await expect(stage.requireSession(cookie.replace("__Host-sg-staging", "sg_open_session"))).rejects.toMatchObject({ code: "SESSION_REQUIRED" });
+    await stage.logout(session.id);
+    await writer.close(); writer = await ExclusiveWriter.acquire(factory); stage = await PostgresWalletSessions.openStaging(bound());
+    await expect(stage.requireSession(cookie)).rejects.toMatchObject({ code: "SESSION_REQUIRED" });
+    const fresh = await stage.session(cookie); expect(fresh.session.walletProof).toBeUndefined();
+    expect(stage.clearCookie()).toBe("__Host-sg-staging=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0; Secure");
+  });
+
   it("restores exact session, CSRF, pending challenge and proof scope through writer restart", async () => {
     const { session } = await sessions.session(), cookie = sessions.cookie(session), code = opaqueCode();
     const challenge = await sessions.challenge(session.id, alice.address, code), signature = await alice.signMessage({ message: challenge.message });

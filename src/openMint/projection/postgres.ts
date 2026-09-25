@@ -1,19 +1,23 @@
+import { profileForRenderer } from "../generativeInputs.js";
 import { ExclusiveWriter, type OwnershipConnection } from "../persistence/writer.js";
 import { readProjectionObservation, type ProjectionChainCursor, type ProjectionObservation } from "./observer.js";
 import { address, decodeCursor, encodeCursor, fields, hash, ProjectionConflictError, ProjectionCursorError, ProjectionSafetyHaltError, quantity, reference,
   stable, validateBatch, validateDeployment, validateEvent, validateFilter, validateLimit, ZERO_ADDRESS,
-  type GalleryFilter, type Position, type ProjectionDeployment, type ValidatedBatch, type ValidatedBlock, type ValidatedMint, type ValidatedTransfer } from "./model.js";
+  type GalleryFilter, type Position, type ProjectionDeployment, type ValidatedBatch, type ValidatedBlock, type AnyValidatedMint, type ValidatedTransfer } from "./model.js";
 
 type Transaction = Pick<OwnershipConnection, "query">;
 interface Checkpoint { head_number: string | null; head_hash: string | null; promoted_number: string | null; promoted_hash: string | null; health: "unknown" | "available" | "safety-halted"; halt_reason: string | null }
 interface BlockRow { number: string; hash: string; payload: Buffer }
-interface MintRow { token_id: string; handle: string; mbti: string; original_recipient: string; block_number: string; transaction_index: number; log_index: number; payload: Buffer; log_payload: Buffer | null; current_owner: string; availability: ArtifactAvailability }
+interface MintRow { token_id: string; handle: string; mbti: string; original_recipient: string; block_number: string; block_hash: string; transaction_index: number; log_index: number; payload: Buffer; log_payload: Buffer | null; current_owner: string; availability: ArtifactAvailability }
 export type ArtifactAvailability = "available" | "unavailable" | "quarantined";
 export interface ProjectedMint {
   readonly tokenId: string; readonly availability: ArtifactAvailability;
   readonly handle?: string; readonly mbti?: string; readonly originalRecipient?: string; readonly currentOwner?: string;
   readonly assessmentDigest?: string; readonly artifactDigest?: string; readonly tokenURIHash?: string;
   readonly transactionHash?: string;
+  readonly inputDigest?: string; readonly rendererIdentity?: string; readonly renderHandle?: string;
+  readonly authorizationDigest?: string;
+  readonly inclusion?: { readonly number: string; readonly hash: string };
 }
 export interface GalleryPage {
   readonly state: "confirmed" | "unknown" | "safety-halted";
@@ -32,11 +36,28 @@ export class OpenMintProjection {
     const deployment = validateDeployment(input), payload = bytes(deployment);
     await writer.transaction(async tx => {
       const version = (await tx.query<{ version: number }>("SELECT version FROM open_mint.projection_schema_version")).rows;
-      if (version.length !== 1 || version[0].version !== 2) fail("Unsupported projection schema.");
+      if (version.length !== 1 || ![2, 3].includes(version[0].version) || (deployment.generativeRenderer && version[0].version !== 3)) fail("Unsupported projection schema.");
       await tx.query("INSERT INTO open_mint.projection_deployments(deployment_id, namespace_id, configuration) VALUES($1,$2,$3) ON CONFLICT DO NOTHING", [deployment.id, deployment.namespaceId, payload]);
       const saved = (await tx.query<{ configuration: Buffer }>("SELECT configuration FROM open_mint.projection_deployments WHERE deployment_id=$1", [deployment.id])).rows[0];
       if (!saved?.configuration.equals(payload)) fail("Immutable projection deployment mismatch.");
       await tx.query("INSERT INTO open_mint.projection_checkpoints(deployment_id) VALUES($1) ON CONFLICT DO NOTHING", [deployment.id]);
+    });
+    return new OpenMintProjection(writer, deployment);
+  }
+  /** Installed staging must not provision projection state while serving.
+   * An absent checkpoint/deployment is an installation error, not an invitation
+   * to create a new chain history at startup. */
+  static async openExisting(writer: ExclusiveWriter, input: ProjectionDeployment): Promise<OpenMintProjection> {
+    const deployment = validateDeployment(input), payload = bytes(deployment);
+    await writer.transaction(async tx => {
+      const version = (await tx.query<{ version: number }>("SELECT version FROM open_mint.projection_schema_version")).rows;
+      if (version.length !== 1 || version[0].version !== 3 || !deployment.generativeRenderer) fail("Unsupported installed projection schema.");
+      const saved = (await tx.query<{ configuration: Buffer }>("SELECT configuration FROM open_mint.projection_deployments WHERE deployment_id=$1", [deployment.id])).rows;
+      if (saved.length !== 1 || !saved[0].configuration.equals(payload)) fail("Missing or mismatched installed projection deployment.");
+      const checkpoints = (await tx.query<{ health: string; halt_reason: string | null }>(
+        "SELECT health, halt_reason FROM open_mint.projection_checkpoints WHERE deployment_id=$1", [deployment.id])).rows;
+      if (checkpoints.length !== 1 || checkpoints[0].health === "safety-halted" || checkpoints[0].halt_reason !== null)
+        fail("Installed projection unavailable.");
     });
     return new OpenMintProjection(writer, deployment);
   }
@@ -148,12 +169,13 @@ export class OpenMintProjection {
         if (mintTransfers.has(event.tokenId)) fail("Duplicate mint Transfer.");
         mintTransfers.set(event.tokenId, event); continue;
       }
-      if (event.kind === "OpenSignatureMinted") {
+      if (event.kind !== "Transfer") {
         const transfer = mintTransfers.get(event.tokenId);
         if (!transfer || transfer.to !== event.recipient || transfer.transactionHash !== event.transactionHash || transfer.transactionIndex !== event.transactionIndex) fail("Mint lacks matching zero-address Transfer.");
         mintTransfers.delete(event.tokenId);
-        await tx.query(`INSERT INTO open_mint.projection_mints(deployment_id,token_id,handle,mbti,nonce,original_recipient,block_number,block_hash,transaction_index,log_index,payload)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, [id, event.tokenId, event.handle, event.mbti, event.nonce, event.recipient, block.number, block.hash, event.transactionIndex, event.logIndex, bytes(event)]);
+        await tx.query(`INSERT INTO open_mint.projection_mints(deployment_id,token_id,handle,mbti,nonce,original_recipient,block_number,block_hash,transaction_index,log_index,payload,availability)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, [id, event.tokenId, event.handle, event.mbti, event.nonce, event.recipient, block.number, block.hash, event.transactionIndex, event.logIndex, bytes(event),
+            event.kind === "GenerativeSignatureMinted" ? "available" : "unavailable"]);
         await tx.query(`INSERT INTO open_mint.projection_ownership(deployment_id,token_id,owner,start_block,start_transaction,start_log,mint_block,mint_transaction,mint_log)
           VALUES($1,$2,$3,$4,$5,$6,$4,$5,$6)`, [id, event.tokenId, event.recipient, block.number, event.transactionIndex, event.logIndex]);
       } else {
@@ -193,7 +215,7 @@ export class OpenMintProjection {
     return this.writer.transaction(async tx => {
       const saved = (await tx.query<{ payload: Buffer }>("SELECT payload FROM open_mint.projection_mints WHERE deployment_id=$1 AND token_id=$2 FOR UPDATE", [this.#deployment.id, tokenId])).rows[0];
       if (!saved) fail("Unknown projected token.");
-      const mint = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(saved.payload)) as ValidatedMint; validateEvent(mint);
+      const mint = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(saved.payload)) as AnyValidatedMint; validateEvent(mint, this.#deployment.generativeRenderer ? profileForRenderer(this.#deployment.generativeRenderer).inputProfile : undefined);
       if (mint.kind !== "OpenSignatureMinted" || mint.artifactDigest !== artifactDigest) fail("Artifact availability binding changed.");
       const result = await tx.query("UPDATE open_mint.projection_mints SET availability=$3 WHERE deployment_id=$1 AND token_id=$2", [this.#deployment.id, tokenId, availability]);
       if (result.rowCount !== 1) fail("Unknown projected token.");
@@ -202,10 +224,19 @@ export class OpenMintProjection {
   #item(row: MintRow): ProjectedMint {
     try {
       if (!row.log_payload || !row.payload.equals(row.log_payload)) throw new Error();
-      const event = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(row.payload)) as ValidatedMint; validateEvent(event);
+      const event = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(row.payload)) as AnyValidatedMint; validateEvent(event, this.#deployment.generativeRenderer ? profileForRenderer(this.#deployment.generativeRenderer).inputProfile : undefined);
       address(row.current_owner);
-      if (event.kind !== "OpenSignatureMinted" || event.tokenId !== row.token_id || event.handle !== row.handle || event.mbti !== row.mbti
+      if (!["OpenSignatureMinted", "GenerativeSignatureMinted"].includes(event.kind) || event.tokenId !== row.token_id || event.handle !== row.handle || event.mbti !== row.mbti
         || event.recipient !== row.original_recipient || event.transactionIndex !== row.transaction_index || event.logIndex !== row.log_index) throw new Error();
+      if ((event.kind === "GenerativeSignatureMinted") !== !!this.#deployment.generativeRenderer) throw new Error();
+      if (event.kind === "GenerativeSignatureMinted") {
+        hash(row.block_hash); quantity(row.block_number, 63);
+        if (event.rendererIdentity !== this.#deployment.generativeRenderer!.identity) throw new Error();
+        return { tokenId: row.token_id, availability: row.availability, handle: event.handle, renderHandle: event.renderHandle, mbti: event.mbti,
+          originalRecipient: event.recipient, currentOwner: row.current_owner, assessmentDigest: event.assessmentDigest,
+          inputDigest: event.inputDigest, rendererIdentity: event.rendererIdentity, authorizationDigest: event.authorizationDigest, transactionHash: event.transactionHash,
+          inclusion: { number: row.block_number, hash: row.block_hash } };
+      }
       return { tokenId: row.token_id, availability: row.availability, handle: event.handle, mbti: event.mbti,
         originalRecipient: event.recipient, currentOwner: row.current_owner, assessmentDigest: event.assessmentDigest,
         artifactDigest: event.artifactDigest, tokenURIHash: event.tokenURIHash, transactionHash: event.transactionHash };
@@ -231,7 +262,7 @@ export class OpenMintProjection {
         conditions.push(`(m.block_number,m.transaction_index,m.log_index,m.token_id)<($${start}::bigint,$${start + 1}::integer,$${start + 2}::integer,$${start + 3}::numeric)`);
       }
       params.push(limit + 1);
-      const rows = (await tx.query<MintRow>(`SELECT m.token_id::text,m.handle,m.mbti,m.original_recipient,m.block_number::text,m.transaction_index,m.log_index,m.payload,l.payload AS log_payload,m.availability,o.owner AS current_owner
+      const rows = (await tx.query<MintRow>(`SELECT m.token_id::text,m.handle,m.mbti,m.original_recipient,m.block_number::text,m.block_hash,m.transaction_index,m.log_index,m.payload,l.payload AS log_payload,m.availability,o.owner AS current_owner
         FROM open_mint.projection_mints m JOIN open_mint.projection_ownership o USING(deployment_id,token_id)
         LEFT JOIN open_mint.projection_logs l ON l.deployment_id=m.deployment_id AND l.block_hash=m.block_hash AND l.log_index=m.log_index
         WHERE ${conditions.join(" AND ")} ORDER BY m.block_number DESC,m.transaction_index DESC,m.log_index DESC,m.token_id DESC LIMIT $${params.length}`, params)).rows;
@@ -254,7 +285,7 @@ export class OpenMintProjection {
       if (!row) return { state: "unknown" };
       const provisional = state.promoted_number === null || BigInt(row.block_number) > BigInt(state.promoted_number);
       if (provisional && !witness) return { state: "pending" };
-      const saved = (await tx.query<MintRow>(`SELECT m.token_id::text,m.handle,m.mbti,m.original_recipient,m.block_number::text,m.transaction_index,m.log_index,m.payload,l.payload AS log_payload,m.availability,o.owner AS current_owner
+      const saved = (await tx.query<MintRow>(`SELECT m.token_id::text,m.handle,m.mbti,m.original_recipient,m.block_number::text,m.block_hash,m.transaction_index,m.log_index,m.payload,l.payload AS log_payload,m.availability,o.owner AS current_owner
         FROM open_mint.projection_mints m JOIN open_mint.projection_ownership o USING(deployment_id,token_id)
         LEFT JOIN open_mint.projection_logs l ON l.deployment_id=m.deployment_id AND l.block_hash=m.block_hash AND l.log_index=m.log_index
         WHERE m.deployment_id=$1 AND m.handle=$2 AND o.start_block<=$3 AND (o.end_block IS NULL OR o.end_block>$3)`, [this.#deployment.id, handle, provisional ? state.head_number : state.promoted_number])).rows[0];

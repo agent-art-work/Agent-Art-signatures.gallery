@@ -128,6 +128,29 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1")("isolated PostgreSQ
     await expect(repo.admitInitial("bob")).rejects.toThrow(AdmissionBlockedError);
     await expect(admin.query("UPDATE open_mint.assessments SET payload = $2 WHERE namespace_id = $1", [ns.id, bytes(assessment())])).rejects.toMatchObject({ code: "55000" });
   });
+  it("reads accepted provenance by exact namespace/handle/digest with generation disabled and after restart", async () => {
+    const id = await throughGrok(), accepted = assessment(), signal = new AbortController().signal;
+    await repo.acceptAssessment(id, bytes(accepted));
+    const other = namespace(); await provision(other);
+    const otherRepo = await OpenMintRepository.open(owner, other);
+    expect(await otherRepo.getAcceptedAssessment("alice", accepted.digest, signal)).toBeUndefined();
+    expect(await repo.getAcceptedAssessment("bob", accepted.digest, signal)).toBeUndefined();
+    expect(await repo.getAcceptedAssessment("alice", `0x${"12".repeat(32)}`, signal)).toBeUndefined();
+    await admin.query("UPDATE open_mint.budget_policies SET generation_enabled=false WHERE namespace_id=$1", [ns.id]);
+    const before = (await admin.query("SELECT * FROM open_mint.jobs WHERE namespace_id=$1 ORDER BY job_id", [ns.id])).rows;
+    await owner.close(); owner = await ExclusiveWriter.acquire(factory); repo = await OpenMintRepository.open(owner, ns);
+    expect(await repo.getAcceptedAssessment("alice", accepted.digest, signal)).toEqual(accepted);
+    expect((await admin.query("SELECT * FROM open_mint.jobs WHERE namespace_id=$1 ORDER BY job_id", [ns.id])).rows).toEqual(before);
+    expect((await admin.query("SELECT count(*)::int n FROM open_mint.dispatch_fences WHERE namespace_id=$1", [ns.id])).rows[0].n).toBe(2);
+  });
+  it("does not disclose a payload whose attempt is not accepted", async () => {
+    const id = await start(), saved = assessment(), signal = new AbortController().signal;
+    // Deliberately incomplete fixture: an operator inserted a payload, not an
+    // accepted assessment. The read must check state, not just payload presence.
+    await admin.query("INSERT INTO open_mint.assessments(namespace_id,handle,assessment_id,attempt_id,digest,payload) VALUES($1,$2,$3,$4,$5,$6)",
+      [ns.id, saved.handle, saved.id, id, saved.digest, bytes(saved)]);
+    expect(await repo.getAcceptedAssessment("alice", saved.digest, signal)).toBeUndefined();
+  });
   it("rolls back result and accepted linkage if render-job insertion fails", async () => {
     const id = await throughGrok();
     await admin.query(`CREATE FUNCTION open_mint.test_fail_render() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN

@@ -11,14 +11,15 @@ const alice = privateKeyToAccount(`0x${"1".repeat(64)}`), bob = privateKeyToAcco
 type Row = Record<string, any>;
 /** Transactional memory test double. Real PostgreSQL replay/continuity is
  * separately covered by postgres.test.ts; no SQL isolation claim here. */
-async function harness(verifySignature?: Parameters<typeof PostgresWalletSessions.open>[0]["verifySignature"]) {
+async function harness(verifySignature?: Parameters<typeof PostgresWalletSessions.open>[0]["verifySignature"], staging = false) {
+  const boundOrigin = staging ? "https://staging.signatures.gallery" : origin, chainId = staging ? 11155111 : 31337;
   let state = { sessions: new Map<string, Row>(), challenges: new Map<string, Row>() };
   let now = Date.parse("2026-09-20T00:00:00Z"), countOverride: string | undefined;
   let failed = false, failCommit = false, tail: Promise<unknown> = Promise.resolve();
   const calls: { sql: string; values: unknown[] }[] = [];
   const tx: Pick<OwnershipConnection, "query"> = { async query<R extends QueryResultRow>(sql: string, values: unknown[] = []): Promise<QueryResult<R>> {
     calls.push({ sql, values }); let rows: Row[] = [], count = 0;
-    if (sql.includes("FROM open_mint.session_profiles")) rows = [{ origin, chain_id: "31337" }];
+    if (sql.includes("FROM open_mint.session_profiles")) rows = [{ origin: boundOrigin, chain_id: String(chainId) }];
     else if (sql.includes("clock_timestamp")) rows = [{ now: new Date(now) }];
     else if (sql.includes("count(*)")) rows = [{ count: countOverride ?? String([...state.sessions.values()].filter(row => !row.revoked && row.expires_at.getTime() > now).length) }];
     else if (sql.startsWith("SELECT") && sql.includes("FROM open_mint.sessions")) { const row = state.sessions.get(String(values[1])); if (row) rows = [row]; }
@@ -49,12 +50,54 @@ async function harness(verifySignature?: Parameters<typeof PostgresWalletSession
       }); tail = pending.catch(() => undefined); return pending;
     },
   } as ExclusiveWriter;
-  const options = { writer, namespaceId, origin, chainId: 31337, verifySignature };
-  return { sessions: await PostgresWalletSessions.open(options), options, calls, state: () => state,
+  const options = { writer, namespaceId, origin: boundOrigin, chainId, verifySignature };
+  return { sessions: await (staging ? PostgresWalletSessions.openStaging(options) : PostgresWalletSessions.open(options)), options, calls, state: () => state,
     advance: (ms: number) => { now += ms; }, capacity: () => { countOverride = "10000"; }, loseCommit: () => { failCommit = true; } };
 }
 
 describe("durable wallet sessions", () => {
+  it("requires explicit, exact staging binding and captures it before awaiting the database", async () => {
+    const h = await harness(undefined, true);
+    await expect(PostgresWalletSessions.open(h.options)).rejects.toThrow("explicit staging");
+    for (const patch of [{ origin }, { chainId: 31337 }, { origin: "https://staging.signatures.gallery/" }, { origin: "http://staging.signatures.gallery" }]) {
+      await expect(PostgresWalletSessions.openStaging({ ...h.options, ...patch })).rejects.toThrow("staging session binding");
+    }
+    const options = { ...h.options }, opening = PostgresWalletSessions.openStaging(options);
+    options.origin = "http://127.0.0.1"; options.chainId = 31337;
+    const captured = await opening;
+    expect(captured.origin).toBe(h.options.origin); expect(captured.chainId).toBe(11155111);
+    expect(captured.cookiePolicy).toEqual({ name: "__Host-sg-staging", sameSite: "Strict" });
+    expect(Object.isFrozen(captured.cookiePolicy)).toBe(true);
+  });
+  it("never imports legacy cookies into staging or accepts duplicate/prefix lookalikes", async () => {
+    const h = await harness(undefined, true), { session } = await h.sessions.session();
+    const cookie = h.sessions.cookie(session);
+    expect(cookie).toBe(`__Host-sg-staging=${session.id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400; Secure`);
+    for (const name of ["sg_open_session", "__host-sg-staging", "prefix__Host-sg-staging"]) {
+      await expect(h.sessions.requireSession(`${name}=${session.id}`)).rejects.toMatchObject({ code: "SESSION_REQUIRED" });
+      const fresh = await h.sessions.session(`${name}=${session.id}`);
+      expect(fresh.created).toBe(true); expect(fresh.session.walletProof).toBeUndefined(); expect(fresh.session.id).not.toBe(session.id);
+    }
+    expect(await h.sessions.requireSession(`sg_open_session=bad; ${cookie}`)).toEqual(session);
+    await expect(h.sessions.requireSession(`${cookie}; __Host-sg-staging=${session.id}`)).rejects.toThrow("Ambiguous");
+    await expect(h.sessions.session(`${cookie}; __Host-sg-staging=bad`)).rejects.toThrow("Ambiguous");
+  });
+  it("keeps strict staging sessions/proofs across restart and revokes and clears exactly that cookie", async () => {
+    const h = await harness(undefined, true), { session } = await h.sessions.session(), code = opaqueCode();
+    const challenge = await h.sessions.challenge(session.id, alice.address, code);
+    expect(challenge.message).toContain("staging.signatures.gallery wants you to sign in");
+    expect(challenge.message).toContain("Chain ID: 11155111");
+    await h.sessions.verify(session.id, challenge.challengeId, await alice.signMessage({ message: challenge.message }));
+    const restarted = await PostgresWalletSessions.openStaging(h.options), cookie = restarted.cookie(session);
+    expect((await restarted.requireSession(cookie)).walletProof?.codeHash).toBe(capabilityHash(code));
+    await restarted.logout(session.id);
+    expect(restarted.clearCookie()).toBe("__Host-sg-staging=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0; Secure");
+    await expect(h.sessions.requireSession(cookie)).rejects.toMatchObject({ code: "SESSION_REQUIRED" });
+    expect((await h.sessions.session(cookie)).created).toBe(true);
+    const local = await harness();
+    expect(local.sessions.clearCookie()).toBe("sg_open_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0; Secure");
+    await expect(local.sessions.requireSession(cookie)).rejects.toMatchObject({ code: "SESSION_REQUIRED" });
+  });
   it("looks up required sessions without allocation or renewal and rejects ambiguous cookies", async () => {
     const h = await harness();
     for (const cookie of [undefined, "sg_open_session=invalid", `sg_open_session=${opaqueCode()}`]) {

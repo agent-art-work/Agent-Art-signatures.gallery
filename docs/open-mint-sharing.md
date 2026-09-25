@@ -1,5 +1,13 @@
 # Open-mint sharing and indexing boundary
 
+**Historical saved-artifact foundation.** The helper described below remains
+unwired and tested for that older profile; its saved-PNG/CID policy is not the
+current generative design. The separate [generative staging integration](generative-staging-sharing.md)
+now supplies canonical URLs, OG/X metadata and bounded read-time PNGs through
+the locally rehearsed future-staging site. It uses pinned on-chain inputs and
+verified finality, not saved-artifact/IPFS publication. The ordinary local
+server still has no new social metadata. Public indexing remains unapproved.
+
 This is a bounded E22 policy foundation, not public indexing activation. Ethereum Sepolia and `https://staging.signatures.gallery` are the selected staging network/origin. No DNS/hosting, sitemap, crawler integration or public server startup has been enabled. Staging remains noindex.
 
 ## Active local runtime

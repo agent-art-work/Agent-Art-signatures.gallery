@@ -52,6 +52,12 @@ async function harness() {
 }
 
 describe("durable private request admission boundaries", () => {
+  it("does not turn the ordinary local request path into a staging guard bypass", async () => {
+    const h = await harness(), guard = vi.fn(async () => {});
+    await expect(h.requests.createGuardedStaging(h.input, guard)).rejects.toThrow("Guarded staging request binding required");
+    await expect(h.requests.createGuardedStaging(h.input, undefined as never)).rejects.toThrow("Guarded staging request binding required");
+    expect(guard).not.toHaveBeenCalled(); expect(h.admit).not.toHaveBeenCalled();
+  });
   it("validates deployment ID and immutable session/deployment chain profile", async () => {
     const h = await harness();
     await expect(PostgresMintRequests.open(h.repository, "invalid")).rejects.toThrow("identifier");

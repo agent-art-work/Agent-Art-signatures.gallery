@@ -96,12 +96,27 @@ export class PostgresMintRequests {
   }
 
   async create(input: CreateDurableMintRequest): Promise<DurableMintRequest> {
+    return this.#create(input);
+  }
+
+  /** Internal staging composition. Database-only review/catalog validation
+   * surrounds admission in its owner transaction; never a browser callback. */
+  async createGuardedStaging(input: CreateDurableMintRequest, guard: (tx: Transaction, generation: boolean) => Promise<void>): Promise<DurableMintRequest> {
+    if (typeof guard !== "function" || this.repository.namespace.profile !== "staging-testnet" || this.repository.namespace.provenance !== "grok"
+      || this.profile.chain_id !== "11155111" || this.profile.session_chain_id !== "11155111" || this.profile.origin !== "https://staging.signatures.gallery") {
+      throw new PersistenceConflictError("Guarded staging request binding required.");
+    }
+    return this.#create(input, guard);
+  }
+
+  async #create(input: CreateDurableMintRequest, guard?: (tx: Transaction, generation: boolean) => Promise<void>): Promise<DurableMintRequest> {
     // Capture every caller-owned value before entering the asynchronous queue.
     const sessionHash = capabilityHash(input.sessionToken), origin = input.origin, csrf = input.csrf,
       generation = input.sessionGeneration, recipient = getAddress(input.recipient), handle = canonicalHandle(input.handle),
       requestedHandle = preservedHandle(input.handle), witness = input.eligibility;
     if (!/^(?:0|[1-9][0-9]{0,18})$/.test(generation)) throw new PublicError(409, "WALLET_CHANGED", "Connect your wallet again before preparing a mint.");
     return this.repository.admissionTransaction(async (tx, admit) => {
+      await guard?.(tx, false);
       const now = await this.#now(tx), session = await this.#session(tx, sessionHash, now);
       if (origin !== this.profile.origin || !isCode(csrf) || !timingSafeEqual(Buffer.from(csrf), Buffer.from(session.csrf))) throw sessionRequired();
       if (session.generation !== generation || session.wallet !== recipient) throw new PublicError(409, "WALLET_CHANGED", "Your wallet changed. Connect it again before preparing a mint.");
@@ -128,6 +143,12 @@ export class PostgresMintRequests {
       const end = await this.#now(tx);
       if (session.expires_at.getTime() <= end.getTime() || session.proof_expires_at.getTime() <= end.getTime()) throw sessionRequired();
       this.#preflight(witness, handle, recipient, end.getTime());
+      await guard?.(tx, admission.kind !== "accepted");
+      if (guard) {
+        const final = await this.#now(tx);
+        if (session.expires_at.getTime() <= final.getTime() || session.proof_expires_at.getTime() <= final.getTime()) throw sessionRequired();
+        this.#preflight(witness, handle, recipient, final.getTime());
+      }
       return { id, code, handle, requestedHandle, wallet: recipient, createdAt: now.getTime(), expiresAt: expires.getTime(),
         status, ...(terminal ? { terminal } : {}),
         ...(admission.kind === "accepted" ? { assessmentId: admission.assessment.id } : { attemptId: admission.attemptId }) };

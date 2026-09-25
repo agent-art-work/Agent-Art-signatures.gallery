@@ -1,13 +1,13 @@
 import { performance } from "node:perf_hooks";
 import { http } from "viem";
 
-export type PublicChainReadMethod = "eth_chainId" | "eth_getBlockByNumber" | "eth_getCode" | "eth_call" | "eth_getLogs" | "eth_getTransactionReceipt";
+export type PublicChainReadMethod = "eth_chainId" | "eth_getBlockByNumber" | "eth_getCode" | "eth_call" | "eth_getLogs" | "eth_getTransactionReceipt" | "eth_getTransactionByHash" | "eth_getTransactionCount";
 /** Implementations must honor cancellation. No transaction/signing methods exist. */
 export interface PublicChainRpc {
   readonly id: string;
   request(method: PublicChainReadMethod, params: readonly unknown[], signal: AbortSignal): Promise<unknown>;
 }
-const METHODS = ["eth_chainId", "eth_getBlockByNumber", "eth_getCode", "eth_call", "eth_getLogs", "eth_getTransactionReceipt"] as const;
+const METHODS = ["eth_chainId", "eth_getBlockByNumber", "eth_getCode", "eth_call", "eth_getLogs", "eth_getTransactionReceipt", "eth_getTransactionByHash", "eth_getTransactionCount"] as const;
 
 /** The injected fetch must enforce the operator's DNS/egress policy. This
  * transport adds no fallback RPC, retries, redirect following, or wallet. */

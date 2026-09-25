@@ -26,6 +26,16 @@ export interface ProviderReceipt {
 }
 export interface AssessmentExecution {
   readonly attemptId: string;
+  /** Optional internal admission boundary. Registered by trusted composition,
+   * never decoded from browser JSON. No hook preserves the existing local path. */
+  readonly dispatch?: {
+    readonly signal: AbortSignal;
+    assertCurrent(leg: ProviderLeg): void;
+    /** Versioned staging admission: a one-use fetch checkpoint, separate from
+     * completion of that response. Old local callers retain assertCurrent. */
+    beginDispatch?(leg: ProviderLeg): void;
+    assertCompletion?(leg: ProviderLeg): void;
+  };
   beforeDispatch(leg: ProviderLeg): Promise<void>;
   recordReceipt(receipt: ProviderReceipt): Promise<void>;
   identityVerified(snapshot: XIdentitySnapshot): Promise<void>;

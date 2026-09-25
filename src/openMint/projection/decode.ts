@@ -3,7 +3,9 @@ import { decodeEventLog, encodeAbiParameters, encodeEventTopics, getAddress, typ
 import { OPEN_MINT_ABI, normalizeOpenMintAuthorization, openMintDigest, openMintHandleKey, openMintTokenURIHash, verifyOpenMintAuthorization } from "../authorization.js";
 import { PUBLIC_ARTIFACT_MAX_BYTES, verifyPreparedPublicArtifact, type PreparedPublicArtifact } from "../publicArtifacts.js";
 import type { AuthorizationReservation } from "../persistence/authorizations.js";
-import { address, hash, MAX_BLOCK_EVENTS, quantity, validateBatch, validateDeployment, type ProjectionDeployment, type ValidatedBlock, type ValidatedEvent, type ValidatedMint } from "./model.js";
+import type { OnchainMintEvidence } from "../onchainReads.js";
+import { encodeOnchainArtifact } from "../onchainArtifact.js";
+import { address, hash, MAX_BLOCK_EVENTS, quantity, validateBatch, validateDeployment, type ProjectionDeployment, type ValidatedBlock, type ValidatedEvent, type ValidatedMint, type ValidatedTransfer } from "./model.js";
 
 // Share the contract-facing ABI; an independently copied event definition can
 // silently diverge when contract interfaces change.
@@ -28,20 +30,20 @@ function rpcQuantity(value: unknown, bits = 256): bigint {
   if (typeof value !== "string" || !/^0x(?:0|[1-9a-f][0-9a-f]*)$/.test(value) || value.length > 66 || BigInt(value) >= 1n << BigInt(bits)) return fail();
   return BigInt(value);
 }
-export function normalizeProjectionLog(value: unknown, deployment: ProjectionDeployment, block: { number: string; hash: string }): Log {
+export function normalizeProjectionLog(value: unknown, deployment: ProjectionDeployment, block: { number: string; hash: string }, topics: readonly Hex[] = OPEN_PROJECTION_TOPICS): Log {
   if (!value || typeof value !== "object" || Array.isArray(value)) return fail();
   const log = value as Log;
   if (log.address !== deployment.contractAddress || log.removed !== false || log.blockHash !== block.hash
     || rpcQuantity(log.blockNumber, 63).toString() !== block.number || !Array.isArray(log.topics) || log.topics.length !== 4
     || log.topics.some(topic => typeof topic !== "string" || !/^0x[0-9a-f]{64}$/.test(topic))
-    || !OPEN_PROJECTION_TOPICS.includes(log.topics[0]) || typeof log.data !== "string" || !/^0x(?:[0-9a-f]{2})*$/.test(log.data)
+    || !topics.includes(log.topics[0]) || typeof log.data !== "string" || !/^0x(?:[0-9a-f]{2})*$/.test(log.data)
     || log.data.length > 2050) return fail();
   hash(log.transactionHash); rpcQuantity(log.transactionIndex, 31); rpcQuantity(log.logIndex, 31);
   // Snapshot only allowed public fields; optional RPC extras grant no authority.
   return { address: log.address, topics: [...log.topics], data: log.data, blockHash: log.blockHash, blockNumber: log.blockNumber,
     transactionHash: log.transactionHash, transactionIndex: log.transactionIndex, logIndex: log.logIndex, removed: false };
 }
-function decode(log: Log): ValidatedEvent | MintLog {
+function decode(log: Log): ValidatedTransfer | MintLog {
   const event = decodeEventLog({ abi: OPEN_PROJECTION_EVENTS, topics: log.topics as [Hex, ...Hex[]], data: log.data, strict: true });
   const position = { transactionHash: log.transactionHash, transactionIndex: Number(rpcQuantity(log.transactionIndex, 31)), logIndex: Number(rpcQuantity(log.logIndex, 31)), tokenId: event.args.tokenId.toString() };
   if (event.eventName === "Transfer") {
@@ -65,12 +67,15 @@ function decode(log: Log): ValidatedEvent | MintLog {
  * bounded independent-RPC observer must establish those before append/promote.
  * This function makes no network request and emits no new authority. */
 export async function decodeOpenSignaturesBlock(input: {
+  contractProfile?: "external-v1" | "onchain-v1";
   deployment: ProjectionDeployment; authorizer: Address;
   block: { number: string; hash: string; parentHash: string; timestamp: string };
   logs: readonly unknown[]; timeoutMs: number; signal: AbortSignal;
-  resolveMint: (log: Readonly<MintLog>, signal: AbortSignal) => Promise<MintProjectionEvidence | undefined>;
+  resolveMint: (log: Readonly<MintLog>, signal: AbortSignal, block: { number: bigint; hash: Hex }) => Promise<MintProjectionEvidence | OnchainMintEvidence | undefined>;
 }): Promise<{ block: ValidatedBlock; chainAuthenticated: false }> {
   const startedAt = performance.now();
+  if (input.contractProfile !== undefined && input.contractProfile !== "external-v1" && input.contractProfile !== "onchain-v1") return fail();
+  const onchain = input.contractProfile === "onchain-v1";
   const deployment = validateDeployment(input.deployment), authorizer = getAddress(input.authorizer), block = { ...input.block }, resolveMint = input.resolveMint;
   address(authorizer.toLowerCase()); quantity(block.number, 63); quantity(block.timestamp, 64); hash(block.hash); hash(block.parentHash);
   if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1 || input.timeoutMs > 30_000 || !Array.isArray(input.logs)
@@ -96,8 +101,21 @@ export async function decodeOpenSignaturesBlock(input: {
       for (const log of logs) {
         check(); const event = decode(log);
         if (event.kind === "Transfer") { events.push(event); continue; }
-        const evidence = await resolveMint(Object.freeze({ ...event }), controller.signal); check();
+        const evidence = await resolveMint(Object.freeze({ ...event }), controller.signal,
+          Object.freeze({ number: BigInt(block.number), hash: block.hash as Hex })); check();
         if (!evidence) return fail();
+        if (onchain) {
+          if (!("kind" in evidence) || evidence.kind !== "onchain-v1") return fail();
+          const saved = structuredClone(evidence), a = saved.artifact;
+          const expected = encodeOnchainArtifact(a.artwork, a.assessmentDigest);
+          if (expected.tokenURI !== a.tokenURI || expected.digest !== a.digest || expected.tokenURIHash !== a.tokenURIHash
+            || expected.canonicalHandle !== event.handle || a.assessmentDigest !== event.assessmentDigest
+            || a.digest !== event.artifactDigest || a.tokenURIHash !== event.tokenURIHash
+            || saved.authorizationDigest !== event.authorizationDigest || saved.recipient !== event.recipient) return fail();
+          check(); events.push({ ...event, mbti: a.artwork.mbti, evidenceReference: `onchain:${event.transactionHash}` });
+          continue;
+        }
+        if ("kind" in evidence) return fail();
         for (const object of [evidence.artifact.svg, evidence.artifact.png, evidence.artifact.metadata]) {
           if (!(object.bytes instanceof Uint8Array) || object.bytes.byteLength < 1 || object.bytes.byteLength > PUBLIC_ARTIFACT_MAX_BYTES) return fail();
         }

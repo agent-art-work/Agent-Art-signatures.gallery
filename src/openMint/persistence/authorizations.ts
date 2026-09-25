@@ -114,6 +114,7 @@ export class PostgresAuthorizationIssuer {
       handle: request.handle, recipient: request.wallet, nonce, now }); }
     catch { return blocked("CHAIN_UNAVAILABLE", "Fresh exact chain eligibility is required."); }
     const p = this.requests.profile;
+    if (evidence.contractProfile !== undefined && evidence.contractProfile !== "external-v1") blocked("CHAIN_PROFILE_MISMATCH", "External-URI issuance cannot use an on-chain deployment.");
     if (evidence.chainId.toString() !== p.chain_id || evidence.contract.toLowerCase() !== p.contract_address || evidence.genesisHash !== p.genesis_hash
       || evidence.runtimeCodeHash !== p.runtime_code_hash || evidence.authorizer.toLowerCase() !== p.authorizer
       || evidence.deploymentBlock.number.toString() !== p.deployment_block || evidence.deploymentBlock.hash !== p.deployment_block_hash) blocked("CHAIN_PROFILE_MISMATCH", "The chain witness has different deployment pins.");

@@ -118,9 +118,22 @@ export async function receiptedJsonRequest(options: {
   fetch(signal: AbortSignal): Promise<Response>; execution?: AssessmentExecution;
 }): Promise<unknown> {
   const startedAt = Date.now(), controller = new AbortController();
+  const dispatch = options.execution?.dispatch, signal = dispatch?.signal;
+  const begin = dispatch?.beginDispatch?.bind(dispatch) ?? dispatch?.assertCurrent.bind(dispatch);
+  const complete = dispatch?.assertCompletion?.bind(dispatch) ?? dispatch?.assertCurrent.bind(dispatch);
+  const assertCheckpoint = (guard: typeof begin) => {
+    if (signal?.aborted || (guard && guard(options.leg) !== undefined)) throw new Error("Provider dispatch unavailable.");
+  };
   let response: Response | undefined, timer: ReturnType<typeof setTimeout> | undefined;
   type Terminal = { category: ProviderReceipt["category"]; payload?: unknown; error?: string };
+  let cancel!: () => void;
   const timeout = new Promise<Terminal>(resolve => {
+    cancel = () => {
+      // Cancellation cannot undo a dispatched request or establish zero cost.
+      resolve({ category: "transport-error", error: options.transportError });
+      controller.abort();
+    };
+    signal?.addEventListener("abort", cancel, { once: true });
     timer = setTimeout(() => {
       // Resolve first: abort-triggered rejection must not win the race with a different category.
       resolve({ category: "timeout", error: options.timeoutError });
@@ -128,6 +141,9 @@ export async function receiptedJsonRequest(options: {
     }, options.timeoutMs);
   });
   const request = async (): Promise<Terminal> => {
+    // No await between the synchronous admission checkpoint and actual fetch.
+    // A denial here emits NO receipt: it is not evidence of a provider call.
+    assertCheckpoint(begin);
     try {
       const received = await options.fetch(controller.signal);
       if (controller.signal.aborted) { void received.body?.cancel().catch(() => {}); return { category: "timeout", error: options.timeoutError }; }
@@ -143,10 +159,14 @@ export async function receiptedJsonRequest(options: {
   };
   let terminal: Terminal;
   try { terminal = await Promise.race([request(), timeout]); }
-  finally { if (timer) clearTimeout(timer); }
+  finally { if (timer) clearTimeout(timer); signal?.removeEventListener("abort", cancel); }
   const completedAt = Math.max(startedAt, Date.now());
   await options.execution?.recordReceipt(providerReceipt({ leg: options.leg, startedAt, completedAt,
     category: terminal.category, response, payload: terminal.payload }));
   if (terminal.error) throw new Error(terminal.error);
+  // Persist observed accounting even if permission was withdrawn in flight;
+  // Completion is NOT a fresh dispatch authorization. A reviewed completion
+  // window may outlive its original RPC witness, but not withdrawal/cancellation.
+  assertCheckpoint(complete);
   return terminal.payload;
 }
