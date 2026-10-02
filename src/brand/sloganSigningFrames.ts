@@ -641,4 +641,3 @@ export const SIGNING_SLOGAN_CANDIDATES = [
   { id: "title-words", literal: "Anyone Can Sign Anyone", mode: "words", ...captures["Anyone Can Sign Anyone"], words: [captures.Anyone, captures.Can, captures.Sign, captures.Anyone] },
   { id: "sentence-words", literal: "Anyone can sign anyone", mode: "words", ...captures["Anyone can sign anyone"], words: [captures.Anyone, captures.can, captures.sign, captures.anyone] },
 ] as const;
-

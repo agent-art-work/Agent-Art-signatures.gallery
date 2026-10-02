@@ -10,7 +10,9 @@ import { createSepoliaReadFailover, readSources, withSepoliaReadSource, requireR
 import { DEPLOYER, INPUT_PROFILE } from '../contracts/tools/pulse-sepolia-plan.mjs';
 import { loadPulseArtifact } from '../contracts/tools/pulse-candidate-lock.mjs';
 import { generativeInputDigest } from '../src/openMint/generativeInputs.ts';
-import { pulseMintTypedData, pulseMintDigest, PULSE_PAID_SLOT } from '../src/openMint/pulseAuthorization.ts';
+import { pulseMintTypedData, PULSE_PAID_SLOT } from '../src/openMint/pulseAuthorization.ts';
+import { PULSE_ADMIN_PROFILE, pulseAdminMintTypedData } from '../src/openMint/pulseAdminAuthorization.ts';
+import { verifyAllowlistArtifacts } from '../contracts/tools/pulse-allowlist.mjs';
 import { WalletSessions, opaqueCode, fields, PublicError } from '../src/openMint/security.ts';
 import { canonicalHandle, preservedHandle, isMbti, MBTI_TYPES, RENDERER_VERSION } from '../src/openMint/identity.ts';
 import { openMintHandleKey } from '../src/openMint/authorization.ts';
@@ -31,7 +33,7 @@ import { openSepoliaRelayStore } from './pulse-sepolia-relay-store.mjs';
 import { observeSepoliaOwnership } from './pulse-sepolia-ownership.mjs';
 import { SEPOLIA_READINESS_CLIENT } from './pulse-sepolia-readiness-client.mjs';
 import { createSepoliaUiRenderer } from './pulse-sepolia-ui.mjs';
-import { inspectSepoliaAttempt, requireExpiredAttemptProof, savedMintAuthorization, validateRecoveryTransaction } from './pulse-sepolia-attempt-recovery.mjs';
+import { inspectSepoliaAttempt, requireExpiredAttemptProof, savedMintAuthorization, validateRecoveryTransaction, sepoliaMintAbi, sepoliaAuthorizationDigest } from './pulse-sepolia-attempt-recovery.mjs';
 
 // Dedicated disposable rehearsal, NOT a relaxed local-real or hosted staging
 // admission path. No provider SDK or deployer unlock is imported/called here.
@@ -40,7 +42,7 @@ import { inspectSepoliaAttempt, requireExpiredAttemptProof, savedMintAuthorizati
 const qty = n => '0x' + BigInt(n).toString(16);
 const stringify = v => JSON.stringify(v, (_k, n) => typeof n === 'bigint' ? n.toString() : n);
 export function saleNotice(sale) {
-  const count = `${sale.freeMinted}/${sale.freeSlotCount} slots used`;
+  const count = `${sale.freeMinted}/${sale.freeMintQuota ?? sale.freeSlotCount} slots used`;
   if (sale.paused) return 'Minting is paused.';
   if (sale.phase === 1) return sale.endReason === 2
     ? `Free mint ended · Deadline reached · ${count}.`
@@ -72,14 +74,14 @@ export function testConsent(value) {
 
 /** Inputs cannot change in this frozen collection. Read them and the generated
  * artwork at a recent validated block, instead of requiring a mint-time archive. */
-export async function readObservedArtwork(c, at, mint, head) {
-  return withSepoliaReadSource(c, source => readObservedArtworkAtSource(source, at, mint, head));
+export async function readObservedArtwork(c, at, mint, head, abi = loadPulseArtifact().abi) {
+  return withSepoliaReadSource(c, source => readObservedArtworkAtSource(source, at, mint, head, abi));
 }
-async function readObservedArtworkAtSource(c, at, mint, head) {
+async function readObservedArtworkAtSource(c, at, mint, head, abi) {
   const svgs = await Promise.all(readSources(c).map(async rpc => {
-    const inputs = await readContract(rpc, at, 'inputs', [BigInt(mint.tokenId)], head.number);
+    const inputs = await readContract(rpc, at, 'inputs', [BigInt(mint.tokenId)], head.number, abi);
     requireSepoliaIntegrity(inputs[0] === mint.renderHandle && inputs[1] === mint.mbti, 'MINT_INPUT');
-    const svg = await readContract(rpc, at, 'svg', [BigInt(mint.tokenId)], head.number);
+    const svg = await readContract(rpc, at, 'svg', [BigInt(mint.tokenId)], head.number, abi);
     if (requireRpcData(await rpc('eth_getBlockByNumber', [head.number, false])).hash !== head.hash) throw unavailableRpcData();
     return svg;
   }));
@@ -90,7 +92,7 @@ async function readObservedArtworkAtSource(c, at, mint, head) {
 
 function observedMint(binding, log, finalNumber) {
   assert.equal(log.removed, false); assert.equal(getAddress(log.address), getAddress(binding.collection));
-  const { args } = decodeEventLog({ abi: loadPulseArtifact().abi, ...log }), handle = canonicalHandle(args.renderHandle);
+  const { args } = decodeEventLog({ abi: sepoliaMintAbi(binding), ...log }), handle = canonicalHandle(args.renderHandle);
   assert.equal(args.handleKey, openMintHandleKey(handle)); assert.equal(args.tokenId, BigInt(args.handleKey)); assert.ok(isMbti(args.mbti));
   assert.equal(args.inputDigest, generativeInputDigest(args.renderHandle, args.mbti, binding.renderer.identity, INPUT_PROFILE));
   return { handle, renderHandle: args.renderHandle, mbti: args.mbti, tokenId: String(args.tokenId), transactionHash: log.transactionHash,
@@ -139,7 +141,7 @@ async function observeSepoliaMintReceiptAtSource(c, binding, { handle, wallet, t
     assert.equal(log.transactionIndex, receipt.transactionIndex);
   }
   if (receipt.status === '0x0') { assert.equal(receipt.logs.length, 0); return { state: 'reverted', transactionHash }; }
-  const abi = loadPulseArtifact().abi, topic = encodeEventTopics({ abi, eventName: 'GenerativeSignatureMinted' })[0];
+  const abi = sepoliaMintAbi(binding), topic = encodeEventTopics({ abi, eventName: 'GenerativeSignatureMinted' })[0];
   const logs = receipt.logs.filter(log => getAddress(log.address) === getAddress(binding.collection) && log.topics[0] === topic);
   assert.equal(logs.length, 1);
   const mint = observedMint(binding, logs[0], BigInt(finalized.number));
@@ -147,7 +149,7 @@ async function observeSepoliaMintReceiptAtSource(c, binding, { handle, wallet, t
     const authorization = savedMintAuthorization(binding, attempt), { args } = decodeEventLog({ abi, ...logs[0] });
     assert.equal(args.nonce, authorization.nonce); assert.equal(args.assessmentDigest, authorization.assessmentDigest);
     assert.equal(args.inputDigest, authorization.inputDigest);
-    assert.equal(args.authorizationDigest, pulseMintDigest({ chainId: 11155111, verifyingContract: binding.collection }, authorization));
+    assert.equal(args.authorizationDigest, sepoliaAuthorizationDigest(binding, authorization));
   }
   assert.equal(mint.handle, handle); assert.equal(getAddress(mint.wallet), getAddress(wallet));
   assert.equal(mint.block, receipt.blockNumber); assert.equal(mint.blockHash, receipt.blockHash); assert.equal(mint.transactionHash, transactionHash);
@@ -155,8 +157,8 @@ async function observeSepoliaMintReceiptAtSource(c, binding, { handle, wallet, t
   const transfers = receipt.logs.filter(log => getAddress(log.address) === getAddress(binding.collection) && log.topics[0] === transferTopic)
     .map(log => decodeEventLog({ abi, ...log }).args);
   assert.equal(transfers.filter(args => args.from === '0x' + '0'.repeat(40) && getAddress(args.to) === getAddress(wallet) && args.tokenId === BigInt(mint.tokenId)).length, 1);
-  const [svg] = await Promise.all([readObservedArtwork(c, binding.collection, mint, head), ...sources.map(async rpc => {
-    requireSepoliaIntegrity(getAddress(await readContract(rpc, binding.collection, 'trustedAuthorizer', [], head.number)) === getAddress(binding.authorizer), 'AUTHORIZER');
+  const [svg] = await Promise.all([readObservedArtwork(c, binding.collection, mint, head, abi), ...sources.map(async rpc => {
+    requireSepoliaIntegrity(getAddress(await readContract(rpc, binding.collection, 'trustedAuthorizer', [], head.number, abi)) === getAddress(binding.authorizer), 'AUTHORIZER');
     if (requireRpcData(await rpc('eth_getBlockByNumber', [head.number, false])).hash !== head.hash) throw unavailableRpcData();
   })]);
   return { state: mint.state, mint, head, finalized, svg };
@@ -166,7 +168,7 @@ async function observeSepoliaMintReceiptAtSource(c, binding, { handle, wallet, t
 // cursor. Keep the finalized prefix private so a caller cannot mutate it.
 const collectionCheckpoints = new WeakMap();
 const bindingKey = binding => JSON.stringify([getAddress(binding.collection), getAddress(binding.authorizer),
-  binding.renderer.identity, qty(binding.deployment.blockNumber)]);
+  binding.renderer.identity, qty(binding.deployment.blockNumber), binding.contractProfile ?? 'generative-pulse-v1-rc1']);
 const evidenceConflict = 'MINT_EVIDENCE_CONFLICT';
 export function collectionObservationFailure(previous, next) {
   // Once evidence is contradicted, a later timeout is not a recovery. Only a
@@ -202,7 +204,7 @@ export async function observeSepoliaCollection(c, binding, previous) {
   return withSepoliaReadSource(c, source => observeSepoliaCollectionAtSource(source, binding, previous));
 }
 async function observeSepoliaCollectionAtSource(c, binding, previous) {
-  const at = binding.collection, abi = loadPulseArtifact().abi;
+  const at = binding.collection, abi = sepoliaMintAbi(binding);
   const checkpoint = previous && collectionCheckpoints.get(previous), key = bindingKey(binding);
   if (previous) assert.ok(checkpoint?.key === key, 'Observer checkpoint is not verified for this deployment');
   const [head, finalized] = await Promise.all([sharedReadBlock(c), sharedReadBlock(c, 'finalized')]);
@@ -244,14 +246,14 @@ async function observeSepoliaCollectionAtSource(c, binding, previous) {
   }
   assert.ok(mints.size <= 100000);
   const [authorizers, counters] = await Promise.all([
-    Promise.all(readSources(c).map(rpc => readContract(rpc, at, 'trustedAuthorizer', [], head.number))),
+    Promise.all(readSources(c).map(rpc => readContract(rpc, at, 'trustedAuthorizer', [], head.number, abi))),
     Promise.all(readSources(c).map(async rpc => {
-      const sale = await readContract(rpc, at, 'saleStatus', [], head.number);
+      const sale = await readContract(rpc, at, 'saleStatus', [], head.number, abi);
       // In this bytecode-bound, non-burnable collection, each successful free
       // mint increments freeMinted and each paid mint advances epochIndex once.
       // A provider may return HTTP 200 with an incomplete historical log index.
       // Compare the complete map to current contract state, not a saved DB count.
-      const paid = sale.phase === 1 ? (await readContract(rpc, at, 'getPulseState', [], head.number)).epochIndex : 0n;
+      const paid = sale.phase === 1 ? (await readContract(rpc, at, 'getPulseState', [], head.number, abi)).epochIndex : 0n;
       return { sale, count: BigInt(sale.freeMinted) + BigInt(paid) };
     })),
   ]);
@@ -282,6 +284,7 @@ async function observeSepoliaCollectionAtSource(c, binding, previous) {
  * observer checkpoint without fetching the history suffix again. This never
  * upgrades mint eligibility; sale/price admission remains a separate read. */
 export async function advanceSepoliaCollectionIfUnchanged(c, binding, previous, head, finalized, options = {}) {
+  const abi = sepoliaMintAbi(binding);
   const checkpoint = previous && collectionCheckpoints.get(previous);
   if (!checkpoint || checkpoint.key !== bindingKey(binding) ||
     BigInt(head.number) < BigInt(previous.head.number)) return undefined;
@@ -298,11 +301,11 @@ export async function advanceSepoliaCollectionIfUnchanged(c, binding, previous, 
     ]);
     if (requireRpcData(currentHead).hash !== head.hash || requireRpcData(currentFinal).hash !== finalized.hash)
       throw unavailableRpcData();
-    const sale = await readContract(source.rpc, binding.collection, 'saleStatus', [], head.number);
-    const paid = sale.phase === 1 ? (await readContract(source.rpc, binding.collection, 'getPulseState', [], head.number)).epochIndex : 0n;
+    const sale = await readContract(source.rpc, binding.collection, 'saleStatus', [], head.number, abi);
+    const paid = sale.phase === 1 ? (await readContract(source.rpc, binding.collection, 'getPulseState', [], head.number, abi)).epochIndex : 0n;
     const count = BigInt(sale.freeMinted) + BigInt(paid);
     if (count !== BigInt(previous.expectedMintCount)) return undefined;
-    if (await readContract(source.rpc, binding.collection, 'trustedAuthorizer', [], head.number) !== binding.authorizer)
+    if (await readContract(source.rpc, binding.collection, 'trustedAuthorizer', [], head.number, abi) !== binding.authorizer)
       throw new PublicError(409, evidenceConflict, 'Mint authority changed.');
     if (requireRpcData(await source.rpc('eth_getBlockByNumber', [head.number, false])).hash !== head.hash)
       throw unavailableRpcData();
@@ -322,6 +325,7 @@ export async function advanceSepoliaCollectionIfUnchanged(c, binding, previous, 
  * incremental checkpoint. A forged, missing or reorged entry cannot skip logs. */
 export async function restoreSepoliaCheckpoint(c, binding, cached, options = {}) {
   if (!cached) return undefined;
+  const abi = sepoliaMintAbi(binding);
   return withSepoliaReadSource(c, async source => {
     const [head, finalized, anchor] = await Promise.all([sharedReadBlock(source), sharedReadBlock(source, 'finalized'),
       source.rpc('eth_getBlockByNumber', [cached.finalized.number, false]).then(requireRpcData)]);
@@ -342,8 +346,8 @@ export async function restoreSepoliaCheckpoint(c, binding, cached, options = {})
     // Receipt-only/partial caches must not skip unseen earlier mints. If the
     // RPC cannot serve this historical counter, retain presentation and do a
     // fresh cold scan instead; archive support is an optimization, not admission.
-    const prefixSale = await readContract(source.rpc, binding.collection, 'saleStatus', [], anchor.number);
-    const paid = prefixSale.phase === 1 ? (await readContract(source.rpc, binding.collection, 'getPulseState', [], anchor.number)).epochIndex : 0n;
+    const prefixSale = await readContract(source.rpc, binding.collection, 'saleStatus', [], anchor.number, abi);
+    const paid = prefixSale.phase === 1 ? (await readContract(source.rpc, binding.collection, 'getPulseState', [], anchor.number, abi)).epochIndex : 0n;
     if (BigInt(mints.size) !== BigInt(prefixSale.freeMinted) + BigInt(paid)) throw unavailableRpcData();
     assert.equal(requireRpcData(await source.rpc('eth_getBlockByNumber', [anchor.number, false])).hash, anchor.hash);
     const value = { at: 0, head, finalized: anchor, finalNumber: BigInt(anchor.number), mints };
@@ -355,22 +359,43 @@ export async function restoreSepoliaCheckpoint(c, binding, cached, options = {})
 /** Mint eligibility is independent of the history index. All mutable sale,
  * price, slot, wallet and handle checks use one recent, validated source/head. */
 export async function readSepoliaMintState(c, binding, plan, { wallet, handle } = {}, options = {}) {
+  const abi = sepoliaMintAbi(binding), admin = binding.contractProfile === PULSE_ADMIN_PROFILE;
+  const { allowlistProvider, ...readOptions } = options;
   return withSepoliaReadSource(c, async source => {
     const head = await sharedReadBlock(source), at = binding.collection;
-    const sale = await readContract(source.rpc, at, 'saleStatus', [], head.number);
-    requireSepoliaIntegrity(getAddress(await readContract(source.rpc, at, 'trustedAuthorizer', [], head.number)) === getAddress(binding.authorizer), 'AUTHORIZER');
+    const sale = await readContract(source.rpc, at, 'saleStatus', [], head.number, abi);
+    requireSepoliaIntegrity(getAddress(await readContract(source.rpc, at, 'trustedAuthorizer', [], head.number, abi)) === getAddress(binding.authorizer), 'AUTHORIZER');
+    let currentAllowlist, freeRoot, allowlistReady = !admin;
+    if (admin) {
+      // Mutable admin policy is ordinary block-pinned sale state, not a changed
+      // immutable deployment. A stale local list cannot poison paid mint/gallery.
+      freeRoot = await readContract(source.rpc, at, 'freeMintRoot', [], head.number, abi);
+      assert.ok(sale.freeConfigRevision > 0n && sale.freeMintQuota >= 0n
+        && sale.freeMintQuota <= sale.freeSlotCount && sale.freeMinted <= sale.freeMintQuota);
+      try {
+        const artifact = allowlistProvider ? await allowlistProvider() : undefined;
+        verifyAllowlistArtifacts(artifact);
+        assert.equal(artifact.manifest.root, freeRoot);
+        assert.equal(BigInt(artifact.manifest.slotCount), sale.freeSlotCount);
+        currentAllowlist = structuredClone(artifact); allowlistReady = true;
+      } catch { allowlistReady = false; }
+    } else currentAllowlist = plan.allowlist;
     if (wallet) await checkWalletSupport(source, wallet, head);
-    let slot;
-    if (wallet && sale.phase === 0 && BigInt(sale.freeDeadline) > BigInt(head.timestamp)) {
-      for (const row of plan.allowlist.proofs) if (getAddress(row.wallet) === getAddress(wallet)
-        && !(await readContract(source.rpc, at, 'isFreeSlotClaimed', [BigInt(row.slotId)], head.number))) { slot = row.slotId; break; }
+    let slot, proof;
+    if (wallet && allowlistReady && sale.phase === 0 && BigInt(sale.freeDeadline) > BigInt(head.timestamp)
+      && (!admin || sale.freeMinted < sale.freeMintQuota)) {
+      for (const row of currentAllowlist.proofs) if (getAddress(row.wallet) === getAddress(wallet)
+        && !(await readContract(source.rpc, at, 'isFreeSlotClaimed', [BigInt(row.slotId)], head.number, abi))) {
+        slot = row.slotId; if (admin) proof = [...row.siblings]; break;
+      }
     }
-    const price = sale.phase === 1 ? await readContract(source.rpc, at, 'getCurrentPrice', [], head.number) : 0n;
-    const minted = handle ? await readContract(source.rpc, at, 'mintedHandle', [openMintHandleKey(handle)], head.number) : undefined;
+    const price = sale.phase === 1 ? await readContract(source.rpc, at, 'getCurrentPrice', [], head.number, abi) : 0n;
+    const minted = handle ? await readContract(source.rpc, at, 'mintedHandle', [openMintHandleKey(handle)], head.number, abi) : undefined;
     if (requireRpcData(await source.rpc('eth_getBlockByNumber', [head.number, false])).hash !== head.hash) throw unavailableRpcData();
     return { at: Date.now(), head, sale, minted, free: slot !== undefined && !sale.paused, paid: sale.phase === 1 && !sale.paused,
-      slot, saleNotice: saleNotice(sale), priceWei: String(price), priceETH: formatEther(price) };
-  }, options);
+      slot, ...(admin ? { proof, freeRoot, allowlistReady, freeConfigRevision: String(sale.freeConfigRevision) } : {}),
+      saleNotice: saleNotice(sale), priceWei: String(price), priceETH: formatEther(price) };
+  }, readOptions);
 }
 
 /** Inputs come only from successful RPC validators in this process. A fresh
@@ -466,7 +491,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
     }
     return signer;
   };
-  const abi = loadPulseArtifact().abi, at = p.collection.address, sessions = new WalletSessions(origin, 11155111);
+  const abi = sepoliaMintAbi(p), at = p.collection.address, sessions = new WalletSessions(origin, 11155111);
   // Validate persisted state before taking the process lock, so a refused
   // startup cannot leave a stale owner claim behind.
   const db = existsSync(records) ? JSON.parse(readFileSync(records, 'utf8')) : { planDigest: p.digest, requests: {} };
@@ -539,7 +564,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
         catch { relayWriteError = 'RELAY_READ_UNAVAILABLE'; }
       }
       return withSepoliaReadSource(c,
-        source => readObservedArtwork(source, at, mint, head), { signal: AbortSignal.timeout(45000) });
+        source => readObservedArtwork(source, at, mint, head, abi), { signal: AbortSignal.timeout(45000) });
     })().then(async svg => {
       if (running && !conflict()) {
         svgBytes.set(key, svg); persistGallery();
@@ -569,11 +594,13 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
       : snapshot ? refreshError : unavailableRpcData(), immediateMints, includeHistorical);
   const verify = dependencies.verifyDeployment ?? verifyDeploymentAtSource;
   const observe = dependencies.observe ?? observeSepoliaCollection;
-  const readMintState = dependencies.readMintState ?? readSepoliaMintState;
+  const readMintState = (context, deployed, plan, input, options) => (dependencies.readMintState ?? readSepoliaMintState)(
+    context, deployed, plan, input, { ...options, allowlistProvider: dependencies.allowlistProvider });
   const bootstrap = createReadRecovery(async signal => {
     if (conflict()) throw new PublicError(409, evidenceConflict, 'Previously verified mints need to be checked before minting can continue.');
     const value = await withSepoliaReadSource(c, source => verify(source, p, j), { signal, sourceTimeoutMs: 45000 });
     signal.throwIfAborted(); assert.equal(value.testOnly, true); assert.equal(value.deployment.finalized, true);
+    assert.equal(value.contractProfile ?? 'generative-pulse-v1-rc1', p.contractProfile ?? 'generative-pulse-v1-rc1');
     binding = value; c.resetValidation(); bootstrapError = undefined;
   }, { intervalMs, once: true, onError(error) { bootstrapError = error; observationError(error, 'bootstrap'); if (integrityFailure(error)) refreshError = error; persistGallery(); },
     onSuccess() { saleLoop.start(); observer.start(); } });
@@ -630,7 +657,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
     const view = snapshot; if (!view) return;
     const missing = [...view.mints.values()].filter(mint => !svgBytes.has(mint.transactionHash + ':' + mint.blockHash)).slice(0, 4);
     for (const mint of missing) {
-      const svg = await withSepoliaReadSource(c, source => readObservedArtwork(source, at, mint, view.head), { signal, readPriority: 'background' });
+      const svg = await withSepoliaReadSource(c, source => readObservedArtwork(source, at, mint, view.head, abi), { signal, readPriority: 'background' });
       signal.throwIfAborted(); const key = mint.transactionHash + ':' + mint.blockHash;
       svgBytes.set(key, svg); artCache.set(key, Promise.resolve(svg)); persistGallery();
       if (relayStore) try { await relayStore.publishArtwork(key, svg); }
@@ -770,19 +797,29 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
       requireForUser(prior.stage === 'prepared', 'SUBMISSION_STARTED', 'Submission was already started. Check wallet activity; no automatic resend.');
       requireForUser(prior.deadline > Math.floor(Date.now() / 1000), 'REQUEST_EXPIRED', 'This mint request has expired. Contact support before trying again.');
       assert.equal(prior.mode, consent.mode); assert.equal(prior.cap, String(consent.cap));
+      if (binding.contractProfile === PULSE_ADMIN_PROFILE && prior.mode === 'free') {
+        const authorization = savedMintAuthorization(binding, prior);
+        requireForUser(authorization.freeConfigRevision === BigInt(economic.freeConfigRevision), 'QUOTE_CHANGED',
+          'The free mint configuration changed. Check your previous mint before trying again.');
+      }
       return { code: prior.code, handle: consent.handle, transaction: prior.transaction };
     }
     requireForUser(prior || Object.keys(db.requests).length < 50, 'PREPARATION_UNAVAILABLE', 'Mint preparation is currently unavailable.');
     const code = opaqueCode(), mbti = fixtureMbti(consent.handle);
-    const now = BigInt(head.timestamp), deadline = consent.mode === 'free' && now + 900n > BigInt(p.sale.freeDeadline) ? BigInt(p.sale.freeDeadline) : now + 900n;
+    const admin = binding.contractProfile === PULSE_ADMIN_PROFILE;
+    const freeDeadline = BigInt(admin ? economic.sale.freeDeadline : p.sale.freeDeadline);
+    const now = BigInt(head.timestamp), deadline = consent.mode === 'free' && now + 900n > freeDeadline ? freeDeadline : now + 900n;
     const a = { handleKey: openMintHandleKey(consent.handle), assessmentDigest: keccak256(stringToHex('SEPOLIA FIXTURE NOT GROK:' + p.digest + ':' + consent.handle)),
       inputDigest: generativeInputDigest(consent.renderHandle, mbti, binding.renderer.identity, INPUT_PROFILE), recipient: wallet,
       nonce: keccak256(stringToHex(code)), issuedAt: now, deadline, mintMode: consent.mode === 'free' ? 0 : 1,
-      slotId: consent.mode === 'free' ? BigInt(economic.slot) : PULSE_PAID_SLOT, maxPrice: consent.cap };
-    const signature = await signingAccount().signTypedData(pulseMintTypedData({ chainId: 11155111, verifyingContract: at }, a));
+      slotId: consent.mode === 'free' ? BigInt(economic.slot) : PULSE_PAID_SLOT, maxPrice: consent.cap,
+      ...(admin ? { freeConfigRevision: consent.mode === 'free' ? BigInt(economic.freeConfigRevision) : 0n } : {}) };
+    const signature = await signingAccount().signTypedData((admin ? pulseAdminMintTypedData : pulseMintTypedData)({ chainId: 11155111, verifyingContract: at }, a));
+    const proof = consent.mode === 'free' ? admin ? economic.proof : p.allowlist.proofs.find(row => BigInt(row.slotId) === a.slotId
+      && getAddress(row.wallet) === getAddress(wallet)).siblings : undefined;
+    if (consent.mode === 'free') assert.ok(Array.isArray(proof));
     const data = encodeFunctionData({ abi, functionName: consent.mode === 'free' ? 'mintFree' : 'mintPaid', args: consent.mode === 'free'
-      ? [consent.renderHandle, mbti, a, signature, p.allowlist.proofs.find(row => BigInt(row.slotId) === a.slotId
-        && getAddress(row.wallet) === getAddress(wallet)).siblings] : [consent.renderHandle, mbti, a, signature] });
+      ? [consent.renderHandle, mbti, a, signature, proof] : [consent.renderHandle, mbti, a, signature] });
     const gas = BigInt(await withSepoliaReadSource(c, source => source.rpc('eth_estimateGas',
       [{ from: wallet, to: at, data, value: qty(consent.cap) }]), { signal: AbortSignal.timeout(45000) }));
     requireActive();
@@ -993,9 +1030,14 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
             const generation = session.generation;
             requireBinding();
             const preflight = await readMintState(c, binding, p, { wallet, handle }, { signal: AbortSignal.timeout(45000) });
+            // RC1's paid path has no free slot/revision to decode. Keep its
+            // existing behavior while RC2 binds every saved wire field.
+            const authorization = binding.contractProfile === PULSE_ADMIN_PROFILE ? savedMintAuthorization(binding, row)
+              : row.mode === 'free' ? decodeFunctionData({ abi, data: row.transaction.data }).args[2] : undefined;
             requireActive();
             requireForUser(!preflight.sale.paused && !preflight.minted
-              && (row.mode === 'free' ? preflight.free && BigInt(preflight.slot) === decodeFunctionData({ abi, data: row.transaction.data }).args[2].slotId
+              && (row.mode === 'free' ? preflight.free && BigInt(preflight.slot) === authorization.slotId
+                && (binding.contractProfile !== PULSE_ADMIN_PROFILE || BigInt(preflight.freeConfigRevision) === authorization.freeConfigRevision)
                 : preflight.paid && BigInt(row.cap) >= BigInt(preflight.priceWei)),
             'QUOTE_CHANGED', 'Selected phase or spending ceiling is no longer valid. Check mint options.');
             assert.equal(session.generation, generation); assert.equal(verified(session), wallet);

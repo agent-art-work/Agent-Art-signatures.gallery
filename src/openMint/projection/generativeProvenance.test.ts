@@ -10,14 +10,17 @@ import type { ProjectionReads } from "./http.js";
 import type { ProjectedMint } from "./postgres.js";
 
 const signal = () => new AbortController().signal;
-function fixture(profile: "generative-experimental-v1" | "generative-v1-rc1" = "generative-v1-rc1") {
+function fixture(profile: "generative-experimental-v1" | "generative-v1-rc1" = "generative-v1-rc1", provenanceTimeoutMs = 1000) {
   const f = generativeProjectionFixture(profile), assessment = syntheticPublicAssessment();
   const mint: ProjectedMint = { tokenId: f.tokenId, availability: "available", handle: f.inputs.canonicalHandle,
     renderHandle: f.inputs.renderHandle, mbti: f.inputs.mbti, inputDigest: f.inputs.digest,
     rendererIdentity: f.inputs.rendererIdentity, assessmentDigest: f.inputs.assessmentDigest,
     originalRecipient: a(1), currentOwner: a(3), transactionHash: h(200), authorizationDigest: h(501), inclusion: { number: "11", hash: h(11) } };
   const lookup = vi.fn<ProjectionReads["lookup"]>().mockResolvedValue({ state: "confirming", item: mint });
-  const source = { timeoutMs: 20, loadAccepted: vi.fn(async (_handle: string, _digest: string, _signal: AbortSignal): Promise<unknown> => assessment) };
+  // Successful enrichment tests are not microbenchmarks: allow the validated
+  // source's maximum budget under suite-wide CPU contention. Deadline-specific
+  // cases opt into the narrow budget they deliberately exercise.
+  const source = { timeoutMs: provenanceTimeoutMs, loadAccepted: vi.fn(async (_handle: string, _digest: string, _signal: AbortSignal): Promise<unknown> => assessment) };
   const options = { ...f.options, projection: { lookup }, timeoutMs: 2000, provenance: source };
   return { ...f, assessment, mint, lookup, source, options, reads: createGenerativeArtworkReads(options) };
 }
@@ -68,7 +71,7 @@ describe("exact accepted assessment enrichment, never a new assessment", () => {
     expect(html).toContain("Not recorded"); expect(html).not.toContain("secret"); expect(html).not.toContain("grok-4.3");
   });
   it("bounds a stalled optional read, rejects its late enrichment and drains its cleanup", async () => {
-    const f = fixture(); let release!: (value: unknown) => void;
+    const f = fixture(undefined, 20); let release!: (value: unknown) => void;
     f.source.loadAccepted.mockImplementation(() => new Promise(resolve => { release = resolve; }));
     const page = await f.reads.detail(f.inputs.canonicalHandle, signal());
     expect(page).not.toHaveProperty("assessmentProvenance"); expect(f.source.loadAccepted.mock.calls[0][2].aborted).toBe(true);
@@ -83,7 +86,7 @@ describe("exact accepted assessment enrichment, never a new assessment", () => {
     expect(f.source.loadAccepted.mock.calls[0][2].aborted).toBe(true);
   });
   it("drain also owns optional DB work created after the initial chain-read snapshot", async () => {
-    const f = fixture(); let release!: (value: unknown) => void;
+    const f = fixture(undefined, 20); let release!: (value: unknown) => void;
     f.source.loadAccepted.mockImplementation(() => new Promise(resolve => { release = resolve; }));
     const page = f.reads.detail(f.inputs.canonicalHandle, signal());
     let drained = false; const draining = f.reads.drain().then(() => { drained = true; });
@@ -96,7 +99,7 @@ describe("exact accepted assessment enrichment, never a new assessment", () => {
     await expect(f.reads.detail(f.inputs.canonicalHandle, signal())).rejects.toThrow("unavailable");
   });
   it("withholds a response past its monotonic deadline even before the timer callback runs", async () => {
-    const f = fixture();
+    const f = fixture(undefined, 20);
     f.source.loadAccepted.mockImplementation(async () => {
       const until = performance.now() + 30; while (performance.now() < until) { /* Delayed event-loop timer. */ }
       return f.assessment;

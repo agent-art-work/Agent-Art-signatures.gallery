@@ -1,14 +1,27 @@
 import assert from 'node:assert/strict';
 import { decodeEventLog, encodeEventTopics, decodeFunctionData, getAddress, keccak256, stringToHex } from 'viem';
 import { loadPulseArtifact } from '../contracts/tools/pulse-candidate-lock.mjs';
+import { loadPulseAdminArtifact } from '../contracts/tools/pulse-admin-candidate.mjs';
 import { INPUT_PROFILE } from '../contracts/tools/pulse-sepolia-plan.mjs';
 import { generativeInputDigest } from '../src/openMint/generativeInputs.ts';
 import { pulseMintDigest } from '../src/openMint/pulseAuthorization.ts';
+import { PULSE_ADMIN_PROFILE, normalizePulseAdminAuthorization, pulseAdminMintDigest } from '../src/openMint/pulseAdminAuthorization.ts';
 import { canonicalHandle, isMbti } from '../src/openMint/identity.ts';
 import { openMintHandleKey } from '../src/openMint/authorization.ts';
 import { PublicError } from '../src/openMint/security.ts';
 import { canonicalSepoliaLog, readContract, sharedReadBlock } from './pulse-sepolia.mjs';
 import { readSources, withSepoliaReadSource, requireRpcData, unavailableRpcData, requireSepoliaIntegrity } from './pulse-sepolia-rpc.mjs';
+
+/** Only the verified deployment profile chooses ABI/domain, never request bytes. */
+export function sepoliaMintAbi(binding) {
+  assert.ok(binding.contractProfile === undefined || binding.contractProfile === 'generative-pulse-v1-rc1'
+    || binding.contractProfile === PULSE_ADMIN_PROFILE, 'Unknown Sepolia collection profile');
+  return binding.contractProfile === PULSE_ADMIN_PROFILE ? loadPulseAdminArtifact().abi : loadPulseArtifact().abi;
+}
+export function sepoliaAuthorizationDigest(binding, authorization) {
+  const domain = { chainId: 11155111, verifyingContract: binding.collection };
+  return binding.contractProfile === PULSE_ADMIN_PROFILE ? pulseAdminMintDigest(domain, authorization) : pulseMintDigest(domain, authorization);
+}
 
 /** The stored request, not user-provided expiry/nonce fields, identifies the
  * authorization whose ability to mint is being retired. */
@@ -18,7 +31,7 @@ export function savedMintAuthorization(binding, row) {
   assert.equal(transaction.chainId, '0xaa36a7');
   assert.equal(getAddress(transaction.from), getAddress(row.wallet));
   assert.equal(getAddress(transaction.to), getAddress(binding.collection));
-  const decoded = decodeFunctionData({ abi: loadPulseArtifact().abi, data: transaction.data });
+  const decoded = decodeFunctionData({ abi: sepoliaMintAbi(binding), data: transaction.data });
   assert.equal(decoded.functionName, row.mode === 'free' ? 'mintFree' : 'mintPaid');
   assert.ok(row.mode === 'free' || row.mode === 'paid');
   const [handle, mbti, authorization] = decoded.args;
@@ -33,6 +46,7 @@ export function savedMintAuthorization(binding, row) {
   assert.equal(authorization.mintMode, row.mode === 'free' ? 0 : 1);
   assert.equal(authorization.maxPrice, BigInt(row.cap));
   assert.equal(BigInt(transaction.value), BigInt(row.cap));
+  if (binding.contractProfile === PULSE_ADMIN_PROFILE) normalizePulseAdminAuthorization(authorization);
   return authorization;
 }
 
@@ -60,7 +74,7 @@ export function validateRecoveryTransaction(row, binding, hash, transaction) {
  * every block since deployment. A found hash is still only a pointer:
  * receiptStatus must validate its receipt and artwork before revealing. */
 async function findAuthorizationMint(source, binding, row, authorization, finalized) {
-  const abi = loadPulseArtifact().abi, sources = readSources(source), deployment = BigInt(binding.deployment.blockNumber);
+  const abi = sepoliaMintAbi(binding), sources = readSources(source), deployment = BigInt(binding.deployment.blockNumber);
   const topics = encodeEventTopics({ abi, eventName: 'GenerativeSignatureMinted', args: {
     handleKey: authorization.handleKey, nonce: authorization.nonce, recipient: authorization.recipient,
   } });
@@ -100,7 +114,7 @@ async function findAuthorizationMint(source, binding, row, authorization, finali
         && getAddress(args.recipient) === getAddress(row.wallet) && args.renderHandle === row.renderHandle
         && args.mbti === row.mbti && args.tokenId === BigInt(authorization.handleKey)
         && args.assessmentDigest === authorization.assessmentDigest && args.inputDigest === authorization.inputDigest
-        && args.authorizationDigest === pulseMintDigest({ chainId: 11155111, verifyingContract: binding.collection }, authorization),
+        && args.authorizationDigest === sepoliaAuthorizationDigest(binding, authorization),
       'RECOVERY_MINT_EVENT');
       const included = await header(BigInt(log.blockNumber));
       requireSepoliaIntegrity(included.hash === log.blockHash && BigInt(included.timestamp) >= authorization.issuedAt
@@ -121,7 +135,7 @@ async function findAuthorizationMint(source, binding, row, authorization, finali
  * every later use at timestamp >= deadline; an old queued transaction can
  * still spend gas and revert, but can never produce another signature. */
 export async function inspectSepoliaAttempt(c, binding, row, { transactionHash, signal } = {}) {
-  const authorization = savedMintAuthorization(binding, row);
+  const authorization = savedMintAuthorization(binding, row), abi = sepoliaMintAbi(binding);
   const hash = transactionHash ?? row.transactionHash;
   if (hash !== undefined && !/^0x[a-f0-9]{64}$/i.test(hash))
     throw new PublicError(400, 'INVALID_TRANSACTION_HASH', 'Enter the transaction hash from your wallet.');
@@ -131,8 +145,8 @@ export async function inspectSepoliaAttempt(c, binding, row, { transactionHash, 
     assert.match(finalized.timestamp, /^0x[0-9a-f]+$/i);
     const facts = await Promise.all(readSources(source).map(async rpc => {
       const [nonceUsed, handleMinted] = await Promise.all([
-        readContract(rpc, binding.collection, 'usedNonces', [authorization.nonce], finalized.number),
-        readContract(rpc, binding.collection, 'mintedHandle', [authorization.handleKey], finalized.number),
+        readContract(rpc, binding.collection, 'usedNonces', [authorization.nonce], finalized.number, abi),
+        readContract(rpc, binding.collection, 'mintedHandle', [authorization.handleKey], finalized.number, abi),
       ]);
       const anchor = requireRpcData(await rpc('eth_getBlockByNumber', [finalized.number, false]));
       requireSepoliaIntegrity(anchor.number === finalized.number && anchor.hash === finalized.hash

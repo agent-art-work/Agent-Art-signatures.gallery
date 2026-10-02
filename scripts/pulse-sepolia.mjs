@@ -267,8 +267,7 @@ export async function sendStep(c, p, j, step, request, nonce, persist = () => sa
   return receipt;
 }
 
-export async function readContract(rpc, at, name, args = [], block = 'latest') {
-  const abi = loadPulseArtifact().abi;
+export async function readContract(rpc, at, name, args = [], block = 'latest', abi = loadPulseArtifact().abi) {
   const artwork = name === 'svg' || name === 'tokenURI';
   const data = await rpc('eth_call', [{ to: at, data: encodeFunctionData({ abi, functionName: name, args }), gas: qty(artwork ? GENERATIVE_READ_LIMITS.artworkGas : GENERATIVE_READ_LIMITS.scalarGas) }, block]);
   return decodeBoundedRead(abi, name, data, artwork ? GENERATIVE_READ_LIMITS.artworkAbiBytes : GENERATIVE_READ_LIMITS.scalarAbiBytes);
