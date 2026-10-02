@@ -54,7 +54,7 @@ and closure policy plus paid Pulse configuration; do not manufacture them.
 - Unchanged coverage ratchet passed: statements **94.69%**, branches **91.89%**,
   functions **97.71%** (minimums remain 93/87/97).
 - Offline Foundry campaign: **251 passed, zero failures/skips**.
-- Dynamically selected Pulse mock/disposable-PG regression: **497 passed,
+- Dynamically selected Pulse mock/disposable-PG regression: **516 passed,
   zero failures/skips**. Standalone C5 JavaScript/Anvil differential tests remain
   explicitly separate from this mock-only selector, not silently omitted.
 - Backup helper: **5 passed**. Full real historical extraction/content/permission
@@ -63,18 +63,23 @@ and closure policy plus paid Pulse configuration; do not manufacture them.
   requests or JavaScript exceptions; representative screenshots inspected.
 - Build, typecheck, renderer/slogan locks, Core/RC1/RC2 integration locks,
   CI selection guards and whitespace checks passed.
-- Future-staging controller/worker native-coverage campaign: **84 passed**,
-  including eight test-harness regressions; **100% lines/functions and 99.34%
+- Future-staging controller/worker native-coverage campaign: **86 passed**,
+  including ten test-harness regressions; **100% lines/functions and 99.34%
   branches**, with its existing 100/98/100 thresholds unchanged.
-- Future-staging runtime/site/installed-package campaign: **61 passed**,
+- Future-staging runtime/site/installed-package campaign: **66 passed**,
+  including five test-harness regressions,
   **100% lines, 98.12% branches and 96.88% functions**, with its existing
-  100/94/95 thresholds unchanged. Isolated backup/restore campaign: **8 passed**.
+  100/94/95 thresholds unchanged. After that full run, five additional
+  response/cleanup/native-timer helper regressions and the two affected real
+  HTTP cases passed in a **12-case focused run**; the final complete hosted
+  campaign contains 71 cases. Isolated backup/restore campaign: **8 passed**.
 - Future-staging mint-controller native-coverage campaign: **39 passed**,
   including five test-harness regressions; **100% lines, 98.82% branches and
   97.96% functions**, with its existing 100/95/95 thresholds unchanged.
 
 Local evidence files are `/private/tmp/sg-hardening-final-coverage-20261002.json`,
-`coverage/coverage-summary.json`, and `/private/tmp/sg-ui-a11y-final/results.json`.
+`coverage/coverage-summary.json`, and
+`/private/tmp/sg-ui-a11y-chrome-bootstrap-complete/results.json`.
 Synthetic browser screenshots/results are the only evidence selected for the
 new CI artifact upload; private backup manifests and real-site screenshots
 are excluded. The archived backup and current dev runtime remain local.
@@ -103,7 +108,7 @@ its earlier hosted run passed, so this is preventative, not a claim that the
 mint suite was observed hanging.
 
 All 44 inherited campaign commands now run exactly once across independent core
-(35 minutes), admission (20), worker/transport (25), mint (15), runtime/site (20)
+(35 minutes), admission (20), worker/transport (25), mint (20), runtime/site (20)
 and recovery (20) jobs. Each fresh
 lane installs locked dependencies, PostgreSQL 16 and offline contract
 prerequisites; no lane imports another lane's state or artifacts. The separate
@@ -115,6 +120,58 @@ ten minutes. Keeping them in one 25-minute job would leave no credible margin.
 Partitioning gives each intact campaign its own bound instead of widening an
 application deadline or deleting coverage. Command guards recognize executable
 shell lines, not commented-out commands or echoes.
+
+A later hosted mint campaign passed all 39 tests and unchanged coverage gates
+in 834 seconds, but setup and cleanup exhausted its original 15-minute job
+budget. Its CI-only ceiling is now 20 minutes; no mint/application timer changed.
+
+The Chrome startup harness previously waited only for a stderr banner and
+discarded the diagnostics needed to identify a failure. It now checks its fresh
+private profile's DevTools port file and the same owned loopback browser's HTTP
+identity, with output as a fallback. The startup bound remains ten seconds,
+including rejection of a late response when the event loop delays timers.
+Failures retain the stage, child exit status and bounded stdout/stderr tails;
+CDP handshakes and pending commands also fail and clean up deterministically.
+Only the owned browser is stopped, and its profile is removed only after actual
+process close. All 48 visual cases remain mandatory; 19 new lifecycle regressions
+and a fresh real-Chrome audit passed. The cause of the earlier hosted Chrome
+failure is **unknown**, not evidence of a slow cold boot or an application bug.
+
+Hosted worker failures exposed two separate test-fixture timing problems: the
+synthetic head initially had only about twenty seconds of freshness remaining,
+and the short v2 admission tests allowed one second for covered SQL setup before
+their intended provider checkpoints. Normal controller/worker cases now make
+one explicit synthetic head transition after fixture setup; an old block is
+never rewritten and an old opaque witness is never renewed. A regression proves
+expired evidence remains refused until a new head and separately validated
+witness are read. Only the targeted v2 deadline tests use a controlled wall and
+monotonic clock, application timers and returned SQL admission clock, enabled
+before controller construction. They advance time at the actual mock transport
+checkpoint, retaining the exact one-second HTTP/RPC settings, provider completion
+limits and whole-job deadline. Expiry at 250 ms, cancellation, review withdrawal,
+shutdown, dispatch fences, durable accounting and refusal of late success remain
+asserted. Real settlement diagnostics and ordinary PostgreSQL/time-based tests
+are unchanged; a separate helper regression verifies clock/hook restoration.
+
+The runtime/HTTP suite had the same unbounded-callback defect: after HTTP 202,
+it awaited entry into Grok without racing the worker's actual completion. An
+early terminal/refused operation could therefore leave the test waiting forever.
+Its checkpoints now race the real operation and a real twenty-second diagnostic
+bound, even when a targeted test controls application time. Held mock providers
+and SQL hooks release in `finally`, and listener/idle/close/drain checks are
+bounded. Only an already-fatal teardown timeout may stop that suite's own
+temporary PostgreSQL cluster, never an existing environment. The disconnected
+HTTP test still uses the exact one-second request/RPC and ten-second worker
+settings, advances 1,300 ms only after actual HTTP 202 and Grok entry, and proves
+the private preparing status, busy fence, eventual ready status and zero signing.
+All 66 cases passed in the complete native-coverage campaign; it did not need a
+larger CI runtime budget.
+The final focused safeguards propagate response parsing, stream/abort and
+listener-close errors rather than throwing from asynchronous callbacks or
+silently resolving an error. Nested cleanup still closes runtime before clock
+restoration if idle rejects. A native-timer regression proves the diagnostic
+bound expires even while application time is frozen. Read-only peer review
+passed and independently reran all ten runtime helper cases.
 
 Older restore and site regressions still expected a gallery empty until
 finality. They now verify immediate **Confirming** visibility only after owned

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { request as httpRequest } from "node:http";
 import { test, describe, before, after, beforeEach, afterEach, mock } from "node:test";
 import { performance } from "node:perf_hooks";
 import { admissionDigest } from "../../src/openMint/staging/admission.ts";
 import { Client } from "pg";
 import { decodeFunctionData } from "viem";
-import { stagingAssessmentFixture } from "./fixtures/generative-staging-assessment.mjs";
+import { controlledAssessmentTiming, stagingAssessmentFixture } from "./fixtures/generative-staging-assessment.mjs";
 import { disposablePostgres } from "../../src/openMint/persistence/fixtures/postgres.ts";
 import { createStagingRuntime } from "./generative-staging-runtime.mjs";
 import { createStagingMintController } from "./generative-staging-mint.mjs";
@@ -14,10 +15,121 @@ import { stagingReviewFixture } from "../../src/openMint/staging/fixtures/stagin
 import { identity, receipt } from "../../src/openMint/persistence/fixtures/data.ts";
 import { GENERATIVE_MINT_ABI } from "../../src/openMint/generativeAuthorization.ts";
 
+// Diagnostic bounds must remain real even inside a targeted virtual-clock case.
+const diagnosticSetTimeout = globalThis.setTimeout;
+const diagnosticClearTimeout = globalThis.clearTimeout;
+async function expectCheckpoint(checkpoint, operation, label, timeoutMs = 20000) {
+  let timer;
+  try {
+    await Promise.race([checkpoint, operation.then(
+      result => { throw Error(`${label} completed before its checkpoint: ${JSON.stringify(result)}`); },
+      cause => { throw Error(`${label} rejected before its checkpoint`, { cause }); },
+    ), new Promise((_, reject) => { timer = diagnosticSetTimeout(() => reject(Error(`${label} checkpoint timed out`)), timeoutMs); })]);
+  } finally { diagnosticClearTimeout(timer); }
+}
+class TestSettlementTimeout extends Error {}
+async function settleWithin(operation, label, timeoutMs = 20000) {
+  let timer;
+  try {
+    return await Promise.race([operation, new Promise((_, reject) => {
+      timer = diagnosticSetTimeout(() => reject(new TestSettlementTimeout(`${label} settlement timed out`)), timeoutMs);
+    })]);
+  } finally { diagnosticClearTimeout(timer); }
+}
+function readHttpResponse(response) {
+  return new Promise((resolve, reject) => {
+    let text = "";
+    response.on("data", chunk => text += chunk);
+    response.on("error", reject);
+    response.on("aborted", () => reject(Error("Runtime test HTTP response aborted")));
+    response.on("end", () => {
+      try { resolve({ status: response.statusCode, headers: response.headers, body: text ? JSON.parse(text) : undefined }); }
+      catch (error) { reject(error); }
+    });
+  });
+}
+function closeHttpListener(listener) {
+  return new Promise((resolve, reject) => listener.close(error => error ? reject(error) : resolve()));
+}
+test("runtime checkpoint reports early completion instead of waiting for an unreachable provider", async () => {
+  await assert.rejects(expectCheckpoint(new Promise(() => {}), Promise.resolve({ status: "failed" }), "runtime provider"),
+    /completed before its checkpoint.*failed/);
+});
+test("runtime checkpoint surfaces early refusal with its original cause", async () => {
+  const cause = Error("mock runtime admission refusal");
+  await assert.rejects(expectCheckpoint(new Promise(() => {}), Promise.reject(cause), "runtime provider"), error => error.cause === cause);
+});
+test("runtime checkpoint bounds an unreachable held provider", async () => {
+  await assert.rejects(expectCheckpoint(new Promise(() => {}), new Promise(() => {}), "runtime provider", 5), /checkpoint timed out/);
+});
+test("runtime close and drain have a visible test-only settlement bound", async () => {
+  await assert.rejects(settleWithin(new Promise(() => {}), "runtime drain", 5), TestSettlementTimeout);
+});
+test("runtime settlement preserves the original rejection", async () => {
+  const cause = Error("mock runtime drain rejection");
+  await assert.rejects(settleWithin(Promise.reject(cause), "runtime drain"), error => error === cause);
+});
+test("runtime diagnostic bounds remain real while the targeted virtual clock is frozen", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  try {
+    await assert.rejects(expectCheckpoint(new Promise(() => {}), new Promise(() => {}), "frozen runtime", 5), /checkpoint timed out/);
+    await assert.rejects(settleWithin(new Promise(() => {}), "frozen runtime", 5), TestSettlementTimeout);
+  } finally { t.mock.timers.reset(); }
+});
+test("runtime response helper preserves JSON, status, headers and an empty body", async () => {
+  const headers = { "content-type": "application/json" };
+  const response = Object.assign(new EventEmitter(), { statusCode: 202, headers });
+  const pending = readHttpResponse(response);
+  response.emit("data", '{"accepted":'); response.emit("data", 'true}'); response.emit("end");
+  assert.deepEqual(await pending, { status: 202, headers, body: { accepted: true } });
+  const empty = Object.assign(new EventEmitter(), { statusCode: 204, headers: {} });
+  const emptyPending = readHttpResponse(empty); empty.emit("end");
+  assert.deepEqual(await emptyPending, { status: 204, headers: {}, body: undefined });
+});
+test("runtime response helper rejects malformed JSON without throwing from an event callback", async () => {
+  const response = new EventEmitter(), pending = readHttpResponse(response);
+  const rejected = assert.rejects(pending, SyntaxError);
+  response.emit("data", "{broken"); response.emit("end"); await rejected;
+});
+test("runtime response helper preserves stream errors and diagnoses an aborted response", async () => {
+  const response = new EventEmitter(), cause = Error("mock response stream failure");
+  const rejected = assert.rejects(readHttpResponse(response), error => error === cause);
+  response.emit("error", cause); await rejected;
+  const aborted = new EventEmitter(), abortedResult = assert.rejects(readHttpResponse(aborted), /HTTP response aborted/);
+  aborted.emit("aborted"); await abortedResult;
+});
+test("runtime listener close preserves callback errors instead of resolving them", async () => {
+  const cause = Error("mock listener close failure");
+  await assert.rejects(closeHttpListener({ close(callback) { callback(cause); } }), error => error === cause);
+  await closeHttpListener({ close(callback) { callback(); } });
+});
+
 describe("private future-staging runtime/HTTP: disposable PG, synthetic RPC, NO paid calls/broadcast", { skip: process.env.OPEN_MINT_TEST_POSTGRES !== "1" }, () => {
   let cluster, admin, f, runtime, review, deps, input, calls, hooks, server;
+  const releases = new Set();
+  const hold = () => {
+    let resolve; const promise = new Promise(r => resolve = r);
+    const release = () => { releases.delete(release); resolve(); }; releases.add(release);
+    return { promise, release };
+  };
+  const settle = async (operation, label) => {
+    try { return await settleWithin(operation, label); }
+    catch (error) {
+      if (error instanceof TestSettlementTimeout) {
+        for (const release of releases) release(); runtime?.halt(); f?.controller.halt(); server?.closeAllConnections();
+        // The timeout has already failed the test. Preserve query rejections,
+        // but prevent idle socket shutdown errors from masking its diagnostic.
+        for (const client of [admin, f?.db, f?.runtime].filter(Boolean)) client.on("error", () => {});
+        // This suite creates and owns this cluster, never an active environment.
+        try { cluster?.stop(); } catch (cleanup) { throw new AggregateError([error, cleanup], label); }
+      }
+      throw error;
+    }
+  };
+  const closeRuntime = () => settle(runtime?.close(), "staging runtime close");
+  const idleRuntime = () => settle(runtime?.idle(), "staging runtime preparation drain");
   before(async () => { cluster = disposablePostgres(); admin = new Client(cluster.config); await admin.connect(); });
-  after(async () => { await admin?.end(); cluster?.stop(); });
+  after(async () => { try { await settle(admin?.end(), "runtime administrator close"); } finally { cluster?.stop(); } });
   beforeEach(async () => {
     f = await stagingAssessmentFixture(cluster, admin, { admitted: false }); calls = { x: 0, grok: 0, sign: 0 }; hooks = {};
     for (const [i, h] of f.active.headers.entries()) h.timestamp = `0x${BigInt(Math.floor(Date.now() / 1000) - 20 + i * 2).toString(16)}`;
@@ -43,24 +155,44 @@ describe("private future-staging runtime/HTTP: disposable PG, synthetic RPC, NO 
     runtime = createStagingRuntime(input, deps);
     await f.db.query("UPDATE open_mint.generative_issuance_profiles SET enabled=true");
   });
-  afterEach(async () => { f.faults.afterQuery = undefined; if (server) { server.closeAllConnections(); await new Promise(r => server.close(r)); server = undefined; }
-    await runtime?.close(); await f?.close(); });
+  afterEach(async () => {
+    for (const release of releases) release();
+    if (f) f.faults.afterQuery = undefined; runtime?.halt(); f?.controller.halt();
+    const failures = [];
+    if (server) {
+      server.closeAllConnections();
+      try { await settle(closeHttpListener(server), "runtime HTTP listener close"); }
+      catch (error) { failures.push(error); }
+      server = undefined;
+    }
+    for (const cleanup of [closeRuntime, () => settle(f?.close(), "runtime fixture close")]) {
+      try { await cleanup(); } catch (error) { failures.push(error); }
+    }
+    f = undefined; runtime = undefined;
+    if (failures.length) throw new AggregateError(failures, "Staging runtime teardown failed");
+  });
   const auth = () => ({ cookie: f.sessions.cookie(f.session), origin: f.settings.origin, csrf: f.session.csrf });
-  async function prepared() { const r = await runtime.create("Alice", auth()); await runtime.idle();
+  async function prepared() { const r = await runtime.create("Alice", auth()); await idleRuntime();
     assert.equal((await runtime.status(r.code, auth().cookie)).status, "ready"); return r; }
   const counts = async () => (await f.db.query(`SELECT (SELECT count(*)::int FROM open_mint.requests) AS requests,
     (SELECT count(*)::int FROM open_mint.assessment_attempts) AS attempts,(SELECT count(*)::int FROM open_mint.wallet_mint_dispatches) AS dispatches,
     (SELECT count(*)::int FROM open_mint.generative_authorizations) AS authorizations`)).rows[0];
-  async function start() { server = createStagingRuntimeApiServer(runtime); await new Promise(r => server.listen(0, "127.0.0.1", r)); }
+  async function start() {
+    server = createStagingRuntimeApiServer(runtime);
+    await settle(new Promise((accept, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", accept); }), "runtime HTTP listener start");
+  }
   async function http(path, body, headers = {}, method = body === undefined ? "GET" : "POST") {
-    return new Promise((resolve, reject) => {
+    let req;
+    const pending = new Promise((resolve, reject) => {
       const bytes = body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body);
-      const req = httpRequest({ host: "127.0.0.1", port: server.address().port, path, method,
+      req = httpRequest({ host: "127.0.0.1", port: server.address().port, path, method,
         headers: { host: "staging.signatures.gallery", "x-forwarded-proto": "https", cookie: auth().cookie, origin: auth().origin, "x-csrf-token": auth().csrf,
           ...(bytes === undefined ? {} : { "content-type": "application/json", "content-length": Buffer.byteLength(bytes) }), ...headers } }, res => {
-        let text = ""; res.on("data", c => text += c); res.on("end", () => { resolve({ status: res.statusCode, headers: res.headers, body: text ? JSON.parse(text) : undefined }); });
+        readHttpResponse(res).then(resolve, reject);
       }); req.on("error", reject); req.end(bytes);
     });
+    try { return await settle(pending, `runtime HTTP ${method} ${path}`); }
+    catch (error) { req?.destroy(); throw error; }
   }
 
   test("explicit create -> accepted assessment -> signed exact plan -> single durable permit -> report; polling never reveals", async () => {
@@ -70,7 +202,7 @@ describe("private future-staging runtime/HTTP: disposable PG, synthetic RPC, NO 
     await runtime.check(); runtime.assertHealthy();
     await start(); const session = await http("/api/session"); assert.equal(session.body.chainName, "Ethereum Sepolia");
     const created = await http("/api/assessments", { handle: "Alice" }); assert.equal(created.status, 202);
-    const code = created.body.code; await runtime.idle();
+    const code = created.body.code; await idleRuntime();
     for (let i = 0; i < 3; i++) {
       const s = await http(`/api/assessments/${code}`); assert.equal(s.body.status, "ready", JSON.stringify({ s: s.body, calls, terminals: (await f.db.query("SELECT kind,reason,phase FROM open_mint.assessment_terminals")).rows }));
       assert.equal(s.body.canMint, true); assert.doesNotMatch(JSON.stringify(s.body), /ENFP|assessmentDigest|providerResponse|ALIce|typedData|permit|signature"/);
@@ -89,33 +221,43 @@ describe("private future-staging runtime/HTTP: disposable PG, synthetic RPC, NO 
     assert.ok(f.active.requests.every(r => !/send|sign/i.test(r.method)));
     assert.match(s.headers["cache-control"], /no-store/); assert.match(s.headers["x-robots-tag"], /noindex/);
   });
-  test("v2 sends 202 and serves private status while slow assessment outlives the disconnected HTTP request", async () => {
-    await runtime.close(); const config = JSON.parse(input.operatingJson);
-    config.settings.hosting.requestTimeoutMs = 1000; config.settings.rpc.timeoutMs = 1000;
-    const assessmentPolicy = { ...input.assessmentPolicy, schema: "sg-readiness-assessment-policy-v2",
-      timing: { jobTimeoutMs: 10000, xCompletionMs: 2000, grokCompletionMs: 4000 } };
-    config.settings.assessment.profileSha256 = admissionDigest(assessmentPolicy);
-    input = { ...input, operatingJson: JSON.stringify(config), assessmentPolicy };
-    const candidate = createStagingMintController(input); review = stagingReviewFixture(candidate.scope,
-      { operations: ["reuse", "assessment-x", "assessment-grok", "sign", "wallet-submit"] }); candidate.halt();
-    input.reviewSource = review.source; runtime = createStagingRuntime(input, deps);
-    let entered, release; const inFlight = new Promise(r => entered = r), held = new Promise(r => release = r);
-    hooks.grok = async () => { entered(); await held; };
+  test("v2 sends 202 and serves private status while slow assessment outlives the disconnected HTTP request", async t => {
+    await closeRuntime();
+    // Exercise the exact reviewed 1s/10s budgets at the intended provider
+    // checkpoint, not incidental covered PostgreSQL setup on a slow runner.
+    const clock = controlledAssessmentTiming(t, f);
+    let entered; const inFlight = new Promise(r => entered = r), held = hold();
     try {
+      const config = JSON.parse(input.operatingJson);
+      config.settings.hosting.requestTimeoutMs = 1000; config.settings.rpc.timeoutMs = 1000;
+      const assessmentPolicy = { ...input.assessmentPolicy, schema: "sg-readiness-assessment-policy-v2",
+        timing: { jobTimeoutMs: 10000, xCompletionMs: 2000, grokCompletionMs: 4000 } };
+      config.settings.assessment.profileSha256 = admissionDigest(assessmentPolicy);
+      input = { ...input, operatingJson: JSON.stringify(config), assessmentPolicy };
+      const candidate = createStagingMintController(input); review = stagingReviewFixture(candidate.scope,
+        { operations: ["reuse", "assessment-x", "assessment-grok", "sign", "wallet-submit"] }); candidate.halt();
+      input.reviewSource = review.source; runtime = createStagingRuntime(input, deps);
+      hooks.grok = async () => { entered(); await held.promise; };
       await start(); const created = await http("/api/assessments", { handle: "Alice" }, { connection: "close" });
-      assert.equal(created.status, 202); await inFlight;
-      await new Promise(r => setTimeout(r, 1300));
+      assert.equal(created.status, 202);
+      await expectCheckpoint(inFlight, runtime.idle(), "disconnected HTTP assessment Grok");
+      assert.equal(runtime.timeoutMs, 1000); const began = Date.now(); clock.tick(1300);
+      assert.equal(Date.now() - began, 1300); assert.ok(Date.now() - began > runtime.timeoutMs);
       const status = await http(`/api/assessments/${created.body.code}`);
       assert.equal(status.status, 200); assert.equal(status.body.status, "preparing");
       assert.equal(status.body.preparationActive, true); assert.doesNotMatch(JSON.stringify(status.body), /ENFP|sourceUrls|assessmentDigest/);
       const blocked = await http("/api/assessments", { handle: "Bob" });
       assert.equal(blocked.status, 503); assert.equal(blocked.body.code, "BUSY");
-      release(); await runtime.idle();
+      held.release(); await idleRuntime();
       assert.equal((await http(`/api/assessments/${created.body.code}`)).body.status, "ready");
       // Assessment completion is not mint consent and must not sign anything.
       assert.equal((await counts()).authorizations, 0);
       assert.deepEqual(calls, { x: 1, grok: 1, sign: 0 });
-    } finally { release(); }
+    } finally {
+      held.release();
+      try { await idleRuntime(); }
+      finally { try { await closeRuntime(); } finally { clock.close(); } }
+    }
   });
   test("new secure session, scoped wallet proof and logout are separate from paid/mint intent", async () => {
     await start(); const s = await http("/api/session", undefined, { cookie: "" });
@@ -132,18 +274,18 @@ describe("private future-staging runtime/HTTP: disposable PG, synthetic RPC, NO 
     assert.equal((await http("/api/wallet/context", undefined, headers)).status, 403); assert.deepEqual(calls, { x: 0, grok: 0, sign: 0 });
   });
   test("reload/restart reads never resume work; accepted assessment and exact signed plan survive restart without providers", async () => {
-    const r = await prepared(), original = await runtime.authorize(r.code, true, auth()); await runtime.close();
+    const r = await prepared(), original = await runtime.authorize(r.code, true, auth()); await closeRuntime();
     runtime = createStagingRuntime(input, { ...deps, provider: undefined, identityResolver: undefined });
     assert.equal((await runtime.status(r.code, auth().cookie)).canMint, true);
     await f.db.query("UPDATE open_mint.budget_policies SET generation_enabled=false");
     const repeated = await runtime.authorize(r.code, true, auth()); assert.deepEqual(repeated.transaction, original.transaction);
-    const same = await runtime.create("aLiCe", auth()); await runtime.idle(); assert.equal((await runtime.status(same.code, auth().cookie)).status, "ready");
+    const same = await runtime.create("aLiCe", auth()); await idleRuntime(); assert.equal((await runtime.status(same.code, auth().cookie)).status, "ready");
     assert.deepEqual(calls, { x: 1, grok: 1, sign: 1 });
   });
   test("queued saved request remains inert on construction and GET", async () => {
     await f.requests.create({ sessionToken: f.session.id, sessionGeneration: f.session.generation, origin: f.settings.origin, csrf: f.session.csrf,
       recipient: f.wallet.address, handle: "Alice", eligibility: await f.witness() }).then(async r => {
-      assert.equal((await runtime.status(r.code, auth().cookie)).status, "failed"); await runtime.idle();
+      assert.equal((await runtime.status(r.code, auth().cookie)).status, "failed"); await idleRuntime();
     }); assert.deepEqual(calls, { x: 0, grok: 0, sign: 0 });
   });
   test("all HTTP overrides and unsupported routes fail before effects", async () => {
@@ -164,10 +306,10 @@ describe("private future-staging runtime/HTTP: disposable PG, synthetic RPC, NO 
     assert.equal((await counts()).attempts, 0); assert.deepEqual(calls, { x: 0, grok: 0, sign: 0 });
   });
   test("failed provider preserves operator-review outcome; reads cannot dispatch another call", async () => {
-    hooks.x = () => { throw Error("secret provider body"); }; const r = await runtime.create("Alice", auth()); await runtime.idle();
+    hooks.x = () => { throw Error("secret provider body"); }; const r = await runtime.create("Alice", auth()); await idleRuntime();
     await start(); const status = await http(`/api/assessments/${r.code}`); assert.equal(status.body.status, "failed");
     assert.doesNotMatch(JSON.stringify(status), /secret provider/); await runtime.status(r.code, auth().cookie);
-    await runtime.create("Alice", auth()); await runtime.idle(); assert.deepEqual(calls, { x: 1, grok: 0, sign: 0 });
+    await runtime.create("Alice", auth()); await idleRuntime(); assert.deepEqual(calls, { x: 1, grok: 0, sign: 0 });
   });
   for (const kind of ["review", "grant", "profile", "generation", "proof", "bad-handle", "wrong-wallet"]) test(`${kind} prevents request admission`, async () => {
     if (kind === "review") review.withdraw();
@@ -195,7 +337,7 @@ describe("private future-staging runtime/HTTP: disposable PG, synthetic RPC, NO 
     assert.equal((await counts()).attempts, 0); assert.equal((await counts()).requests, 0); assert.equal(calls.x, 0);
   });
   test("missing generation operation review rolls new admission back", async () => {
-    await runtime.close(); const candidate = createStagingMintController(f.input);
+    await closeRuntime(); const candidate = createStagingMintController(f.input);
     review = stagingReviewFixture(candidate.scope, { operations: ["reuse"] }); candidate.halt();
     runtime = createStagingRuntime({ ...input, reviewSource: review.source }, deps);
     await assert.rejects(runtime.create("Alice", auth())); assert.equal((await counts()).attempts, 0); assert.equal(calls.x, 0);
@@ -230,11 +372,14 @@ describe("private future-staging runtime/HTTP: disposable PG, synthetic RPC, NO 
     assert.equal(calls.sign, 0);
   });
   test("one bounded preparation; cancellation/drain never starts the next paid leg", async () => {
-    let release, entered; const started = new Promise(r => entered = r);
-    hooks.x = async () => { entered(); await new Promise(r => release = r); };
-    const r = await runtime.create("Alice", auth()); await started;
-    const status = await runtime.status(r.code, auth().cookie); assert.equal(status.preparationActive, true);
-    await assert.rejects(runtime.create("bob", auth())); const closing = runtime.close(); release(); await closing;
+    let entered; const started = new Promise(r => entered = r), held = hold();
+    hooks.x = async () => { entered(); await held.promise; };
+    const r = await runtime.create("Alice", auth());
+    try {
+      await expectCheckpoint(started, runtime.idle(), "bounded preparation X");
+      const status = await runtime.status(r.code, auth().cookie); assert.equal(status.preparationActive, true);
+      await assert.rejects(runtime.create("bob", auth())); const closing = closeRuntime(); held.release(); await closing;
+    } finally { held.release(); await closeRuntime(); }
     assert.equal(calls.grok, 0); await assert.rejects(runtime.session(auth().cookie));
   });
   test("malformed composition and ordinary public startup remain closed", () => {
@@ -247,7 +392,7 @@ describe("private future-staging runtime/HTTP: disposable PG, synthetic RPC, NO 
     try { assert.throws(() => createStagingRuntimeApiServer(runtime)); } finally { if (old === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = old; }
   });
   test("reuse-only runtime cannot reserve a new paid attempt without provider adapters", async () => {
-    await runtime.close(); runtime = createStagingRuntime(input, { ...deps, provider: undefined, identityResolver: undefined });
+    await closeRuntime(); runtime = createStagingRuntime(input, { ...deps, provider: undefined, identityResolver: undefined });
     await assert.rejects(runtime.create("Alice", auth()), /New assessments are unavailable/);
     assert.equal((await counts()).attempts, 0); assert.equal((await counts()).requests, 0);
   });
@@ -271,34 +416,49 @@ describe("private future-staging runtime/HTTP: disposable PG, synthetic RPC, NO 
     assert.deepEqual(Object.keys(result.body).sort(), ["code", "error"]); assert.equal(calls.x, 0);
   });
   for (const checkFirst of [true, false]) test(`owner certification and API work coexist; check first=${checkFirst}`, async () => {
-    let release, enter;
-    const entered = new Promise(r => { enter = r; });
-    f.faults.afterQuery = async () => { f.faults.afterQuery = undefined; enter(); await new Promise(r => { release = r; }); };
-    const first = checkFirst ? runtime.check() : runtime.session(auth().cookie); await entered;
-    const second = checkFirst ? runtime.session(auth().cookie) : runtime.check();
-    // Each lane remains single-flight; there is no effect queue or retry.
-    await assert.rejects(runtime.check(), error => error.code === "BUSY");
-    await assert.rejects(runtime.session(auth().cookie), error => error.code === "BUSY");
-    release(); const results = await Promise.all([first, second]);
-    assert.equal(results[checkFirst ? 1 : 0].walletVerified, true);
+    let enter; const entered = new Promise(r => { enter = r; }), held = hold();
+    f.faults.afterQuery = async () => { f.faults.afterQuery = undefined; enter(); await held.promise; };
+    const first = checkFirst ? runtime.check() : runtime.session(auth().cookie); let pending;
+    try {
+      await expectCheckpoint(entered, first, "concurrent owner/API SQL");
+      const second = checkFirst ? runtime.session(auth().cookie) : runtime.check();
+      pending = Promise.all([first, second]); pending.catch(() => {});
+      // Each lane remains single-flight; there is no effect queue or retry.
+      await assert.rejects(runtime.check(), error => error.code === "BUSY");
+      await assert.rejects(runtime.session(auth().cookie), error => error.code === "BUSY");
+      held.release(); const results = await settle(pending, "concurrent owner/API results");
+      assert.equal(results[checkFirst ? 1 : 0].walletVerified, true);
+    } finally {
+      held.release(); f.faults.afterQuery = undefined;
+      await settle((pending ?? first).catch(() => {}), "owner/API operations drain");
+    }
     assert.deepEqual(calls, { x: 0, grok: 0, sign: 0 }); assert.equal((await counts()).requests, 0);
   });
   test("cancelled owner check cannot poison a concurrent API operation", async () => {
-    let release, enter; const entered = new Promise(r => { enter = r; }), c = new AbortController();
-    f.faults.afterQuery = async () => { f.faults.afterQuery = undefined; enter(); await new Promise(r => { release = r; }); };
-    const api = runtime.session(auth().cookie); await entered;
-    const check = runtime.check(c.signal); c.abort(); release();
-    await assert.rejects(check); assert.equal((await api).walletVerified, true);
+    let enter; const entered = new Promise(r => { enter = r; }), held = hold(), c = new AbortController();
+    f.faults.afterQuery = async () => { f.faults.afterQuery = undefined; enter(); await held.promise; };
+    const api = runtime.session(auth().cookie);
+    try {
+      await expectCheckpoint(entered, api, "cancelled owner concurrent SQL");
+      const check = runtime.check(c.signal); const rejected = assert.rejects(check); c.abort(); held.release();
+      await settle(rejected, "cancelled owner refusal"); assert.equal((await api).walletVerified, true);
+    } finally { held.release(); c.abort(); f.faults.afterQuery = undefined; await settle(api.catch(() => {}), "concurrent API operation drain"); }
     await runtime.check(); runtime.assertHealthy(); assert.deepEqual(calls, { x: 0, grok: 0, sign: 0 });
   });
   for (const checkOnly of [false, true]) test(`runtime deadline quarantines both lanes and close drains delayed database work; owner=${checkOnly}`, async () => {
-    let release, entered, once = false; const started = new Promise(r => entered = r);
-    f.faults.afterQuery = async sql => { if (!once && sql === "BEGIN") { once = true; entered(); await new Promise(r => release = r); } };
-    const pending = checkOnly ? runtime.check() : runtime.session(auth().cookie); await started;
-    await assert.rejects(pending, /deadline/);
-    let closed = false; const closing = runtime.close().then(() => { closed = true; });
-    await new Promise(r => setImmediate(r)); assert.equal(closed, false);
-    release(); await closing; f.faults.afterQuery = undefined;
+    let entered, once = false; const started = new Promise(r => entered = r), held = hold();
+    f.faults.afterQuery = async sql => { if (!once && sql === "BEGIN") { once = true; entered(); await held.promise; } };
+    const pending = checkOnly ? runtime.check() : runtime.session(auth().cookie);
+    try {
+      await expectCheckpoint(started, pending, "runtime deadline SQL");
+      await settle(assert.rejects(pending, /deadline/), "runtime deadline refusal");
+      let closed = false; const closing = closeRuntime().then(() => { closed = true; });
+      await new Promise(r => setImmediate(r)); assert.equal(closed, false);
+      held.release(); await closing;
+    } finally {
+      held.release(); f.faults.afterQuery = undefined;
+      await settle(pending.catch(() => {}), "runtime deadline operation drain"); await closeRuntime();
+    }
     await assert.rejects(runtime.session(auth().cookie)); assert.equal((await counts()).requests, 0); assert.equal(calls.x, 0);
   });
   test("monotonic expiry before a timer callback rolls admission back and starts no late worker", async () => {

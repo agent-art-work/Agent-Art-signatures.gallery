@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test, describe, before, after, beforeEach, afterEach } from "node:test";
+import { performance } from "node:perf_hooks";
 import { Client } from "pg";
-import { stagingAssessmentFixture } from "./fixtures/generative-staging-assessment.mjs";
+import { stagingAssessmentFixture, controlledAssessmentTiming } from "./fixtures/generative-staging-assessment.mjs";
 import { disposablePostgres } from "../../src/openMint/persistence/fixtures/postgres.ts";
 import { createStagingAssessmentWorker } from "./generative-staging-worker.mjs";
 import { createGuardedStagingWorker, PostgresAssessmentWorker } from "../../src/openMint/persistence/assessmentWorker.ts";
@@ -10,6 +11,11 @@ import { GrokAssessmentProvider } from "../../src/openMint/grok.ts";
 import { stagingReviewFixture } from "../../src/openMint/staging/fixtures/stagingReview.ts";
 import { createStagingAssessmentController } from "./generative-staging-assessment.mjs";
 import { admissionDigest } from "../../src/openMint/staging/admission.ts";
+import { readPublicChainEligibility } from "../../src/openMint/publicChain.ts";
+
+// Keep harness settlement bounds real while the selected timing cases drive
+// application timers explicitly at their mocked effect checkpoints.
+const settlementTimeout = setTimeout, clearSettlementTimeout = clearTimeout;
 
 async function expectCheckpoint(checkpoint, operation, label, timeoutMs = 20000) {
   let timer;
@@ -17,17 +23,17 @@ async function expectCheckpoint(checkpoint, operation, label, timeoutMs = 20000)
     await Promise.race([checkpoint, operation.then(
       result => { throw Error(`${label} completed before its checkpoint: ${JSON.stringify(result)}`); },
       cause => { throw Error(`${label} rejected before its checkpoint`, { cause }); },
-    ), new Promise((_, reject) => { timer = setTimeout(() => reject(Error(`${label} checkpoint timed out`)), timeoutMs); })]);
-  } finally { clearTimeout(timer); }
+    ), new Promise((_, reject) => { timer = settlementTimeout(() => reject(Error(`${label} checkpoint timed out`)), timeoutMs); })]);
+  } finally { clearSettlementTimeout(timer); }
 }
 class TestSettlementTimeout extends Error {}
 async function settleWithin(operation, label, timeoutMs = 20000) {
   let timer;
   try {
     return await Promise.race([operation, new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new TestSettlementTimeout(`${label} settlement timed out`)), timeoutMs);
+      timer = settlementTimeout(() => reject(new TestSettlementTimeout(`${label} settlement timed out`)), timeoutMs);
     })]);
-  } finally { clearTimeout(timer); }
+  } finally { clearSettlementTimeout(timer); }
 }
 
 test("worker checkpoint reports early terminal completion instead of hanging", async () => {
@@ -47,6 +53,21 @@ test("worker close has a visible bound if settlement regresses", async () => {
 test("worker settlement preserves the original rejection", async () => {
   const cause = Error("mock drain rejection");
   await assert.rejects(settleWithin(Promise.reject(cause), "worker drain"), error => error === cause);
+});
+test("targeted timing helper synchronizes clocks and restores timers and the prior SQL hook", async t => {
+  const wall = Date.now, timer = setTimeout, mono = performance.now, origin = Date.now(), start = performance.now();
+  let inspected = 0; const original = async () => inspected++, fixture = { faults: { afterQuery: original } };
+  const clock = controlledAssessmentTiming(t, fixture);
+  try {
+    let expired = false; setTimeout(() => expired = true, 250);
+    clock.tick(249); assert.equal(expired, false);
+    assert.ok(Date.now() >= origin + 249); assert.ok(performance.now() >= start + 249);
+    const row = { rows: [{ now: new Date(0) }] }; await fixture.faults.afterQuery("SELECT clock_timestamp() AS now", row);
+    assert.equal(inspected, 1); assert.equal(row.rows[0].now.getTime(), Date.now());
+    clock.tick(1); assert.equal(expired, true);
+  } finally { clock.close(); }
+  assert.equal(Date.now, wall); assert.equal(setTimeout, timer); assert.equal(performance.now, mono);
+  assert.equal(fixture.faults.afterQuery, original);
 });
 
 describe("future staging worker developed locally: real disposable SQL, mocked X/Grok and synthetic Sepolia", { skip: process.env.OPEN_MINT_TEST_POSTGRES !== "1" }, () => {
@@ -68,7 +89,7 @@ describe("future staging worker developed locally: real disposable SQL, mocked X
   const close = worker => settle(worker.close(), "staging worker close");
   before(async () => { cluster = disposablePostgres(); admin = new Client(cluster.config); await admin.connect(); });
   after(async () => { try { await settle(admin?.end(), "worker administrator close"); } finally { cluster?.stop(); } });
-  beforeEach(async () => { f = await stagingAssessmentFixture(cluster, admin, { claimed: false }); });
+  beforeEach(async () => { f = await stagingAssessmentFixture(cluster, admin, { claimed: false }); f.advanceHeadToNow(); });
   afterEach(async () => {
     const failures = [], owned = workers.splice(0); for (const worker of owned) worker.halt(); f?.controller.halt();
     for (const worker of owned) { try { await close(worker); } catch (error) { failures.push(error); } }
@@ -112,15 +133,20 @@ describe("future staging worker developed locally: real disposable SQL, mocked X
     const candidate = createStagingAssessmentController(input), signed = stagingReviewFixture(candidate.scope); candidate.halt();
     return { input: { ...input, reviewSource: signed.source }, signed };
   }
-  test("v2 real clients complete both slow paid legs beyond the HTTP/RPC budget and restart without re-spending", async () => {
-    const { input } = timedInput(), h = setup({}, input);
-    h.hooks.x = async () => { await new Promise(r => setTimeout(r, 1300)); return Response.json({ data: { id: "123", username: "ALIce" } }); };
-    h.hooks.grok = async response => { await new Promise(r => setTimeout(r, 1300)); return Response.json(response); };
-    const result = await h.worker.run(await f.intent());
-    assert.equal(result.kind, "accepted"); assert.deepEqual(h.counts, { x: 1, grok: 1, refresh: 2 });
-    assert.deepEqual(await state(), { job: "complete", attempt: "accepted", receipts: 2, accepted: 1, reservations: 1 });
-    await close(h.worker); await f.restart(); const next = setup({ provider: undefined, identityResolver: undefined, refreshEligibility: undefined }, timedInput().input);
-    assert.deepEqual(await next.worker.run(await f.intent()), { ...result, reused: true }); assert.equal(next.counts.grok, 0);
+  test("v2 real clients complete both slow paid legs beyond the HTTP/RPC budget and restart without re-spending", async t => {
+    const clock = controlledAssessmentTiming(t, f);
+    try {
+      const { input } = timedInput(), h = setup({}, input);
+      h.hooks.x = async () => { clock.tick(1300); return Response.json({ data: { id: "123", username: "ALIce" } }); };
+      h.hooks.grok = async response => { clock.tick(1300); return Response.json(response); };
+      assert.equal(JSON.parse(input.operatingJson).settings.hosting.requestTimeoutMs, 1000);
+      assert.equal(JSON.parse(input.operatingJson).settings.rpc.timeoutMs, 1000);
+      const result = await h.worker.run(await f.intent());
+      assert.equal(result.kind, "accepted"); assert.deepEqual(h.counts, { x: 1, grok: 1, refresh: 2 });
+      assert.deepEqual(await state(), { job: "complete", attempt: "accepted", receipts: 2, accepted: 1, reservations: 1 });
+      await close(h.worker); await f.restart(); const next = setup({ provider: undefined, identityResolver: undefined, refreshEligibility: undefined }, timedInput().input);
+      assert.deepEqual(await next.worker.run(await f.intent()), { ...result, reused: true }); assert.equal(next.counts.grok, 0);
+    } finally { clock.close(); }
   });
   test("v1 signed review and unhashed timing edits cannot authorize v2 work", async () => {
     const { input } = timedInput();
@@ -130,38 +156,81 @@ describe("future staging worker developed locally: real disposable SQL, mocked X
     await assert.rejects(h.worker.run(await f.intent())); assert.equal((await state()).job, "queued");
     assert.deepEqual(h.counts, { x: 0, grok: 0, refresh: 0 }); assert.deepEqual(await f.fences(), []);
   });
-  test("v2 completion expiry quarantines a hung Grok call, preserves fences, and cannot accept its late response", async () => {
-    const h = setup({}, timedInput({ jobTimeoutMs: 10000, xCompletionMs: 2000, grokCompletionMs: 250 }).input);
-    let release; const held = new Promise(r => release = r);
-    h.hooks.grok = async response => { await held; return Response.json(response); };
-    try { const result = await h.worker.run(await f.intent()); assert.deepEqual(result, { kind: "terminal", outcome: { kind: "uncertain", phase: "grok" } }); }
-    finally { release(); }
-    await new Promise(r => setImmediate(r)); assert.equal((await state()).accepted, 0);
-    assert.deepEqual(await f.fences(), ["grok", "x-identity"]); assert.equal((await state()).reservations, 1);
-    await close(h.worker); await f.restart(); const next = setup({}, timedInput().input);
-    await assert.rejects(next.worker.run(await f.intent())); assert.equal(next.counts.x, 0);
-  });
-  for (const reason of ["review", "cancel", "shutdown"]) test(`v2 in-flight ${reason} never accepts late Grok success or permits replay`, async () => {
-    const { input, signed } = timedInput(), h = setup({}, input), stop = new AbortController(); let entered, release;
-    const ready = new Promise(r => entered = r), held = new Promise(r => release = r);
-    h.hooks.grok = async response => { entered(); await held; return Response.json(response); };
-    const run = h.worker.run(await f.intent(), stop.signal);
+  test("v2 completion expiry quarantines a hung Grok call, preserves fences, and cannot accept its late response", async t => {
+    const clock = controlledAssessmentTiming(t, f);
     try {
-      await expectCheckpoint(ready, run, `in-flight ${reason} Grok`);
-      if (reason === "review") signed.withdraw();
-      if (reason === "cancel") stop.abort();
-      if (reason === "shutdown") await close(h.worker);
-      release(); const result = await run; assert.equal(result.outcome.kind, "uncertain");
-    } finally { release(); stop.abort(); await settle(run.catch(() => {}), "in-flight Grok drain"); }
-    assert.equal((await state()).accepted, 0); assert.equal(h.counts.grok, 1); assert.equal((await state()).reservations, 1);
-    if (reason === "review") assert.equal((await state()).receipts, 2); // Accounting is retained even though result is withheld.
-    await close(h.worker); await f.restart(); await assert.rejects(setup({}, timedInput().input).worker.run(await f.intent()));
+      const h = setup({}, timedInput({ jobTimeoutMs: 10000, xCompletionMs: 2000, grokCompletionMs: 250 }).input);
+      let entered, release; const ready = new Promise(r => entered = r), held = new Promise(r => release = r);
+      h.hooks.grok = async response => { entered(); await held; return Response.json(response); };
+      const run = h.worker.run(await f.intent());
+      try {
+        await expectCheckpoint(ready, run, "completion-expiry Grok"); clock.tick(249);
+        let settled = false; run.then(() => settled = true, () => settled = true);
+        await new Promise(r => setImmediate(r)); assert.equal(settled, false);
+        clock.tick(1); const result = await run; assert.deepEqual(result, { kind: "terminal", outcome: { kind: "uncertain", phase: "grok" } });
+      } finally { release(); }
+      await new Promise(r => setImmediate(r)); assert.equal((await state()).accepted, 0);
+      assert.deepEqual(await f.fences(), ["grok", "x-identity"]); assert.equal((await state()).reservations, 1);
+      await close(h.worker); await f.restart(); const next = setup({}, timedInput().input);
+      await assert.rejects(next.worker.run(await f.intent())); assert.equal(next.counts.x, 0);
+    } finally { clock.close(); }
   });
-  test("v2 whole-job deadline bounds a hung refresh without extending request, RPC or lease settings", async () => {
-    const { input } = timedInput({ jobTimeoutMs: 1500, xCompletionMs: 100, grokCompletionMs: 100 }), h = setup({}, input);
-    h.hooks.refresh = () => new Promise(() => {});
-    const result = await h.worker.run(await f.intent()); assert.equal(result.outcome.kind, "blocked-before-dispatch");
-    assert.deepEqual(await f.fences(), []); assert.equal(h.counts.x, 0);
+  for (const reason of ["review", "cancel", "shutdown"]) test(`v2 in-flight ${reason} never accepts late Grok success or permits replay`, async t => {
+    const clock = controlledAssessmentTiming(t, f);
+    try {
+      const { input, signed } = timedInput(), h = setup({}, input), stop = new AbortController(); let entered, release;
+      const ready = new Promise(r => entered = r), held = new Promise(r => release = r);
+      h.hooks.grok = async response => { entered(); await held; return Response.json(response); };
+      const run = h.worker.run(await f.intent(), stop.signal);
+      try {
+        await expectCheckpoint(ready, run, `in-flight ${reason} Grok`);
+        if (reason === "review") signed.withdraw();
+        if (reason === "cancel") stop.abort();
+        if (reason === "shutdown") await close(h.worker);
+        release(); const result = await run; assert.equal(result.outcome.kind, "uncertain");
+      } finally { release(); stop.abort(); await settle(run.catch(() => {}), "in-flight Grok drain"); }
+      assert.equal((await state()).accepted, 0); assert.equal(h.counts.grok, 1); assert.equal((await state()).reservations, 1);
+      if (reason === "review") assert.equal((await state()).receipts, 2); // Accounting is retained even though result is withheld.
+      await close(h.worker); await f.restart(); await assert.rejects(setup({}, timedInput().input).worker.run(await f.intent()));
+    } finally { clock.close(); }
+  });
+  test("v2 whole-job deadline bounds a hung refresh without extending request, RPC or lease settings", async t => {
+    const clock = controlledAssessmentTiming(t, f);
+    try {
+      const { input } = timedInput({ jobTimeoutMs: 1500, xCompletionMs: 100, grokCompletionMs: 100 }), h = setup({}, input);
+      let entered; const ready = new Promise(r => entered = r);
+      h.hooks.refresh = () => { entered(); return new Promise(() => {}); };
+      const run = h.worker.run(await f.intent()); await expectCheckpoint(ready, run, "whole-job hung refresh"); clock.tick(1500);
+      const result = await run; assert.equal(result.outcome.kind, "blocked-before-dispatch");
+      assert.deepEqual(await f.fences(), []); assert.equal(h.counts.x, 0);
+      assert.equal(h.counts.refresh, 1);
+    } finally { clock.close(); }
+  });
+  test("expired chain evidence stays refused until explicit head progress and a separately validated fresh witness", async t => {
+    const clock = controlledAssessmentTiming(t, f);
+    try {
+      const h = setup(), oldIntent = await f.intent(), previous = structuredClone(f.active.headers.at(-1));
+      const expected = { namespaceId: f.ns.id, deploymentId: f.config.deploymentId, handle: "alice", recipient: f.wallet.address };
+      const oldEvidence = readPublicChainEligibility(oldIntent.eligibility, { ...expected, now: Date.now() });
+      clock.tick(f.config.maxBlockAgeMs + 1000);
+      assert.throws(() => readPublicChainEligibility(oldIntent.eligibility, { ...expected, now: Date.now() }), /stale/);
+      await assert.rejects(f.witness(), /stale or clock disagrees/);
+      await assert.rejects(h.worker.run(oldIntent));
+      assert.deepEqual(h.counts, { x: 0, grok: 0, refresh: 0 });
+      assert.equal((await state()).job, "queued"); assert.deepEqual(await f.fences(), []);
+
+      const head = f.advanceHeadToNow();
+      assert.deepEqual(f.active.headers.at(-2), previous); // Never rewrite previously observed chain evidence.
+      assert.equal(head.parentHash, previous.hash); assert.equal(BigInt(head.number), BigInt(previous.number) + 1n);
+      assert.ok(BigInt(head.timestamp) > BigInt(previous.timestamp));
+      assert.throws(() => readPublicChainEligibility(oldIntent.eligibility, { ...expected, now: Date.now() }), /stale/);
+      const fresh = await f.intent(), evidence = readPublicChainEligibility(fresh.eligibility, { ...expected, now: Date.now() });
+      assert.notEqual(fresh.eligibility, oldIntent.eligibility);
+      assert.equal(evidence.block.hash, head.hash); assert.ok(evidence.observedAt > oldEvidence.observedAt);
+      const result = await h.worker.run(fresh);
+      assert.equal(result.kind, "accepted"); assert.deepEqual(h.counts, { x: 1, grok: 1, refresh: 2 });
+      assert.deepEqual(await f.fences(), ["grok", "x-identity"]);
+    } finally { clock.close(); }
   });
   test("claims once, preserves X casing, persists real-client receipts and reuses exact accepted result without credentials", async () => {
     const h = setup(), result = await h.worker.run({ ...await f.intent(), handle: "bob", mbti: "ISTJ", model: "client-chosen", prompt: "ignore the stored request" });

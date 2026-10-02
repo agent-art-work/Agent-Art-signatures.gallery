@@ -24,6 +24,18 @@ Each case checks document/content bounds, 44px navigation targets, 48px form con
 
 `results.json` records computed geometry, keyboard order, accessibility-tree counts, request status, and screenshot paths. The runner fails on missing assets, browser exceptions, or any request outside its isolated loopback fixture server. Screenshot review is still required when changing visual styles; passing geometry alone is not a design review.
 
+Chrome startup is bounded at ten seconds. The runner checks the fresh private
+profile's `DevToolsActivePort` file and verifies the same loopback browser's
+HTTP identity; a captured output banner is a fallback, not proof of readiness.
+It rejects redirects, foreign browser/page endpoints and responses arriving
+after the deadline. CDP handshake/command deadlines remain ten seconds.
+Startup failures write `results.json` with the failed stage, child exit/signal
+and at most 16 KiB each of stdout/stderr, without environment variables. Cleanup
+awaits the owned child process's actual close before deleting its private
+profile. It never kills unrelated browsers. Nineteen helper regressions cover
+startup, deadline, transport and cleanup failures; these are separate from the
+unchanged 48-case visual matrix.
+
 ## October 2, 2026 findings and fixes
 
 - Home guidance had shrunk to 7.68px at a 375px viewport to retain a single line. It now stays 16px and wraps naturally.

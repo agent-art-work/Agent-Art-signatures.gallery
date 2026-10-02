@@ -63,7 +63,7 @@ describe("staging assessment/reuse controller; real private PG16 and synthetic a
   };
   before(async () => { cluster = disposablePostgres(); admin = new Client(cluster.config); await admin.connect(); });
   after(async () => { try { await settle(admin?.end(), "assessment administrator close"); } finally { cluster?.stop(); } });
-  beforeEach(async () => { f = await stagingAssessmentFixture(cluster, admin); });
+  beforeEach(async () => { f = await stagingAssessmentFixture(cluster, admin); f.advanceHeadToNow(); });
   afterEach(async () => { f?.controller.halt(); try { await settle(f?.close(), "assessment fixture close"); } finally { f = undefined; } });
   const dispatch = async (leg, effect = async d => { d.assertCurrent(leg); return "effect"; }, input) => f.controller.dispatch(input ?? await f.intent(), leg,
     f.input.assessmentPolicy.model, new AbortController().signal, effect);
@@ -72,7 +72,7 @@ describe("staging assessment/reuse controller; real private PG16 and synthetic a
     try { await f.db.query(sql); await f.db.query("COMMIT"); } catch (error) { await f.db.query("ROLLBACK"); throw error; }
   };
   test("explicit v2 runtime binds inspector/recovery roles and dispatches only after the matching v2 certificate", async () => {
-    await settle(f.close(), "assessment v1 fixture close"); f = await stagingAssessmentFixture(cluster, admin, { v2: true });
+    await settle(f.close(), "assessment v1 fixture close"); f = await stagingAssessmentFixture(cluster, admin, { v2: true }); f.advanceHeadToNow();
     assert.equal(f.input.databaseReview.version, "sg-generative-runtime-db-review-v2");
     await dispatch("x-identity", async d => { d.assertCurrent("x-identity"); return "offline-v2"; });
     assert.deepEqual(await f.fences(), ["x-identity"]);

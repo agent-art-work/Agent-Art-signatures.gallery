@@ -1,5 +1,6 @@
 import { Client } from "pg";
-import { decodeFunctionData, encodeFunctionResult } from "viem";
+import { performance } from "node:perf_hooks";
+import { decodeFunctionData, encodeFunctionResult, keccak256, stringToHex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { readinessDatabaseFixture } from "./generative-staging-readiness.mjs";
 import { activeStateFixture } from "./generative-active-state.mjs";
@@ -14,6 +15,25 @@ import { PostgresWalletSessions } from "../../../src/openMint/persistence/sessio
 import { createStagingEligibilityReader, PUBLIC_CHAIN_READ_ABI } from "../../../src/openMint/publicChain.ts";
 import { GENERATIVE_MINT_ABI } from "../../../src/openMint/generativeAuthorization.ts";
 import { POLICY_VERSION } from "../../../src/openMint/identity.ts";
+
+// Targeted deadline tests can spend time at the intended mocked transport
+// checkpoint rather than in slow covered SQL setup. Enable BEFORE composing
+// controllers: their default wall-clock function is captured at construction.
+// Ordinary fixture tests retain real clocks and real PostgreSQL timestamps.
+export function controlledAssessmentTiming(t, fixture) {
+  const origin = Date.now(), monotonic = performance.now(), originalQueryHook = fixture.faults.afterQuery;
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: origin });
+  t.mock.method(performance, "now", () => monotonic + (Date.now() - origin));
+  fixture.faults.afterQuery = async (sql, result) => {
+    await originalQueryHook?.(sql, result);
+    // Align only the returned admission clock, not real expiry columns,
+    // database constraints, certification, witnesses or freshness guards.
+    if (sql === "SELECT clock_timestamp() AS now") result.rows[0].now = new Date(Date.now());
+  };
+  return { tick(ms) { t.mock.timers.tick(ms); }, close() {
+    fixture.faults.afterQuery = originalQueryHook; t.mock.timers.reset(); t.mock.restoreAll();
+  } };
+}
 
 // Entirely disposable database, public test wallet and fabricated active chain.
 // No provider credential, network transaction or operational approval exists.
@@ -64,6 +84,17 @@ export async function stagingAssessmentFixture(cluster, admin, { claimed = true,
     // always-current object supplied to the admission adapter.
     const witness = () => createStagingEligibilityReader(config, eligibilitySources).preflight({ block: { number: BigInt(active.headers.at(-1).number), hash: active.headers.at(-1).hash },
       handle: "alice", recipient: wallet.address, nonce: `0x${"3".repeat(64)}` });
+    // Explicit TEST chain progress after slow covered setup/restart. Never
+    // mutate an already observed block or make an existing witness current.
+    // Callers still obtain and validate a new opaque witness separately.
+    const advanceHeadToNow = () => {
+      const previous = active.headers.at(-1), timestamp = BigInt(Math.floor(Date.now() / 1000));
+      if (timestamp <= BigInt(previous.timestamp)) return previous;
+      const number = BigInt(previous.number) + 1n;
+      const head = { number: `0x${number.toString(16)}`, hash: keccak256(stringToHex(`OFFLINE ASSESSMENT HEAD/${number}/${timestamp}`)),
+        parentHash: previous.hash, timestamp: `0x${timestamp.toString(16)}`, transactions: [] };
+      active.headers.push(head); return head;
+    };
     let repository, requests, sessions, session, request, signed, input;
     const restart = async () => {
       controller?.halt(); await writer?.close(); writer = await ExclusiveWriter.acquire(connect);
@@ -91,7 +122,7 @@ export async function stagingAssessmentFixture(cluster, admin, { claimed = true,
       input.reviewSource = signed.source; controller = createStagingAssessmentController(input);
     };
     await restart();
-    return { ...f, active, wallet, ns, restart, config, witness, faults, eligibilitySources,
+    return { ...f, active, wallet, ns, restart, config, witness, advanceHeadToNow, faults, eligibilitySources,
       get writer() { return writer; }, get repository() { return repository; }, get requests() { return requests; }, get sessions() { return sessions; },
       get session() { return session; }, get request() { return request; }, get signed() { return signed; }, get input() { return input; }, get controller() { return controller; },
       intent: async () => ({ code: request.code, sessionToken: session.id, sessionGeneration: session.generation, origin: f.settings.origin,

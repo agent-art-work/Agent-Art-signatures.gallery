@@ -203,7 +203,7 @@ jobs:
     runs-on: ubuntu-24.04
     # The measured covered mint campaign gets its own fresh runner rather than
     # consuming the runtime campaign's budget or extending application timers.
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       XAI_API_KEY: ''
       OPEN_MINT_X_BEARER_TOKEN: ''

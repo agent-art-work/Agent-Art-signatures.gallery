@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
@@ -67,22 +67,131 @@ export async function createAccessibilityFixtureServer() {
     response.writeHead(404); response.end('Unknown fixture asset.');
   });
   await new Promise((accept, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', accept); });
-  return { origin: `http://127.0.0.1:${server.address().port}`, close: () => new Promise(accept => server.close(accept)) };
+  return { origin: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((accept, reject) => {
+    const timer = setTimeout(() => reject(Error('Accessibility fixture server did not close.')), 2000);
+    server.close(error => { clearTimeout(timer); error ? reject(error) : accept(); }); server.closeAllConnections();
+  }) };
 }
 
 const pause = ms => new Promise(accept => setTimeout(accept, ms));
-async function connectCdp(url) {
-  const socket = new WebSocket(url), pending = new Map(), listeners = new Map(); let sequence = 0;
-  await new Promise((accept, reject) => { socket.onopen = accept; socket.onerror = reject; });
+
+function browserEndpoint(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'ws:' && !url.username && !url.password && !url.search && !url.hash && ['127.0.0.1', 'localhost'].includes(url.hostname) && url.port
+      && /^\/devtools\/browser\/[a-zA-Z0-9_-]+$/.test(url.pathname) ? url.href : undefined;
+  } catch { return undefined; }
+}
+
+// Test-only browser supervision. A fresh private profile's port file is a
+// readiness signal; a stderr banner alone neither proves readiness nor life.
+export function launchAccessibilityChrome(chromePath, profile, { spawnProcess = spawn,
+  readActivePort = () => readFileSync(join(profile, 'DevToolsActivePort'), 'utf8') } = {}) {
+  const started = Date.now(), child = spawnProcess(chromePath, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--disable-gpu',
+    '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--no-sandbox', 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let stderr = '', stdout = '', spawnError, exited = false, closed = false, exitCode, signal;
+  const closedPromise = new Promise(accept => child.once('close', (code, value) => { closed = true; exited = true; exitCode = code; signal = value; accept(); }));
+  child.on('error', error => { spawnError = error; });
+  child.once('exit', (code, value) => { exited = true; exitCode = code; signal = value; });
+  child.stderr?.on('data', value => { stderr = (stderr + value).slice(-16384); });
+  child.stdout?.on('data', value => { stdout = (stdout + value).slice(-16384); });
+  const diagnostics = () => ({ chromePath, profile, pid: child.pid ?? null, elapsedMs: Date.now() - started, exited, closed,
+    exitCode: exitCode ?? child.exitCode ?? null, signal: signal ?? child.signalCode ?? null,
+    spawnError: spawnError?.message ?? null, stderrTail: stderr, stdoutTail: stdout });
+  const failure = (reason, cause) => Error(`${reason} ${JSON.stringify(diagnostics())}`, cause ? { cause } : undefined);
+  const checkAlive = () => {
+    if (spawnError) throw failure('Chrome could not be spawned.', spawnError);
+    if (exited || child.exitCode !== null && child.exitCode !== undefined || child.signalCode)
+      throw failure('Chrome exited before DevTools became ready.');
+  };
+  const untilClosed = async timeoutMs => {
+    let timer;
+    try { await Promise.race([closedPromise, new Promise((_, reject) => { timer = setTimeout(() => reject(failure('Chrome shutdown timed out.')), timeoutMs); })]); }
+    finally { clearTimeout(timer); }
+  };
+  return {
+    diagnostics,
+    async ready({ timeoutMs = 10000, pollMs = 50, probe = (url, abort) => fetch(url, { signal: abort, redirect: 'error' }) } = {}) {
+      const deadline = Date.now() + timeoutMs; let lastProbeError;
+      while (Date.now() < deadline) {
+        checkAlive(); let endpoint, source;
+        try {
+          const [port, path] = readActivePort().trim().split(/\r?\n/);
+          if (/^\d+$/.test(port) && Number(port) > 0 && Number(port) <= 65535) endpoint = browserEndpoint(`ws://127.0.0.1:${port}${path}`);
+          if (endpoint) source = 'DevToolsActivePort';
+        } catch (error) { if (error.code !== 'ENOENT') throw failure('Chrome port file could not be read.', error); }
+        if (!endpoint) {
+          endpoint = browserEndpoint((stderr + stdout).match(/DevTools listening on (ws:\/\/[^\s]+)/)?.[1]);
+          if (endpoint) source = 'browser-output';
+        }
+        if (endpoint) {
+          const stop = new AbortController(); let timer;
+          try {
+            const version = await Promise.race([Promise.resolve().then(async () => {
+              const response = await probe(`http://${new URL(endpoint).host}/json/version`, stop.signal);
+              assert.equal(response.status, 200); return response.json();
+            }), new Promise((_, reject) => { timer = setTimeout(() => { stop.abort(); reject(Error('DevTools HTTP readiness probe timed out.')); }, Math.min(1000, deadline - Date.now())); })]);
+            checkAlive(); assert.ok(Date.now() < deadline && !stop.signal.aborted, 'DevTools readiness expired before its response could be accepted.');
+            assert.equal(browserEndpoint(version.webSocketDebuggerUrl), endpoint, 'DevTools endpoint differs from the spawned private browser.');
+            return { webSocketDebuggerUrl: endpoint, source, elapsedMs: Date.now() - started, browser: version.Browser ?? null };
+          } catch (error) { lastProbeError = error; checkAlive(); }
+          finally { clearTimeout(timer); stop.abort(); }
+        }
+        await pause(Math.min(pollMs, Math.max(0, deadline - Date.now())));
+      }
+      checkAlive(); throw failure(`Chrome DevTools did not become ready within ${timeoutMs}ms.`, lastProbeError);
+    },
+    async close({ gracefulMs = 2000, forceMs = 2000 } = {}) {
+      if (closed) return;
+      if (!spawnError && !exited) child.kill('SIGTERM');
+      try { await untilClosed(gracefulMs); }
+      catch (error) {
+        if (closed) return;
+        if (spawnError || exited) throw error;
+        child.kill('SIGKILL'); await untilClosed(forceMs);
+      }
+    },
+  };
+}
+export function auditTargetEndpoint(browserWs, targetId, targets) {
+  assert.ok(browserEndpoint(browserWs) && /^[a-zA-Z0-9_-]+$/.test(targetId), 'Invalid audit browser or target identity.');
+  const target = targets.find(value => value.id === targetId); assert.ok(target, 'Chrome did not enumerate the created audit target.');
+  const url = new URL(target.webSocketDebuggerUrl), browser = new URL(browserWs);
+  assert.ok(url.protocol === 'ws:' && url.host === browser.host && !url.username && !url.password && !url.search && !url.hash
+    && url.pathname === `/devtools/page/${targetId}`, 'Audit target endpoint differs from its owned browser and created page.');
+  return url.href;
+}
+
+export async function connectCdp(url, { WebSocketClass = WebSocket, timeoutMs = 10000 } = {}) {
+  const socket = new WebSocketClass(url), pending = new Map(), listeners = new Map(); let sequence = 0, closed = false, opened = false, rejectHandshake;
+  const rejectPending = error => { for (const task of pending.values()) { clearTimeout(task.timer); task.reject(error); } pending.clear(); };
+  const terminate = (error, closeSocket = false) => {
+    closed = true; rejectPending(error); if (!opened) rejectHandshake?.(error);
+    if (closeSocket && socket.readyState !== 2 && socket.readyState !== 3) { try { socket.close(); } catch { /* Preserve the original transport failure. */ } }
+  };
+  let timer;
+  try { await new Promise((accept, reject) => {
+    rejectHandshake = reject;
+    timer = setTimeout(() => terminate(Error('CDP WebSocket handshake timed out.'), true), timeoutMs);
+    socket.onopen = () => { if (!closed) { opened = true; accept(); } };
+    socket.onerror = () => terminate(Error('CDP WebSocket handshake failed.'));
+    socket.onclose = () => terminate(Error('CDP WebSocket closed before handshake.'));
+  }); } catch (error) { terminate(error, true); throw error; } finally { clearTimeout(timer); }
+  socket.onerror = () => terminate(Error('CDP WebSocket failed.'), true);
+  socket.onclose = () => terminate(Error('CDP WebSocket closed.'));
   socket.onmessage = event => {
-    const message = JSON.parse(event.data), task = pending.get(message.id);
-    if (task) { pending.delete(message.id); clearTimeout(task.timer); message.error ? task.reject(Error(message.error.message)) : task.accept(message.result); }
-    else for (const listener of listeners.get(message.method) ?? []) listener(message.params);
+    try {
+      const message = JSON.parse(event.data), task = pending.get(message.id);
+      if (task) { pending.delete(message.id); clearTimeout(task.timer); message.error ? task.reject(Error(message.error.message)) : task.accept(message.result); }
+      else for (const listener of listeners.get(message.method) ?? []) listener(message.params);
+    } catch (cause) { terminate(Error('CDP received a malformed message or failed event callback.', { cause }), true); }
   };
   return { send(method, params = {}) { return new Promise((accept, reject) => {
-    const id = ++sequence, timer = setTimeout(() => { pending.delete(id); reject(Error(`CDP timeout: ${method}`)); }, 10000);
-    pending.set(id, { accept, reject, timer }); socket.send(JSON.stringify({ id, method, params }));
-  }); }, on(method, listener) { listeners.set(method, [...listeners.get(method) ?? [], listener]); }, close() { socket.close(); } };
+    if (closed || socket.readyState !== 1) { reject(Error('CDP client is closed.')); return; }
+    const id = ++sequence, timer = setTimeout(() => { pending.delete(id); reject(Error(`CDP timeout: ${method}`)); }, timeoutMs);
+    pending.set(id, { accept, reject, timer });
+    try { socket.send(JSON.stringify({ id, method, params })); } catch (cause) { terminate(Error('CDP send failed.', { cause }), true); }
+  }); }, on(method, listener) { listeners.set(method, [...listeners.get(method) ?? [], listener]); }, close() { if (!closed) terminate(Error('CDP client closed.'), true); } };
 }
 
 export async function runAccessibilityAudit({ outputDir = mkdtempSync(join(tmpdir(), 'sg-ui-accessibility-')), chromePath = process.env.CHROME_PATH } = {}) {
@@ -91,19 +200,18 @@ export async function runAccessibilityAudit({ outputDir = mkdtempSync(join(tmpdi
   assert.ok(chromePath && existsSync(chromePath), 'Chrome/Chromium required; set CHROME_PATH.');
   mkdirSync(outputDir, { recursive: true });
   const profile = mkdtempSync(join(tmpdir(), 'sg-ui-chrome-'));
-  const fixture = await createAccessibilityFixtureServer();
-  const chrome = spawn(chromePath, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--disable-gpu',
-    '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--no-sandbox', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
-  let stderr = ''; chrome.stderr.on('data', value => { stderr += value; });
-  let client; const rows = [], requests = [], errors = [];
+  let client, browser, chrome, fixture, startup, failure, stage = 'fixture'; const rows = [], requests = [], errors = [];
   try {
-    const end = Date.now() + 10000;
-    while (!/DevTools listening on (ws:\/\/[^\s]+)/.test(stderr)) { assert.ok(Date.now() < end, 'Chrome DevTools did not start.'); await pause(50); }
-    const browserWs = stderr.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1];
-    const browser = await connectCdp(browserWs);
+    fixture = await createAccessibilityFixtureServer(); stage = 'chrome-startup';
+    chrome = launchAccessibilityChrome(chromePath, profile); startup = await chrome.ready();
+    const browserWs = startup.webSocketDebuggerUrl; stage = 'cdp-handshake';
+    browser = await connectCdp(browserWs);
     const { targetId } = await browser.send('Target.createTarget', { url: 'about:blank' });
-    const devtoolsOrigin = new URL(browserWs); const targets = await (await fetch(`http://${devtoolsOrigin.host}/json/list`)).json();
-    client = await connectCdp(targets.find(target => target.id === targetId).webSocketDebuggerUrl); browser.close();
+    const devtoolsOrigin = new URL(browserWs);
+    const targetsResponse = await fetch(`http://${devtoolsOrigin.host}/json/list`, { signal: AbortSignal.timeout(10000), redirect: 'error' });
+    assert.equal(targetsResponse.status, 200, 'Chrome target enumeration failed.');
+    const targets = await targetsResponse.json();
+    client = await connectCdp(auditTargetEndpoint(browserWs, targetId, targets)); browser.close(); browser = undefined; stage = 'audit';
     client.on('Network.requestWillBeSent', event => requests.push({ id: event.requestId, url: event.request.url, status: null }));
     client.on('Network.responseReceived', event => { const row = requests.find(row => row.id === event.requestId); if (row) row.status = event.response.status; });
     client.on('Runtime.exceptionThrown', event => errors.push(event.exceptionDetails.text));
@@ -178,13 +286,25 @@ export async function runAccessibilityAudit({ outputDir = mkdtempSync(join(tmpdi
     assert.deepEqual(errors, [], 'Browser JavaScript exceptions');
     const failedRequests = requests.filter(request => request.status !== 200), externalRequests = requests.filter(request => !request.url.startsWith(fixture.origin));
     assert.deepEqual(failedRequests, [], 'Fixture asset request failures'); assert.deepEqual(externalRequests, [], 'Audit made external requests');
-    const result = { matrix:rows, failedRequests, externalRequests, javascriptErrors:errors, networkRequests:requests.length,
+    const result = { matrix:rows, failedRequests, externalRequests, javascriptErrors:errors, networkRequests:requests.length, startup,
       zoomMethod:'200% browser-zoom reflow: 1280×900 physical viewport represented by 640×450 CSS pixels with deviceScaleFactor 2.',
       scope:'Real templates, fonts, CSS, inline validation, keyboard traversal and AX tree; synthetic content only, no wallet signing or RPC. Not a manual screen-reader certification or full mint transaction rehearsal.' };
     writeFileSync(join(outputDir, 'results.json'), JSON.stringify(result, null, 2)); return result;
+  } catch (error) {
+    failure = error;
+    writeFileSync(join(outputDir, 'results.json'), JSON.stringify({ stage, completedCases: rows.length, error: error.stack,
+      ...(startup ? { startup } : {}), chrome: chrome?.diagnostics() ?? null }, null, 2));
+    throw error;
   } finally {
-    client?.close(); chrome.kill('SIGTERM'); await fixture.close();
-    await pause(200); rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    const cleanup = [];
+    client?.close(); browser?.close();
+    try { await chrome?.close(); } catch (error) { cleanup.push(error); }
+    try { await fixture?.close(); } catch (error) { cleanup.push(error); }
+    // Do not remove a profile until its owning browser has actually stopped.
+    if (!chrome || chrome.diagnostics().closed) {
+      try { rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch (error) { cleanup.push(error); }
+    }
+    if (cleanup.length) throw new AggregateError([...(failure ? [failure] : []), ...cleanup], 'Accessibility audit cleanup failed.');
   }
 }
 
