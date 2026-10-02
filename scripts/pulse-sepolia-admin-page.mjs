@@ -19,7 +19,7 @@ export const SEPOLIA_ADMIN_CSS = `
 .sepolia-admin .admin-facts dd{margin:.25rem 0 0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
 .sepolia-admin .admin-facts .admin-wide{grid-column:1/-1}
 .sepolia-admin .admin-field{display:grid;gap:.35rem;margin-top:1rem}
-.sepolia-admin [data-admin-wallets]{min-height:13rem;line-height:1.6;white-space:pre;overflow-x:auto}
+.sepolia-admin [data-admin-wallets]{min-height:13rem;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
 .sepolia-admin .admin-quota{max-width:16rem}
 .sepolia-admin .admin-feedback:empty{display:none}
 .sepolia-admin .admin-review{margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--line)}
@@ -35,7 +35,7 @@ export const SEPOLIA_ADMIN_CSS = `
 export function sepoliaAdminPage(options = {}) {
   const contract = options.collection ?? options.contract ?? '';
   const body = `<section class="auth-page sepolia-admin" data-admin-page data-admin-collection="${escape(contract)}"><div class="auth-sheet">
-<div class="admin-heading"><h1>Free mint admin</h1><span class="signature-tag" data-admin-state>Sign in to check policy</span></div>
+<div class="admin-heading"><h1>Free mint admin</h1><span class="signature-tag" data-admin-state role="status" aria-live="polite" aria-atomic="true">Sign in to check policy</span></div>
 <p class="admin-note">Ethereum Sepolia · RC2. Each change is signed and sent by your admin wallet.</p>
 <dl class="admin-facts"><div><dt>Network</dt><dd>Ethereum Sepolia · 11155111</dd></div><div><dt>Collection</dt><dd data-admin-contract>${escape(contract)}</dd></div></dl>
 <section class="admin-section" aria-labelledby="admin-wallet-title"><h2 id="admin-wallet-title">Admin wallet</h2>

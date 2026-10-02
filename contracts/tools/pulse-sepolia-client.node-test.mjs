@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
+import { createServer } from 'node:http';
 import { SEPOLIA_TEST_CLIENT } from '../../scripts/pulse-sepolia-client.mjs';
+import { SEPOLIA_READ_BUDGETS } from '../../scripts/pulse-sepolia-read-budgets.mjs';
+import { createSepoliaReadFailover, withSepoliaReadSource } from '../../scripts/pulse-sepolia-rpc.mjs';
 
 const WALLET = '0x0000000000000000000000000000000000000001';
 const CONTRACT = '0x0000000000000000000000000000000000000002';
@@ -49,7 +52,7 @@ async function harness({ alteredPlan, rejectSend = false, sendError, restoredWal
   missingProvider = false, walletState = { accounts: [WALLET], chainId: '0xaa36a7' }, accountsGate, walletReadError, optionsGate, accountEventOnGrant = false,
   prepareGate, prepareError, sendGate, reportGate, recoveryGate, recoveryError, recoveryValue, initialOptions, maximumETH = '0.0001', initialPhase = 'paid',
   storage = new Map(), storageFault, fetchOverride, initialHandle = 'SomeHandle', status = RESULT, statusError, reportError,
-  surface = 'entry', initialWarning = '', sessionError } = {}) {
+  surface = 'entry', initialWarning = '', sessionError, readBudgets = SEPOLIA_READ_BUDGETS, realTimers = false } = {}) {
   const calls = [], nodes = new Map(), locations = [], timers = [], statusResponses = [], optionsResponses = [], optionsSignals = [];
   const recoveryResponses = [], recoveryBodies = [], recoverySignals = [], reportMarkers = [], storageOperations = [];
   let now = 1000000;
@@ -173,7 +176,7 @@ async function harness({ alteredPlan, rejectSend = false, sendError, restoredWal
     return { ok: true, json: async () => result };
   };
   const windowEvents = new Map();
-  runInNewContext(SEPOLIA_TEST_CLIENT, {
+  runInNewContext(SEPOLIA_TEST_CLIENT.replace(JSON.stringify(SEPOLIA_READ_BUDGETS), JSON.stringify(readBudgets)), {
     document: { querySelector: selector => nodes.get(selector), body: { dataset: { contract: CONTRACT } } },
     window: { ethereum: missingProvider ? undefined : announceRabby ? { request: () => { throw Error('Wrong extension selected'); } } : provider,
       addEventListener(name, fn) { windowEvents.set(name, fn); },
@@ -185,7 +188,11 @@ async function harness({ alteredPlan, rejectSend = false, sendError, restoredWal
     },
     location: { assign: value => locations.push(value), reload: () => locations.push('reload') },
     Date: class extends Date { static now() { return now; } },
-    fetch, AbortController, setTimeout(fn, ms) { const timer = { fn, ms }; timers.push(timer); return timer; }, clearTimeout(timer) { if (timer) timer.cleared = true; },
+    fetch, AbortController, setTimeout(fn, ms) {
+      const timer = { fn, ms }; timers.push(timer);
+      if (realTimers) timer.native = setTimeout(fn, ms);
+      return timer;
+    }, clearTimeout(timer) { if (timer) { timer.cleared = true; if (realTimers) clearTimeout(timer.native); } },
   });
   await flush();
   return { calls, nodes, storage, locations, walletEvents, windowEvents, timers, optionsSignals, recoveryBodies, recoverySignals, reportMarkers, storageOperations,
@@ -205,6 +212,122 @@ async function harness({ alteredPlan, rejectSend = false, sendError, restoredWal
     mint: () => nodes.get('[data-assessment-request]').handlers.submit({ preventDefault() {} }),
   };
 }
+
+test('a slow primary reaches the browser through HTTP fallback before the shared action deadline', async () => {
+  // Scale only elapsed time. Exercise real HTTP requests, abort signals and the
+  // serialized visitor client, with no external RPC or wallet effects.
+  const scale = 0.02;
+  const budgets = Object.fromEntries(Object.entries(SEPOLIA_READ_BUDGETS).map(([key, value]) => [key, value * scale]));
+  const rpcCalls = [], statusSignals = [];
+  let origin, context, h;
+  const server = createServer(async (req, res) => {
+    const path = new URL(req.url, origin).pathname;
+    if (path.startsWith('/rpc/')) {
+      let raw = ''; for await (const chunk of req) raw += chunk;
+      const { method } = JSON.parse(raw), source = path.split('/').at(-1);
+      rpcCalls.push([source, method]);
+      // Primary stays silent until its fetch is actually aborted by the
+      // source deadline; secondary independently verifies the right chain.
+      if (source === 'primary') return;
+      res.setHeader('Content-Type', 'application/json');
+      return res.end(JSON.stringify({ result: method === 'eth_chainId' ? '0xaa36a7' : RESULT }));
+    }
+    if (path === '/api/test/status') {
+      try {
+        const value = await withSepoliaReadSource(context, source => source.rpc('eth_getTransactionReceipt', [HASH]),
+          { signal: AbortSignal.timeout(budgets.semanticMs) });
+        res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(value));
+      } catch {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Status unavailable', code: 'MINT_STATUS_UNAVAILABLE' }));
+      }
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  try {
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+    origin = 'http://127.0.0.1:' + server.address().port;
+    const rpc = source => async (method, params, options) => {
+      const response = await fetch(origin + '/rpc/' + source, { method: 'POST', body: JSON.stringify({ method, params }), signal: options.signal });
+      return (await response.json()).result;
+    };
+    context = createSepoliaReadFailover({ rpc: rpc('primary'), second: rpc('secondary') }, async source => {
+      assert.equal(await source.rpc('eth_chainId'), '0xaa36a7');
+    }, { attemptTimeoutMs: budgets.sourceMs, backgroundAttemptTimeoutMs: budgets.backgroundSourceMs });
+    const marker = JSON.stringify({ version: 1, handle: 'somehandle', wallet: WALLET, chainId: 11155111, contract: CONTRACT });
+    h = await harness({ restoredWallet: true, storage: new Map([['sg-sepolia-pending', marker]]), readBudgets: budgets, realTimers: true,
+      fetchOverride: (path, options) => {
+        if (!path.startsWith('/api/test/status?')) return undefined;
+        statusSignals.push(options.signal); return fetch(origin + path, options);
+      } });
+    assert.equal(h.nodes.get('[data-mint-result]').hidden, true, 'A hash/slow source alone does not reveal');
+    assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+    assert.equal(h.nodes.get('[data-mint-observation-warning]').hidden, true, 'Normal loading does not manufacture a warning');
+    const deadline = Date.now() + 2000;
+    while (h.nodes.get('[data-mint-result]').hidden && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(h.nodes.get('[data-mint-result]').hidden, false);
+    assert.equal(h.nodes.get('[data-mint-result-artwork]').innerHTML, RESULT.html);
+    assert.equal(h.nodes.get('[data-mint-state-label]').textContent, 'Confirming');
+    assert.equal(h.nodes.get('[data-mint-observation-warning]').hidden, true);
+    assert.equal(context.readStatus().activeSource, 'secondary');
+    assert.deepEqual(rpcCalls, [['primary', 'eth_chainId'], ['secondary', 'eth_chainId'], ['secondary', 'eth_getTransactionReceipt']]);
+    assert.equal(statusSignals.length, 1); assert.equal(statusSignals[0].aborted, false);
+    assert.equal(h.timers.filter(timer => timer.ms === budgets.browserMs && !timer.cleared).length, 0);
+    assert.equal(h.calls.filter(call => typeof call === 'string' && call.startsWith('/api/test/status?')).length, 1);
+    for (const forbidden of ['personal_sign', '/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
+  } finally {
+    h?.windowEvents.get('pagehide')?.();
+    server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('browser timeout bounds an uncooperative status fetch and discards its late response', async () => {
+  const marker = JSON.stringify({ version: 1, handle: 'somehandle', wallet: WALLET, chainId: 11155111, contract: CONTRACT });
+  let release, signal;
+  const gate = new Promise(resolve => { release = resolve; });
+  const h = await harness({ restoredWallet: true, storage: new Map([['sg-sepolia-pending', marker]]),
+    fetchOverride: async (path, options) => {
+      if (!path.startsWith('/api/test/status?')) return undefined;
+      signal = options.signal; await gate;
+      return { ok: true, json: async () => RESULT };
+    } });
+  const timeout = h.timers.find(timer => timer.ms === SEPOLIA_READ_BUDGETS.browserMs && !timer.cleared);
+  assert.ok(timeout); assert.equal(h.timers.some(timer => timer.ms === 12000), false);
+  timeout.fn(); await flush();
+  assert.equal(signal.aborted, true); assert.equal(timeout.cleared, true);
+  assert.equal(h.storage.get('sg-sepolia-pending'), marker);
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+  assert.equal(h.nodes.get('[data-mint-result]').hidden, true);
+  release(); await flush();
+  assert.equal(h.nodes.get('[data-mint-result]').hidden, true, 'Late timed-out inclusion cannot mutate the current document');
+  assert.equal(h.storage.get('sg-sepolia-pending'), marker);
+  for (const forbidden of ['personal_sign', '/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
+});
+
+test('browser timeout also covers an uncooperative JSON body and cleans its abort listener', async () => {
+  let release, responseSignal, removedListeners = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  const h = await harness({ restoredWallet: true,
+    fetchOverride: (path, options) => {
+      if (path !== '/api/test/options') return undefined;
+      responseSignal = options.signal;
+      const remove = responseSignal.removeEventListener.bind(responseSignal);
+      // The API attached its listener before fetch; verify its explicit
+      // cleanup without changing dispatch or abort semantics.
+      responseSignal.removeEventListener = (name, listener, opts) => { if (name === 'abort') removedListeners++; return remove(name, listener, opts); };
+      return { ok: true, json: async () => { await gate; return { phase: 'paid', paid: true, free: false, priceETH: '0.000001' }; } };
+    } });
+  const timeout = h.timers.find(timer => timer.ms === SEPOLIA_READ_BUDGETS.browserMs && !timer.cleared);
+  assert.ok(timeout); timeout.fn(); await flush();
+  assert.equal(responseSignal.aborted, true); assert.equal(timeout.cleared, true); assert.equal(removedListeners, 1);
+  assertWarning(h.nodes.get('[data-pulse-feedback]'), 'Price could not be checked right now. Please try again.');
+  assert.equal(h.nodes.get('[data-pulse-check]').disabled, false);
+  release(); await flush();
+  assertWarning(h.nodes.get('[data-pulse-feedback]'), 'Price could not be checked right now. Please try again.');
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+  for (const forbidden of ['personal_sign', '/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
+});
 
 test('an invalid handle blocks programmatic submission before wallet or request work', async () => {
   const h = await harness({ restoredWallet: true });
@@ -281,7 +404,7 @@ test('a price timeout releases its button and can be retried while keeping unkno
   h.setOptionsGate(new Promise(() => {}));
   const request = h.nodes.get('[data-pulse-check]').handlers.click();
   assert.equal(h.nodes.get('[data-pulse-feedback]').textContent, 'Checking price…');
-  const timer = h.timers.find(t => t.ms === 45000 && !t.cleared); assert.ok(timer);
+  const timer = h.timers.find(t => t.ms === SEPOLIA_READ_BUDGETS.browserMs && !t.cleared); assert.ok(timer);
   const signal = h.optionsSignals.at(-1); assert.ok(signal);
   timer.fn(); await request; await flush();
   assert.equal(signal.aborted, true);
@@ -1172,7 +1295,7 @@ test('switching accounts during verification cannot sign or enable minting again
 
 test('verification timeout releases the connect button without signing, minting or retrying', async () => {
   const h = await harness({ challengeGate: new Promise(() => {}) }); await h.connect();
-  const timer = h.timers.find(t => t.ms === 45000 && !t.cleared); assert.ok(timer);
+  const timer = h.timers.find(t => t.ms === SEPOLIA_READ_BUDGETS.browserMs && !t.cleared); assert.ok(timer);
   timer.fn(); await flush();
   assert.equal(h.nodes.get('[data-connect-wallet]').disabled, false);
   assert.match(h.nodes.get('[data-mint-feedback]').textContent, /verification timed out/);
@@ -1321,7 +1444,7 @@ test('a recovery timeout releases its controls, retains the lock, and permits a 
     storage: new Map([['sg-sepolia-pending', marker]]) });
   h.queueRecovery(retryProof, new Promise(() => {}));
   const checking = h.nodes.get('[data-mint-recovery-check]').handlers.click();
-  const timer = h.timers.filter(timer => timer.ms === 45000 && !timer.cleared).at(-1);
+  const timer = h.timers.filter(timer => timer.ms === SEPOLIA_READ_BUDGETS.browserMs && !timer.cleared).at(-1);
   timer.fn(); await checking;
   assert.equal(h.recoverySignals[0].aborted, true);
   assertWarning(h.nodes.get('[data-mint-recovery-feedback]'), 'The previous mint could not be checked right now. Please try again.');

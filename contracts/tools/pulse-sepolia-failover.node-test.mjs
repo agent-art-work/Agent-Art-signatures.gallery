@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { decodeFunctionData, encodeFunctionResult, encodeAbiParameters, encodeEventTopics, keccak256, stringToHex, getAddress } from 'viem';
 import { createSepoliaReadFailover, withSepoliaReadSource, requireRpcData, unavailableRpcData, readSources, SEPOLIA_READ_POLICY } from '../../scripts/pulse-sepolia-rpc.mjs';
+import { SEPOLIA_READ_BUDGETS } from '../../scripts/pulse-sepolia-read-budgets.mjs';
 import { sharedReadBlock, checkNetwork, verifyDeploymentAtSource } from '../../scripts/pulse-sepolia.mjs';
 import { checkWalletSupport } from '../../scripts/pulse-sepolia-errors.mjs';
 import { sepoliaTestPlan, DEPLOYER, CORE, SEPOLIA, GENESIS, INPUT_PROFILE } from './pulse-sepolia-plan.mjs';
@@ -11,12 +12,12 @@ import { expectedPulseRuntime } from './pulse-integration.mjs';
 
 const transient = () => Object.assign(Error('Private transport failure'), { retryableRead: true, httpStatus: 503 });
 const head = { number: '0x123', hash: '0x' + '11'.repeat(32), timestamp: '0x7d0' };
-function fixture({ primary = async () => 'primary', secondary = async () => 'secondary', validate = async () => undefined } = {}) {
+function fixture({ primary = async () => 'primary', secondary = async () => 'secondary', validate = async () => undefined, options = {} } = {}) {
   const calls = [], validations = []; let time = 100000;
   const rpc = label => async (...args) => { calls.push([label, ...args]); return (label === 'primary' ? primary : secondary)(...args); };
   const context = createSepoliaReadFailover({ rpc: rpc('primary'), second: rpc('secondary') }, async source => {
     validations.push(source.readSource); await validate(source);
-  }, { now: () => time });
+  }, { now: () => time, ...options });
   return { context, calls, validations, advance: delta => { time += delta; } };
 }
 test('healthy primary alone suffices: fallback is not a mandatory witness or a fake quorum', async () => {
@@ -79,6 +80,89 @@ test('a slow primary gets its own deadline so a healthy secondary can finish', a
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(f.context.readStatus().activeSource, 'secondary');
   assert.equal(f.context.readStatus().failovers, 1);
+});
+test('shared budgets reserve both sources and HTTP slack without shortening background refreshes', () => {
+  const b = SEPOLIA_READ_BUDGETS;
+  assert.equal(b.sourceMs, 20000); assert.equal(b.backgroundSourceMs, 20000);
+  assert.ok(2 * b.sourceMs < b.semanticMs && b.semanticMs < b.browserMs);
+  assert.equal(b.backgroundSemanticMs, 45000);
+  assert.ok(2 * b.backgroundSourceMs < b.backgroundSemanticMs);
+  assert.ok(Object.isFrozen(b));
+});
+test('invalid explicit source deadlines refuse reads rather than silently selecting a default', async () => {
+  const f = fixture();
+  for (const sourceTimeoutMs of [null, 0, -1, 1.5, NaN, 60001]) {
+    await assert.rejects(f.context.rpc('eth_call', [], { sourceTimeoutMs }));
+  }
+  assert.equal(f.calls.length, 0); assert.equal(f.validations.length, 0);
+});
+test('action and background reads use their separate source budgets unless explicitly overridden', async () => {
+  const f = fixture({ primary: async () => new Promise(() => {}), options: { attemptTimeoutMs: 10, backgroundAttemptTimeoutMs: 100 } });
+  assert.equal(await f.context.rpc('eth_call'), 'secondary');
+  f.advance(30000);
+  const parent = new AbortController();
+  const background = f.context.rpc('eth_getLogs', [], { readPriority: 'background', signal: parent.signal });
+  await new Promise(resolve => setTimeout(resolve, 25));
+  parent.abort(Error('Background caller stopped'));
+  await assert.rejects(background, /Background caller stopped/);
+  assert.equal(f.calls.filter(([source]) => source === 'secondary').length, 1, 'Background must not inherit the shorter action deadline');
+  assert.equal(await f.context.rpc('eth_call', [], { readPriority: 'background', sourceTimeoutMs: 10 }), 'secondary');
+  const explicit = fixture({ primary: async () => new Promise(() => {}), options: { attemptTimeoutMs: 10 } });
+  assert.equal(await explicit.context.rpc('eth_call', [], { readPriority: 'background' }), 'secondary', 'An explicit audit/source override keeps its historical meaning');
+});
+test('parent cancellation stops fallback, clears its listener and discards late uncooperative results', async () => {
+  for (const during of ['validation', 'operation']) {
+    let release;
+    const parent = new AbortController(), listeners = new Set();
+    const add = parent.signal.addEventListener.bind(parent.signal), remove = parent.signal.removeEventListener.bind(parent.signal);
+    parent.signal.addEventListener = (name, listener, options) => { if (name === 'abort') listeners.add(listener); return add(name, listener, options); };
+    parent.signal.removeEventListener = (name, listener, options) => { if (name === 'abort') listeners.delete(listener); return remove(name, listener, options); };
+    const pending = () => new Promise(resolve => { release = resolve; });
+    const f = fixture({ primary: during === 'operation' ? pending : async () => 'primary',
+      validate: during === 'validation' ? pending : async () => undefined });
+    const request = f.context.rpc('eth_call', [], { signal: parent.signal });
+    await new Promise(resolve => setImmediate(resolve));
+    const reason = Error('Caller cancelled'); parent.abort(reason);
+    await assert.rejects(request, error => error === reason);
+    assert.equal(listeners.size, 0);
+    release('late-success'); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.context.readStatus().activeSource, undefined);
+    assert.equal(f.context.readStatus().failovers, 0);
+    assert.ok(f.calls.every(([source]) => source === 'primary'));
+  }
+});
+test('an abandoned validation cannot trap later reads or clear the replacement shared flight', async () => {
+  const releases = [];
+  const f = fixture({ validate: source => source.readSource === 'primary'
+    ? new Promise(resolve => releases.push(resolve)) : Promise.resolve() });
+  assert.equal(await f.context.rpc('eth_call', [], { sourceTimeoutMs: 10 }), 'secondary');
+  assert.equal(releases.length, 1);
+  f.advance(30000);
+  const second = f.context.rpc('eth_call', [], { sourceTimeoutMs: 1000 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(releases.length, 2);
+  releases[0](); await new Promise(resolve => setImmediate(resolve));
+  const third = f.context.rpc('eth_getCode', [], { sourceTimeoutMs: 1000 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(releases.length, 2, 'Late old completion must not clear the new shared validation');
+  assert.equal(f.calls.filter(([source]) => source === 'primary').length, 0, 'Abandoned validation cannot authorize a read');
+  releases[1](); assert.deepEqual(await Promise.all([second, third]), ['primary', 'primary']);
+  assert.deepEqual(f.validations, ['primary', 'secondary', 'primary']);
+});
+test('cancelling a shared validation owner does not poison another still-live caller', async () => {
+  const owner = new AbortController(); let release, count = 0;
+  const f = fixture({ validate: () => ++count === 1 ? new Promise(resolve => { release = resolve; }) : Promise.resolve() });
+  const first = f.context.rpc('eth_call', [], { signal: owner.signal });
+  const second = f.context.rpc('eth_getCode');
+  await new Promise(resolve => setImmediate(resolve));
+  owner.abort(Error('Owner left'));
+  await assert.rejects(first, /Owner left/);
+  assert.equal(await second, 'primary');
+  assert.equal(f.context.readStatus().failovers, 0);
+  assert.deepEqual(f.validations, ['primary', 'primary']);
+  release(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(await f.context.rpc('eth_chainId'), 'primary');
+  assert.equal(count, 2);
 });
 test('primary recovery is automatic after bounded cooldown, without signing or broadcasting', async () => {
   let working = false;

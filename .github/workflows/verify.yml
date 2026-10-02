@@ -144,3 +144,61 @@ jobs:
           done
           test "$ready" = 1 || { cat "$RUNNER_TEMP/open-mint-fixture.log"; exit 1; }
           OPEN_MINT_TEST_ORIGIN="$OPEN_MINT_ORIGIN" npm run open:rehearsal -- --execute-local-test-transactions
+
+  pulse:
+    runs-on: ubuntu-24.04
+    # Independent of the historical rehearsal campaign above. Fixtures use
+    # mocked RPC/wallet/provider responses, loopback HTTP and a new Unix-socket
+    # PostgreSQL cluster, never the active runtime or a public chain.
+    timeout-minutes: 10
+    env:
+      XAI_API_KEY: ''
+      OPEN_MINT_X_BEARER_TOKEN: ''
+      OPEN_MINT_TEST_POSTGRES: '1'
+      OPEN_MINT_TEST_POSTGRES_BIN: /usr/lib/postgresql/16/bin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: v1.5.1
+      - name: Install locked dependencies and isolated database binaries
+        run: |
+          npm ci
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16
+      - name: Compile contract artifacts offline for identity checks
+        working-directory: contracts
+        run: forge build --offline
+      - name: Verify Pulse Core and frozen RC1/RC2 integration locks
+        run: |
+          npm run pulse:verify
+          npm run pulse:candidate:verify
+          npm run pulse:admin:candidate:verify
+      - name: Test Pulse mocks, disposable PostgreSQL relay and backup helper
+        run: |
+          npm run test:pulse:ci
+          node --test contracts/tools/preformal-backup.node-test.mjs
+      - name: Check responsive layouts, keyboard access and reduced motion offline
+        run: node --import tsx scripts/pulse-ui-accessibility.mjs --output-dir "$RUNNER_TEMP/pulse-ui-accessibility"
+      - name: Retain only synthetic accessibility screenshots and measurements
+        # This path is created only by the isolated fixture audit above. Missing
+        # evidence is a quiet no-op; never include .local, a browser profile, or
+        # screenshots from the user's real connected-wallet site.
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        timeout-minutes: 2
+        with:
+          name: pulse-ui-accessibility-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/pulse-ui-accessibility/*.png
+            ${{ runner.temp }}/pulse-ui-accessibility/results.json
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
+          include-hidden-files: false

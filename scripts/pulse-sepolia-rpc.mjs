@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { SEPOLIA_READ_BUDGETS } from './pulse-sepolia-read-budgets.mjs';
 
 export const SEPOLIA_READ_POLICY = 'validated-primary-fallback/v1';
 const safeReads = new Set(['eth_chainId', 'eth_getBlockByNumber', 'eth_getCode', 'eth_getBalance',
@@ -33,14 +34,19 @@ export const withSepoliaReadSource = (c, operation, options = {}) => controllers
  * receipt, wallet or artwork). If it is unavailable, discard that whole attempt
  * and retry once at the other source. Never stitch partial evidence together.
  * Raw two-source contexts remain available for explicit audit/deployment tools. */
-export function createSepoliaReadFailover(c, validate, { now = Date.now, cooldownMs = 30000, validationTtlMs = 60000,
-  attemptTimeoutMs = 20000 } = {}) {
+export function createSepoliaReadFailover(c, validate, options = {}) {
+  const { now = Date.now, cooldownMs = 30000, validationTtlMs = 60000,
+    attemptTimeoutMs = SEPOLIA_READ_BUDGETS.sourceMs,
+    // Existing audit/tests that explicitly override one source budget retain
+    // that override for both priorities unless they opt into separate limits.
+    backgroundAttemptTimeoutMs = options.attemptTimeoutMs ?? SEPOLIA_READ_BUDGETS.backgroundSourceMs } = options;
   assert.equal(typeof c.rpc, 'function'); assert.equal(typeof c.second, 'function');
   assert.notEqual(c.rpc, c.second); assert.equal(typeof validate, 'function');
   assert.equal(typeof now, 'function');
   assert.ok(Number.isSafeInteger(cooldownMs) && cooldownMs > 0 && cooldownMs <= 60000);
   assert.ok(Number.isSafeInteger(validationTtlMs) && validationTtlMs > 0 && validationTtlMs <= 60000);
   assert.ok(Number.isSafeInteger(attemptTimeoutMs) && attemptTimeoutMs > 0 && attemptTimeoutMs <= 60000);
+  assert.ok(Number.isSafeInteger(backgroundAttemptTimeoutMs) && backgroundAttemptTimeoutMs > 0 && backgroundAttemptTimeoutMs <= 60000);
   const states = [c.rpc, c.second].map((request, index) => {
     const label = index === 0 ? 'primary' : 'secondary';
     const source = Object.freeze({ readPolicy: SEPOLIA_READ_POLICY, readSource: label,
@@ -68,18 +74,38 @@ export function createSepoliaReadFailover(c, validate, { now = Date.now, cooldow
   async function validated(state, signal, readPriority) {
     while (state.validatedUntil <= now()) {
       signal?.throwIfAborted();
+      // A timed-out validation can ignore cancellation and settle much later.
+      // It must neither trap future readers behind that abandoned flight nor
+      // clear a newer flight's lock when its own finally eventually runs.
+      if (state.validating?.signal.aborted) state.validating = undefined;
       if (!state.validating) {
         const revision = validationRevision;
-        state.validating = Promise.resolve().then(() => validate(readOptions(state.source, { signal, readPriority })))
-          .then(() => { signal?.throwIfAborted(); if (revision === validationRevision) state.validatedUntil = now() + validationTtlMs; })
-          .finally(() => { state.validating = undefined; });
+        const flight = { signal };
+        const aborted = new Promise((_, reject) => { flight.onAbort = () => reject(signal.reason); });
+        signal.addEventListener('abort', flight.onAbort, { once: true });
+        const work = Promise.resolve().then(() => validate(readOptions(state.source, { signal, readPriority })))
+          .then(() => { signal.throwIfAborted(); if (revision === validationRevision) state.validatedUntil = now() + validationTtlMs; });
+        flight.promise = Promise.race([work, aborted]).finally(() => {
+          signal.removeEventListener('abort', flight.onAbort);
+          if (state.validating === flight) state.validating = undefined;
+        });
+        state.validating = flight;
       }
-      await state.validating;
+      const flight = state.validating;
+      try { await flight.promise; }
+      catch (error) {
+        signal?.throwIfAborted();
+        // Cancellation belongs to the flight's owner, not every waiting read.
+        // A still-live waiter revalidates with its own remaining source budget.
+        if (flight.signal.aborted && error === flight.signal.reason) continue;
+        throw error;
+      }
     }
   }
-  async function run(operation, { signal, sourceTimeoutMs = attemptTimeoutMs, readPriority = 'action' } = {}) {
+  async function run(operation, { signal, sourceTimeoutMs, readPriority = 'action' } = {}) {
     signal?.throwIfAborted();
     if (conflict) throw conflict;
+    if (sourceTimeoutMs === undefined) sourceTimeoutMs = readPriority === 'background' ? backgroundAttemptTimeoutMs : attemptTimeoutMs;
     assert.ok(Number.isSafeInteger(sourceTimeoutMs) && sourceTimeoutMs > 0 && sourceTimeoutMs <= 60000);
     assert.ok(readPriority === 'action' || readPriority === 'background', 'Invalid read priority');
     // Prefer the primary again after its cooldown. Healthy fallback reads do
@@ -95,8 +121,9 @@ export function createSepoliaReadFailover(c, validate, { now = Date.now, cooldow
       const deadline = setTimeout(() => attempt.abort(unavailableRpcData()), sourceTimeoutMs);
       // An uncooperative read must not consume the entire parent budget. Only
       // read-only operations enter this controller; late results are discarded.
-      const aborted = new Promise((_, reject) => attempt.signal.addEventListener('abort',
-        () => reject(attempt.signal.reason), { once: true }));
+      let rejectAborted;
+      const aborted = new Promise((_, reject) => { rejectAborted = () => reject(attempt.signal.reason); });
+      attempt.signal.addEventListener('abort', rejectAborted, { once: true });
       try {
         const value = await Promise.race([Promise.resolve().then(async () => {
           await validated(state, attempt.signal, readPriority);
@@ -127,6 +154,7 @@ export function createSepoliaReadFailover(c, validate, { now = Date.now, cooldow
         failure = error;
       } finally {
         clearTimeout(deadline);
+        attempt.signal.removeEventListener('abort', rejectAborted);
         signal?.removeEventListener('abort', abortFromParent);
       }
     }

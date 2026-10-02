@@ -7,6 +7,7 @@ import { encodeEventTopics, decodeEventLog, decodeFunctionData, encodeFunctionDa
 import { privateKeyToAccount } from 'viem/accounts';
 import { DIR, readOnlyContext, loadPlan, loadJournal, verifyDeploymentAtSource, checkNetwork, readContract, sharedReadBlock, canonicalSepoliaLog, canonicalSepoliaMintReceipt, save } from './pulse-sepolia.mjs';
 import { createSepoliaReadFailover, readSources, withSepoliaReadSource, requireRpcData, unavailableRpcData, requireSepoliaIntegrity, SEPOLIA_READ_POLICY } from './pulse-sepolia-rpc.mjs';
+import { SEPOLIA_READ_BUDGETS } from './pulse-sepolia-read-budgets.mjs';
 import { DEPLOYER, INPUT_PROFILE } from '../contracts/tools/pulse-sepolia-plan.mjs';
 import { loadPulseArtifact } from '../contracts/tools/pulse-candidate-lock.mjs';
 import { generativeInputDigest } from '../src/openMint/generativeInputs.ts';
@@ -594,7 +595,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
         catch { relayWriteError = 'RELAY_READ_UNAVAILABLE'; }
       }
       return withSepoliaReadSource(c,
-        source => readObservedArtwork(source, at, mint, head, abi), { signal: AbortSignal.timeout(45000) });
+        source => readObservedArtwork(source, at, mint, head, abi), { signal: AbortSignal.timeout(SEPOLIA_READ_BUDGETS.backgroundSemanticMs), readPriority: 'background' });
     })().then(async svg => {
       if (running && !conflict()) {
         svgBytes.set(key, svg); persistGallery();
@@ -631,9 +632,12 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
   const saleLoop = createReadRecovery(async signal => {
     backgroundSaleRevision = saleRevision;
     requireBinding();
-    const value = await readMintState(c, binding, p, {}, { signal, readPriority: 'action' }); signal.throwIfAborted();
+    // Sale renewal has action queue priority so a long owner scan cannot starve
+    // readiness, but it retains the background pass's longer source budget.
+    const value = await readMintState(c, binding, p, {}, { signal, readPriority: 'action',
+      sourceTimeoutMs: SEPOLIA_READ_BUDGETS.backgroundSourceMs }); signal.throwIfAborted();
     if (saleRevision === backgroundSaleRevision) publishSale(value);
-  }, { intervalMs, timeoutMs: 45000, autoSchedule: false,
+  }, { intervalMs, timeoutMs: SEPOLIA_READ_BUDGETS.backgroundSemanticMs, autoSchedule: false,
     onError(error) {
       if (integrityFailure(error) || saleRevision === backgroundSaleRevision) saleError = error;
       observationError(error, 'sale'); persistGallery();
@@ -712,12 +716,12 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
     probe: () => withSepoliaReadSource(c, async source => {
       const [head, finalized] = await Promise.all([sharedReadBlock(source), sharedReadBlock(source, 'finalized')]);
       return { head, finalized };
-    }, { signal: AbortSignal.timeout(45000), readPriority: 'background' }),
+    }, { signal: AbortSignal.timeout(SEPOLIA_READ_BUDGETS.backgroundSemanticMs), readPriority: 'background' }),
     synchronize: async ({ head, finalized }) => {
       if (binding && snapshot && !refreshError) {
         const base = snapshot;
         const fast = await advanceSepoliaCollectionIfUnchanged(c, binding, base, head, finalized,
-          { signal: AbortSignal.timeout(45000), readPriority: 'background' });
+          { signal: AbortSignal.timeout(SEPOLIA_READ_BUDGETS.backgroundSemanticMs), readPriority: 'background' });
         if (fast) {
           if (snapshot !== base) return snapshot;
           const covered = supersededReceiptHints(fast, immediateMints);
@@ -760,7 +764,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
     entry.promise = withSepoliaReadSource(c,
       source => observeSepoliaMintReceipt(source, binding, { handle, wallet: row.wallet, transactionHash: row.transactionHash,
         ...(row.transaction ? { attempt: row } : {}) }),
-      { signal: AbortSignal.timeout(45000) }).then(result => {
+      { signal: AbortSignal.timeout(SEPOLIA_READ_BUDGETS.semanticMs) }).then(result => {
       if (result.mint && running && !conflict()) {
         immediateMints.set(handle, { at: Date.now(), mint: result.mint, head: result.head, finalized: result.finalized });
         artCache.set(result.mint.transactionHash + ':' + result.mint.blockHash, Promise.resolve(result.svg));
@@ -796,7 +800,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
   async function mintOptions(wallet) {
     requireBinding();
     let state;
-    try { state = await readMintState(c, binding, p, { wallet }, { signal: AbortSignal.timeout(45000) }); }
+    try { state = await readMintState(c, binding, p, { wallet }, { signal: AbortSignal.timeout(SEPOLIA_READ_BUDGETS.semanticMs) }); }
     catch (error) {
       if (readUnavailable(error)) throw new PublicError(503, 'OBSERVATION_UNAVAILABLE', 'Mint availability cannot be checked right now. Please try again shortly.');
       throw error;
@@ -814,7 +818,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
   async function prepare(body, session) {
     const wallet = verified(session), generation = session.generation, consent = testConsent(body);
     requireBinding();
-    const economic = await readMintState(c, binding, p, { wallet, handle: consent.handle }, { signal: AbortSignal.timeout(45000) });
+    const economic = await readMintState(c, binding, p, { wallet, handle: consent.handle }, { signal: AbortSignal.timeout(SEPOLIA_READ_BUDGETS.semanticMs) });
     const head = economic.head;
     assert.equal(session.generation, generation); assert.equal(verified(session), wallet);
     requireForUser(!economic.sale.paused, 'MINT_PAUSED', 'Minting is paused.');
@@ -824,7 +828,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
     const prior = Object.hasOwn(db.requests, consent.handle) ? db.requests[consent.handle] : undefined;
     if (prior?.stage === 'expired') {
       requireExpiredAttemptProof(binding, prior);
-      const proof = await inspectSepoliaAttempt(c, binding, prior, { signal: AbortSignal.timeout(45000) });
+      const proof = await inspectSepoliaAttempt(c, binding, prior, { signal: AbortSignal.timeout(SEPOLIA_READ_BUDGETS.semanticMs) });
       requireForUser(proof.state === 'retry-allowed', 'RECOVERY_NOT_RESOLVED', 'The previous mint still needs to be checked before another can begin.');
       assert.equal(session.generation, generation); assert.equal(verified(session), wallet);
     } else if (prior) {
@@ -856,7 +860,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
     const data = encodeFunctionData({ abi, functionName: consent.mode === 'free' ? 'mintFree' : 'mintPaid', args: consent.mode === 'free'
       ? [consent.renderHandle, mbti, a, signature, proof] : [consent.renderHandle, mbti, a, signature] });
     const gas = BigInt(await withSepoliaReadSource(c, source => source.rpc('eth_estimateGas',
-      [{ from: wallet, to: at, data, value: qty(consent.cap) }]), { signal: AbortSignal.timeout(45000) }));
+      [{ from: wallet, to: at, data, value: qty(consent.cap) }]), { signal: AbortSignal.timeout(SEPOLIA_READ_BUDGETS.semanticMs) }));
     requireActive();
     assert.equal(session.generation, generation); assert.equal(verified(session), wallet);
     const transaction = { from: wallet, to: at, chainId: '0xaa36a7', data, value: qty(consent.cap), gas: qty(gas * 12n / 10n + 1n) };
@@ -878,7 +882,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
     requireForUser(row && row.wallet === wallet, 'REQUEST_NOT_FOUND', 'Connect the wallet used for this mint before checking it.');
     requireForUser(value.attemptCode === undefined || value.attemptCode === row.code, 'RECOVERY_ATTEMPT_CHANGED', 'The previous mint request changed. Refresh its status before continuing.');
     const result = await inspectSepoliaAttempt(c, binding, row,
-      { transactionHash: value.transactionHash, signal: AbortSignal.timeout(45000) });
+      { transactionHash: value.transactionHash, signal: AbortSignal.timeout(SEPOLIA_READ_BUDGETS.semanticMs) });
     requireActive(); assert.equal(session.generation, generation); assert.equal(verified(session), wallet);
     requireForUser(db.requests[handle] === row, 'RECOVERY_ATTEMPT_CHANGED', 'The previous mint request changed. Refresh its status before continuing.');
     if (result.state === 'retry-allowed') {
@@ -1102,7 +1106,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
           if (path.endsWith('begin')) {
             const generation = session.generation;
             requireBinding();
-            const preflight = await readMintState(c, binding, p, { wallet, handle }, { signal: AbortSignal.timeout(45000) });
+            const preflight = await readMintState(c, binding, p, { wallet, handle }, { signal: AbortSignal.timeout(SEPOLIA_READ_BUDGETS.semanticMs) });
             // RC1's paid path has no free slot/revision to decode. Keep its
             // existing behavior while RC2 binds every saved wire field.
             const authorization = binding.contractProfile === PULSE_ADMIN_PROFILE ? savedMintAuthorization(binding, row)

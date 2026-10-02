@@ -3,7 +3,8 @@
 import { mintHandleDraft } from '../src/openMint/mintHandleDraft.ts';
 import { bindHandleValidation } from '../src/openMint/fieldValidation.ts';
 import { renderInlineFeedback } from '../src/openMint/inlineFeedback.ts';
-export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, renderInlineFeedback) {
+import { SEPOLIA_READ_BUDGETS } from './pulse-sepolia-read-budgets.mjs';
+export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, renderInlineFeedback, readBudgets) {
   const $ = q => document.querySelector(q);
   bindHandleValidation(document);
   // A monitored signature is still a viewing surface unless the page is an
@@ -83,17 +84,26 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
   if (!mintProcess) observationWarning();
   async function api(path, body, timeoutMs = 0) {
     const controller = timeoutMs ? new AbortController() : undefined;
+    let rejectAborted;
+    const aborted = controller && new Promise((_, reject) => { rejectAborted = () => reject(controller.signal.reason); });
+    controller?.signal.addEventListener('abort', rejectAborted, { once: true });
     const timer = controller && setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch(path, { method: body ? 'POST' : 'GET', headers: body ? { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf } : {}, body: body ? JSON.stringify(body) : undefined, ...(controller ? { signal: controller.signal } : {}) });
-      const value = await response.json(); if (!response.ok) throw Object.assign(Error(value.error || 'The request could not be completed.'), { code: value.code, status: response.status }); return value;
+      const request = (async () => {
+        const response = await fetch(path, { method: body ? 'POST' : 'GET', headers: body ? { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf } : {}, body: body ? JSON.stringify(body) : undefined, ...(controller ? { signal: controller.signal } : {}) });
+        controller?.signal.throwIfAborted();
+        const value = await response.json();
+        controller?.signal.throwIfAborted();
+        if (!response.ok) throw Object.assign(Error(value.error || 'The request could not be completed.'), { code: value.code, status: response.status }); return value;
+      })();
+      return await (aborted ? Promise.race([request, aborted]) : request);
     } catch (e) {
       if (controller?.signal.aborted) throw Error(path.startsWith('/api/test/status')
         ? 'Mint status could not be checked right now. Checking again shortly.' : path === '/api/test/options'
           ? 'Price could not be checked right now. Please try again.' : path === '/api/test/recover'
             ? 'The previous mint could not be checked right now. Please try again.' : 'Wallet verification timed out. Try connecting again.');
       throw e;
-    } finally { if (controller) clearTimeout(timer); }
+    } finally { if (controller) { clearTimeout(timer); controller.signal.removeEventListener('abort', rejectAborted); } }
   }
   const providers = [];
   const browserProvider = () => providers.find(p => p.provider.isRabby || p.info?.rdns === 'io.rabby')?.provider || window.ethereum || providers[0]?.provider;
@@ -273,7 +283,7 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
     recoveryRequest = request; connected(); renderInlineFeedback(note, 'Checking your previous mint…');
     request.promise = (async () => {
       try {
-        const value = await api('/api/test/recover', { handle, ...(reference.code ? { attemptCode: reference.code } : {}), ...(transactionHash ? { transactionHash } : {}) }, 45000);
+        const value = await api('/api/test/recover', { handle, ...(reference.code ? { attemptCode: reference.code } : {}), ...(transactionHash ? { transactionHash } : {}) }, readBudgets.browserMs);
         if (!current()) return;
         if (value.handle !== handle || reference.code && value.attemptCode !== reference.code) throw Error('The previous mint could not be verified. Please try again.');
         if (value.state === 'retry-allowed') {
@@ -326,7 +336,7 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
     renderInlineFeedback($('[data-pulse-feedback]'), $('[data-pulse-options]')?.dataset.pulsePhase === 'paid' ? 'Checking price…' : 'Checking your free mint eligibility…');
     request.promise = (async () => {
       try {
-        const result = await api('/api/test/options', undefined, 45000);
+        const result = await api('/api/test/options', undefined, readBudgets.browserMs);
         if (epoch !== connectionEpoch || wallet !== selectedWallet || request.saleGeneration !== saleGeneration) return;
         const phase = result.phase || result.saleStatus?.phase || (result.free ? 'free' : result.paid ? 'paid' : 'unknown');
         if (!['free', 'paid'].includes(phase) || typeof result.free !== 'boolean' || typeof result.paid !== 'boolean'
@@ -397,14 +407,14 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
         if (proofEpoch !== connectionEpoch || current[0]?.toLowerCase() !== accounts[0].toLowerCase() || currentChain.toLowerCase() !== '0xaa36a7') throw Error('Wallet or network changed. Connect it again.');
       };
       walletFeedback('Checking this account on Sepolia…');
-      const challenge = await api('/api/test/challenge', { address: accounts[0] }, 45000);
+      const challenge = await api('/api/test/challenge', { address: accounts[0] }, readBudgets.browserMs);
       await assertCurrent();
       walletFeedback('Confirm the sign-in message in your wallet. This does not mint or spend ETH.');
       const message = '0x' + [...new TextEncoder().encode(challenge.message)].map(n => n.toString(16).padStart(2, '0')).join('');
       const signature = await activeProvider.request({ method: 'personal_sign', params: [message, accounts[0]] });
       await assertCurrent();
       walletFeedback('Verifying your sign-in…');
-      const verified = await api('/api/test/verify', { challengeId: challenge.challengeId, signature }, 45000);
+      const verified = await api('/api/test/verify', { challengeId: challenge.challengeId, signature }, readBudgets.browserMs);
       await assertCurrent();
       if (verified.wallet?.toLowerCase() !== accounts[0].toLowerCase()) throw Error('Wallet verification did not match the selected account. Connect it again.');
       wallet = verified.wallet; provider = activeProvider;
@@ -430,7 +440,7 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
     const rawReference = pendingReference() || sessionStorage.getItem('sg-sepolia-reveal');
     let again = true;
     try {
-      const value = verifiedFailedReceipt || await api('/api/test/status?handle=' + encodeURIComponent(handle), undefined, 12000);
+      const value = verifiedFailedReceipt || await api('/api/test/status?handle=' + encodeURIComponent(handle), undefined, readBudgets.browserMs);
       if (generation !== statusGeneration) return;
       if (value.handle !== handle || !['not-submitted', 'retry-allowed', 'submission-unknown', 'pending', 'confirming', 'minted', 'reverted'].includes(value.state)) throw Error('Mint status could not be verified. Checking again shortly.');
       if (value.state === 'pending' && !/^0x[a-f0-9]{64}$/i.test(value.transactionHash || '')) throw Error('Mint status could not be verified. Checking again shortly.');
@@ -766,4 +776,4 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
   }
   window.addEventListener('pagehide', () => { statusGeneration++; clearTimeout(statusTimer); cancelOptionsRetry(); });
 }
-export const SEPOLIA_TEST_CLIENT = `(${sepoliaTestClient.toString()})(${mintHandleDraft.toString()}, ${bindHandleValidation.toString()}, ${renderInlineFeedback.toString()});`;
+export const SEPOLIA_TEST_CLIENT = `(${sepoliaTestClient.toString()})(${mintHandleDraft.toString()}, ${bindHandleValidation.toString()}, ${renderInlineFeedback.toString()}, ${JSON.stringify(SEPOLIA_READ_BUDGETS)});`;

@@ -84,7 +84,7 @@ it('sample-backed pages keep developer copy out of the user flow without claimin
     expect(page).not.toContain('Grok interprets it.');
     expect(page).not.toContain('asks Grok to research public X posts');
   }
-  expect(pages[1]).toContain('data-pulse-sale-status role="status">Free mint ended · 2/2 slots used.');
+  expect(pages[1]).toContain('data-pulse-sale-status role="status" aria-atomic="true">Free mint ended · 2/2 slots used.');
   expect(pages[1]).toContain('The final signature may differ from');
   expect(mintPage('', { ...options, pulseSaleNotice: '<script>bad</script>' })).toContain('&lt;script&gt;bad&lt;/script&gt;');
   expect(mintPage()).toContain('Grok chooses the final signature.');
@@ -456,7 +456,8 @@ describe("open mint pages", () => {
     const form = html.match(/<form\b[^>]*data-assessment-request[^>]*>([\s\S]*?)<\/form>/)?.[1];
     expect(form).toBeDefined();
     expect(form?.trim()).toMatch(/^<section class="mint-entry-part mint-entry-handle"/);
-    expect(html).not.toMatch(/mint-entry-intro|A name,|a signature\.<\/h1>|<h1\b/);
+    expect(html).not.toMatch(/mint-entry-intro|A name,|a signature\.<\/h1>|<h1\b(?! class="visually-hidden")/);
+    expect(html).toContain('<h1 class="visually-hidden">Mint &amp; reveal</h1>');
     expect(OPEN_MINT_CSS).not.toContain("mint-entry-intro");
     expect(form?.match(/<input\b[^>]*name="handle"[^>]*>/g)).toHaveLength(1);
     expect(form).toContain('<label for="open-handle"><span class="mint-section-title">Choose any X handle.</span>');
@@ -635,7 +636,7 @@ describe("open mint pages", () => {
       expect(form!.indexOf(disclosure)).toBeLessThan(form!.indexOf('data-request-submit'));
     }
     expect(form).toContain('data-pulse-check><span>Refresh price</span>');
-    expect(form).toContain('data-pulse-sale-status role="status">Free mint ended · 2/2 slots used.');
+    expect(form).toContain('data-pulse-sale-status role="status" aria-atomic="true">Free mint ended · 2/2 slots used.');
     expect(form).toContain('data-request-submit><span>Mint &amp; reveal</span>');
     expect(form).not.toMatch(/<details\b|<summary\b|checkbox/);
     expect(form).toContain('data-pulse-free hidden>No mint fee.');

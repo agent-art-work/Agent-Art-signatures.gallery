@@ -1,5 +1,32 @@
 # Release readiness — current execution order
 
+## Current state — October 2, 2026
+
+Code through `33fb02f` is on remote `main`. The active disposable local website
+uses RC2 on **http://127.0.0.1:3007**, not the older RC1/port 3004 path.
+[RC2 deployment, admin capabilities, and test evidence](pulse-sepolia-admin-test.md).
+Public contracts and source verification already exist; they are not hosted
+staging acceptance, production launch approval, or a real Grok campaign.
+
+Free-mint policy/allocation and paid Pulse settings are awaiting the user.
+The admin-capable RC2 supports paused Merkle root/capacity/quota updates during
+the free phase; the immutable deadline and one-way free-to-paid transition remain.
+The site automatically chooses free versus paid from verified sale state.
+Ordinary chain reads use validated-primary fallback; relay-backed viewing does
+not require two providers to agree on each visitor request or show RPC warnings.
+Mint-affecting unavailable/conflicting evidence still blocks the affected action.
+Canonical inclusion reveals immediately as Confirming, including in the gallery;
+submission is not proof of success and no unknown effect is automatically resent.
+
+The approved work while waiting is CI, RPC deadline/fallback integration tests,
+mobile/accessibility QA, documentation reconciliation, and historical backup
+archival. [Current hardening evidence](policy-independent-hardening.md).
+R5–R10 remain paused as release packages; these scoped implementation checks do
+not silently accept them. The exact final policy, real-provider acceptance,
+hosted operation, independent review and launch decision remain outstanding.
+
+## Historical release audit
+
 **September 27:** the separately approved [disposable Sepolia test](pulse-sepolia-test.md)
 has deployed/byte-verified renderer and Pulse collection contracts and successful
 free/free/paid mint receipts. The loopback website is now running at port 3004:
@@ -145,7 +172,7 @@ or activate a service.
 | R3 | RC1 migration and backup/restore rehearsal — E17/E21 | [Steps 1–5 verified offline](r3-backup-restore.md). Eight cross-cluster tests cover exact rows/permissions, private revocations, interrupted authorization/dispatch, fresh writer/review, transfer/reorg, chain-only rebuild and stale/unknown refusal. Reviewed runbook; zero repeated fixture effects. | **Complete offline, September 24.** Live manifest custody, source isolation and hosted recovery remain operational acceptance; no active data or historical backup touched. |
 | R4 | Staging operator recovery and support — E03/E04/E21 | [Steps 1–5 complete offline](r4-staging-recovery.md): restricted inspection, exact v2 upgrade, independently pinned action, fresh finalized-expiry proof, atomic retirement, lost-commit inspection and fresh-request resumption without reassessment. Final review fixes and rollback/restore evidence recorded. | **Complete offline, September 24.** No live-operation authorization. R5 still owns artifact/backup authentication, DB identity/custody and runnable integration; real-record recovery and public support remain separate. |
 | R5 | Runnable release package and operating integration — E16/E19/E21 | [Steps 2–4 partially implemented](r5-release-bootstrap.md#implementation-checkpoint--september-25): detached compiled artifact, exact reviewed files, authenticated adapters, read-only maintenance, backup authentication and private health. Installed owner startup, effect-capable maintenance and the full acceptance campaign remain. | **Paused before Pulse integration; not accepted.** Resolve the fresh-epoch review-pin boundary and update exact contract/configuration bindings after product design. Astra · XHigh step 5 remains pending. |
-| R6 | Product acceptance — E12/E13/E14 | Finish About wording after claim-scope choice; allow readable mobile guidance after the deliberate one-line policy is resolved. Complete 320/375/390px and desktop, light/dark, keyboard/status announcements, 200% zoom/reduced motion and actual declared wallet/version matrix. Keep approved slogan, caption/navigation and reveal behavior. | Routine testing is **ready**; wording/layout reversals and wallet support scope are user decisions. |
+| R6 | Product acceptance — E12/E13/E14 | Policy-independent October 2 hardening covers readable mobile guidance, 320/375/390px and desktop, both themes, keyboard/status, zoom/reduced motion and long addresses. Keep selected Playpen font/pill controls and approved navigation/reveal. Actual installed-wallet/version/device matrix and About claim-scope acceptance remain separate. | Scoped browser evidence is in the hardening record; full product/release acceptance is not implied. |
 | R7 | Pin and verify the complete release tree — E00/E24 | Review all accumulated tracked/untracked work, preserve history, capture a reproducible revision/distribution, run complete clean-checkout app/PG/contract/tool checks and the browser matrix. Observe hosted CI for that exact revision after an authorized push. Collect review scope and unresolved findings. | Local verification is **ready**; checkpoint/publish actions follow the user's applicable authorization. Do not label current HEAD as the tested dirty tree. |
 | R8 | Real X → Grok → local Anvil acceptance — E10/E11 | Confirm the configured X token belongs to the funded account; reconcile prior attempts. Use a newly reviewed explicit one-attempt envelope and the selected generative flow, not just the superseded file-backed launcher. Record a real accepted or truthful unsuccessful outcome, costs/latency, mint/reveal if accepted and provider-free restart/reuse. | **External account evidence + paid approval.** Can run once R1/R2 and the necessary isolated runner are ready, alongside R3–R7; not blocked on Sepolia. |
 | R9 | Hosted Sepolia acceptance — E23 | Select actual infrastructure/custody/sources; deploy the approved exact candidate paused, verify independently, certify DB/hosted proxy/TLS/read limits, then separately review activation. Exercise installed wallets, transfer/collections, support, reload/recovery and hosted sharing. | **Deployment/funding/provisioning and activation approvals**, plus release evidence. Network/origin selection alone is insufficient. |
@@ -177,9 +204,10 @@ preserve those boundaries in its runnable operator/bootstrap integration.
    supporting evidence addressing the recorded contrary examples, or approve a
    narrower interpretation. This audit does not redo the dated research or
    silently change the slogan.
-3. **Mobile/wallets:** recommended desktop one-line guidance with readable
-   small-screen wrapping; initial injected EOA desktop scope, actual Rabby and
-   MetaMask candidates. WalletConnect/smart accounts are not implied scope.
+3. **Wallet/device scope:** mobile readability and wrapping are covered by the
+   authorized accessibility hardening. Complete actual Rabby/MetaMask device and
+   version acceptance separately. Existing supported delegation handling is not
+   a promise of arbitrary contract-wallet or WalletConnect support.
 4. **Operators/infrastructure:** hosting/PG owner, two genuinely independent
    RPC sources/accounts, reviewed separated key custody, review-key ownership,
    backup destination/retention and support/incident contact. Do not infer that
@@ -193,12 +221,12 @@ ordinary implementation step.
 
 ## Separate backlog and exclusions
 
-The [Inbox](../INBOX.md) retains the disk-cleanup request for
-`.local/backups/pre-formal-v1-20260910`. Its reported size is not remeasured here;
-retention is not decided, and no backup or `.local/rehearsal` was opened, changed,
-archived or deleted for this audit. It is housekeeping, not evidence that the
-new generative database can be restored. Handle it separately with the original
-exact-target and recovery/health checks.
+The historical September 23 audit did not change the pre-formal backup.
+The separately authorized October 2 housekeeping retains its unique old chain
+and database rollback point as a lossless verified archive; see
+[retention and restoration](preformal-backup-retention.md). The active
+`.local/rehearsal` is out of scope and must remain untouched. This archive is
+not evidence that the newer generative production database can be restored.
 
 D01 (xAI subscription integration) remains external and nonblocking; D02
 (multi-account assessment quality/cost study) remains optional and separately

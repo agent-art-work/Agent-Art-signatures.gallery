@@ -27,11 +27,11 @@ describe("home gallery width", () => {
       .toBe("width:100%;max-width:42rem;margin-inline:auto");
   });
 
-  it("keeps the guidance on one centered line, capped at 16px and fitting its container", () => {
+  it("keeps the guidance centered at readable 16px and lets narrow screens wrap", () => {
     expect(rules(OPEN_MINT_CSS).filter(rule => rule.selector.includes(".home-guidance")))
       .toEqual([{
         selector: ".open-mint .home-grid .home-guidance",
-        declarations: "font-size:min(16px,2.4cqi);line-height:1.5;text-align:center;white-space:nowrap;margin:0 0 .75rem",
+        declarations: "font-size:16px;line-height:1.5;text-align:center;margin:0 0 .75rem",
       }, {
         selector: ".open-mint .home-grid .home-guidance>span",
         declarations: "display:inline-block;max-width:100%;font:inherit",

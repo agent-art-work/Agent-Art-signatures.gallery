@@ -37,6 +37,7 @@
     "test:pulse:c6:postgres": "OPEN_MINT_TEST_POSTGRES=1 vitest run src/openMint/persistence/pulsePipeline.postgres.test.ts --maxWorkers=1 --minWorkers=1",
     "pulse:c7:rehearsal": "node --import tsx scripts/pulse-c7-rehearsal.mjs",
     "test:pulse:sepolia": "node --import tsx --test contracts/tools/pulse-sepolia-*.node-test.mjs",
+    "test:pulse:ci": "node scripts/test-pulse-ci.mjs",
     "test:pulse:sepolia:recovery:coverage": "node --import tsx --experimental-test-coverage --test-coverage-include=scripts/pulse-sepolia-attempt-recovery.mjs --test-coverage-include=scripts/pulse-sepolia-site.mjs --test-coverage-lines=88 --test-coverage-branches=85 --test-coverage-functions=90 --test contracts/tools/pulse-sepolia-attempt-recovery.node-test.mjs contracts/tools/pulse-sepolia-reads.node-test.mjs contracts/tools/pulse-sepolia-availability.node-test.mjs contracts/tools/pulse-sepolia-site.node-test.mjs contracts/tools/pulse-sepolia-admin-site.node-test.mjs",
     "test:pulse:sepolia:relay:postgres": "OPEN_MINT_TEST_POSTGRES=1 node --import tsx --test contracts/tools/pulse-sepolia-relay-store.node-test.mjs",
     "pulse:sepolia": "node --import tsx scripts/pulse-sepolia.mjs",

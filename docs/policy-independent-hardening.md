@@ -1,0 +1,75 @@
+# Policy-independent hardening — October 2, 2026
+
+The user authorized all five follow-ups after checkpoint `33fb02f` was merged
+and pushed to `main`. Work is isolated on `codex/policy-independent-hardening`.
+Free-mint allocation/policy and paid Pulse parameters are still awaiting input.
+No paid provider call, public chain transaction, funded-key custody change or
+production deployment is part of this work.
+
+| Item | Output | Verification |
+| --- | --- | --- |
+| CI selection | Separate bounded Pulse job discovers mock suites, verifies Core/RC1/RC2 locks, exercises a new disposable PG16 relay, backup helper and offline Chrome audit | Local selection guard, YAML validation, exact selected suite execution; hosted execution is separate |
+| RPC deadlines/fallback | Shared read budgets, browser fetch/body cancellation and validation-flight ownership fences | Slow-primary/healthy-secondary loopback HTTP and client regression; cancellation, stale completions, conflict and no-send guards |
+| Mobile/accessibility | Readable guidance, stacked narrow wallet controls, visually wrapped allowlist rows, accessible headings/phase/status | [48-case real Chrome evidence and scope](pulse-ui-accessibility.md) |
+| Documentation | Current RC2/port 3007/admin/relay/early-reveal summary; historical RC1 and R1–R5 evidence remain labelled | Updated development/readiness tables without declaring hosted release acceptance |
+| Historical backup | Preserve unique pre-formal rollback as fully verified private archive; remove only redundant loose copy | [1,587 entries verified, about 3.51 GiB footprint reduction, restore runbook](preformal-backup-retention.md) |
+
+## RPC/read policy
+
+Action budgets are one source **20 seconds**, complete semantic read
+**45 seconds**, and RPC-backed browser API read **50 seconds**. This leaves
+space for a timed-out primary, an independently validated fallback attempt,
+and HTTP/JSON completion. Background source/pass budgets remain 20/45 seconds;
+existing explicit long history/audit limits are retained. No paid-dispatch,
+wallet-approval, nonce, receipt, or finality policy was widened.
+An initial tighter proposal was rejected after a healthy live background sale
+pass took 15.4 seconds: the fix must allow fallback without manufacturing read
+failures through an unmeasured ten-second source limit.
+
+Failure of one endpoint permits one **read-only** whole-operation fallback.
+Partial evidence is discarded rather than mixed across sources. Contradictory
+chain/code/mint evidence still fails closed; signatures and broadcasts never
+enter the read retry controller. An aborted shared-validation owner no longer
+poisons a still-live waiter, and a late old completion cannot clear a new flight.
+The browser deadline includes JSON-body parsing and discards uncooperative late
+responses without revealing artwork or unlocking another mint.
+
+Viewing still uses relay evidence without RPC warnings. Loading feedback is
+immediate for requested mint checks; genuine mint-affecting failures remain
+next to the CTA. A timer is not evidence that an uncertain transaction failed.
+
+## Limits and next input
+
+Mocked browser/RPC/PG and offline contract checks do not certify a hosted
+installation, actual wallet-extension matrix, manual screen-reader experience,
+live Grok attribution, production economics or independent security review.
+CI source wiring is not a claim that the newly changed job ran on GitHub.
+R5–R10 remain paused. The next product inputs are the actual free-mint list/quota
+and closure policy plus paid Pulse configuration; do not manufacture them.
+
+## Combined verification
+
+- Full application/HTTP/disposable PostgreSQL coverage campaign: **6,806 passed,
+  7 existing non-applicable skips, zero failures** across 6,813 tests.
+- Unchanged coverage ratchet passed: statements **94.69%**, branches **91.89%**,
+  functions **97.71%** (minimums remain 93/87/97).
+- Offline Foundry campaign: **251 passed, zero failures/skips**.
+- Dynamically selected Pulse mock/disposable-PG regression: **493 passed,
+  zero failures/skips**. Standalone C5 JavaScript/Anvil differential tests remain
+  explicitly separate from this mock-only selector, not silently omitted.
+- Backup helper: **5 passed**. Full real historical extraction/content/permission
+  verification is separate measured archival evidence, not a synthetic test.
+- Real Chrome matrix: **48 passed**, with zero failed assets, external fixture
+  requests or JavaScript exceptions; representative screenshots inspected.
+- Build, typecheck, renderer/slogan locks, Core/RC1/RC2 integration locks,
+  CI selection guards and whitespace checks passed.
+
+Local evidence files are `/private/tmp/sg-hardening-coverage-20261002.json`,
+`coverage/coverage-summary.json`, and `/private/tmp/sg-ui-a11y-final/results.json`.
+Synthetic browser screenshots/results are the only evidence selected for the
+new CI artifact upload; private backup manifests and real-site screenshots
+are excluded. The archived backup and current dev runtime remain local.
+
+After the local restart, read-only `/health` reported `mintReady: true`,
+`galleryAvailable: true`, `observerHealthy: true`, no safety halt/conflict, and
+the unchanged RC2 free policy (revision 2, quota 4, one successful mint).

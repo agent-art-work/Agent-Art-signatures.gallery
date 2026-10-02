@@ -1,5 +1,45 @@
 # Development execution plan
 
+## Current checkpoint — October 2, 2026
+
+The accumulated development was committed, fast-forwarded into `main`, and
+pushed as `33fb02f`. Policy-independent hardening continues separately on
+`codex/policy-independent-hardening`; free-mint allocation/policy and paid Pulse
+configuration are waiting for the user. Do not invent launch values or reopen
+the paid phase while that decision is pending.
+
+The current disposable test is **RC2**, profile `generative-pulse-v1-rc2`,
+collection `0x0787b0E511D1E73E6eBEd03104A199e6620eeBB2`, on Ethereum Sepolia.
+The local website is **http://127.0.0.1:3007**; `/admin` supports wallet-signed
+pause, review, allowlist/quota updates, and resume. It never loads the funded
+admin key into the web service. [Current test and admin runbook](pulse-sepolia-admin-test.md).
+RC1/port 3004 below is historical, not the current startup recommendation.
+
+RC2 allows paused updates of the Merkle wallet-slot list and successful-free-mint
+quota before the original deadline, while free minting is still open. One slot
+is one token; repeated addresses occupy separate stable slot IDs. Claimed rows
+cannot be reassigned, capacity cannot shrink, and `minted <= quota <= capacity`.
+Quota exhaustion or deadline ends free minting; paid cannot return to free.
+The frontend selects the phase and checks eligibility automatically, rather
+than asking the minter to choose free versus paid.
+
+The site-only relay stores validated chain evidence and serves viewing pages
+without per-visitor RPC warnings. Read availability is distinct from mint
+admission: cached verified artwork remains visible, while mint-affecting failures
+appear beside the mint CTA. Verified canonical inclusion reveals the artwork
+immediately with an honest Confirming status, including in the gallery; finality,
+reorg, and unavailable-observation states remain distinct. Submission alone is
+not inclusion. [Relay architecture and invariants](pulse-site-relay.md).
+
+The five authorized policy-independent follow-ups are CI suite selection,
+cross-layer RPC deadline/fallback regressions, mobile/accessibility QA,
+documentation reconciliation, and lossless archival of the pre-formal backup.
+[Implementation and verification record](policy-independent-hardening.md).
+These do not complete hosted staging, real X/Grok acceptance, independent review,
+or paused R5–R10. Those gates retain their separate evidence and decisions.
+
+## Historical checkpoints
+
 **September 27 disposable Sepolia checkpoint:** the user approved test-only
 settings and the existing deployment wallet. Renderer and Pulse collection are
 deployed and byte-verified; two free slots and the first paid mint succeeded.
@@ -35,7 +75,7 @@ Staging origin selected September 20: **`https://staging.signatures.gallery`**, 
 
 Reveal policy selected September 20: **early reveal with “Confirming”** after backend-verified canonical inclusion. Terminal gallery/ownership promotion stays separate; no reveal on submission alone. The [reveal policy](mint-reveal-policy.md) records implemented local behavior and the remaining Sepolia integration boundary. This resolves reveal timing, not public deployment or RPC operating configuration.
 
-## Current execution order — September 26 Pulse C8 checkpoint
+## Historical execution order — September 26 Pulse C8 checkpoint
 
 September 25 alignment update: the user accepted a deployment-fixed Merkle
 allowlist of one-mint wallet slots (`N` equals total slots), free closure at
@@ -191,7 +231,7 @@ E22 final verification: all **59 runtime/site tests** pass as well, for **986 di
 - Existing attempt guards, daily limits, coalescing, nonce/context checks and duplicate-submission guards are already implemented. Extend and regression-test them; do not recreate fixed historical bugs as new work.
 - A timed-out/disconnected request may still have cost money or submitted a transaction. Unknown does not mean failed, free, dropped or safe to repeat. Do not automatically fill nonce gaps, replace transactions, clear wallet history or reset a chain.
 - Operational receipts and billing data are private, versioned records separate from immutable assessment/artifact digests. No retroactive rationale, inferred source identity, fabricated usage or rewritten historical hashes.
-- Reveal is a UI experience after verified canonical inclusion, initially labelled Confirming, not cryptographic secrecy. Only terminal confirmation admits a work to minted galleries/sharing/ownership. The backend attests its workflow; Grok does not issue the on-chain signature, nor does MBTI claim objective psychological truth.
+- Reveal is a UI experience after verified canonical inclusion, initially labelled Confirming, not cryptographic secrecy. The relay-backed gallery may show that verified inclusion immediately with its honest status; finality and current ownership stay distinct. Sharing must not relabel confirming or reorged evidence as final. The backend attests its workflow; Grok does not issue the on-chain signature, nor does MBTI claim objective psychological truth.
 - Signature renderer v2.0.0 and slogan v2.0.1 are intentionally separate. Keep `The_First_Agent_Artwork`, its approved motion, shared caption/link rules and existing caveat style unless a scoped design change is explicitly agreed.
 - Local/staging isolation and today's production refusal remain until reviewed replacements exist. No public test keys, dev mutation routes, fixture masquerading as real Grok, or silent local-to-public artifact migration.
 
@@ -219,16 +259,16 @@ E22 final verification: all **59 runtime/site tests** pass as well, for **986 di
 | E11 | Expose factual Grok/MBTI provenance | R2 connects exact accepted records to generative chain commitments after verified inclusion in local/future-staging compositions. Bounded allowlisted enrichment, honest missing attribution, namespace/digest/privacy/restart and desktop-light/mobile-dark checks pass. Live provider evidence still awaits R8/E10 | Existing stored fields; E10 for real evidence | M / M2, early delivery |
 | E12 | Refine About and substantiate the “First” proposition | Research/draft prepared; contrary evidence requires claim-scope decision | Evidence research; user approves claim scope | M–L / M2 |
 | E13 | Define and implement the supported wallet matrix | Injected-wallet selection/provider pinning implemented and browser-checked; actual extension/device matrix pending | User scope; E01–E03 for flow QA | M / M2; mobile expansion conditional |
-| E14 | Complete mobile, accessibility and theme QA | Selector matrix verified; home guidance audit confirms 8–10px mobile text; wrapping decision requested | User approves mobile guidance change; final check after E03/E11/E13 | M / M2 |
+| E14 | Complete mobile, accessibility and theme QA | October 2 policy-independent hardening covers responsive guidance, keyboard/status, zoom, reduced motion and long addresses; evidence is in the hardening record. Actual extension/device acceptance remains separate | E03/E11/E13; approved site aesthetics retained | M / M2 |
 | E15 | Audit remaining external X links without changing artwork navigation | Done; navigation/source-link regressions verified | Verified IDs only if available | S / M2 |
 | E16 | Record the minimum public deployment architecture and URI policy | Architecture proposal drafted; Ethereum Sepolia and staging.signatures.gallery selected; remaining operating choices pending | User environment decisions before provisioning | M / M2 |
 | E17 | Add transactional open-mint persistence, jobs and sessions | Durable preparation/signing, browser guards, isolated-site composition and offline finalized-expiry operator retirement implemented; public activation remains pending | E04–E08 interfaces; E16 | L / M2 |
 | E18 | Immutable generative renderer, input authority and read-generated metadata | Experimental and distinct locked RC backend paths composed and locally browser-rehearsed. Independent review and public adoption pending; finished-SVG storage/compression and remote canonical publication abandoned | E16; locked renderer oracle; port release review before activation | L / M2 |
-| E19 | Public-chain adapters and generative deployment tooling | Both local profiles and future-staging admission integrated; locked offline plan and distinct pristine/active observers implemented. Exact immutables, declared governance history, bounded decoding and 176 complete metadata reads locally rehearsed. R5 runnable packaging, actual independent RPC/read-limit evidence and Sepolia deployment pending | E16; E18 before issuing public input authority | L / M2 |
-| E20 | Build durable chain projection and bounded paginated galleries | Generative wallet submission → automatic observation → verified Confirming → finalized galleries/collections composed locally; previews/navigation and bounded startup/drain added. Public activation pending | E17; E19 event/chain contract | L / M2 |
-| E21 | Harden public admission, diagnostics, secrets and operations | Local/future-staging admission, worker, issuance, wallet permits, automatic observation, cookie/transport and shutdown guards are locally verified; R1 adds independently bounded job/paid-response timing; R3 adds offline RC1 restore evidence; R4 adds reviewed offline inspection/upgrade/retirement. Remaining implementation: R5 runnable bootstrap/active health/diagnostics/support. Hosted TLS/proxy isolation and actual migration-history/DB identity/custody/provider/operating evidence remain unverified. No public deployment; active app unchanged | E07/E17–E20; support/operating owner | L / M2 |
+| E19 | Public-chain adapters and generative deployment tooling | Disposable RC1 and RC2 are deployed and byte/source verified on Sepolia; read-only runtime uses validated-primary fallback rather than requiring two agreeing RPCs for every action. R5 packaging and hosted independent-provider/read-limit acceptance remain pending | E16; E18 before issuing public input authority | L / M2 |
+| E20 | Build durable chain projection and bounded paginated galleries | Site-only relay and optional PostgreSQL persistence implemented for the disposable Sepolia site. Verified inclusion is immediately visible in mint/detail/gallery as Confirming; finality/ownership/reorg statuses remain honest. Hosted production activation pending | E17; E19 event/chain contract | L / M2 |
+| E21 | Harden public admission, diagnostics, secrets and operations | Local/future-staging guards, R1 timing, R3 restore and R4 recovery verified offline. Disposable RC2 adds authenticated wallet-signed admin operations without funded-key custody in HTTP. R5 runnable bootstrap and hosted TLS/proxy/DB/custody/provider/support acceptance remain incomplete; disposable public contracts do not satisfy those gates | E07/E17–E20; support/operating owner | L / M2 |
 | E22 | Add environment-aware sharing, canonical URLs and indexing policy | Staging generative canonical/OG/X integration and bounded PNG delivery implemented and locally browser/PG verified. Confirming/private metadata withheld, finalized-only chain images revalidated, previews labelled, local/staging noindex and sitemap exclusion enforced. Hosted crawler checks and explicit production indexing/cache policy pending | E16/E18 public URL decisions; E20 gallery interface | M / M2 |
-| E23 | Rehearse a pinned release candidate on Ethereum Sepolia | Network approved; deployment/rehearsal pending | E00–E22; deployment/funds approval | L / M2 |
+| E23 | Rehearse a pinned release candidate on Ethereum Sepolia | Disposable RC1 free/free/paid receipts and RC2 admin-configurable free-mint deployment recorded; local FE + Sepolia test is available. Complete hosted acceptance with real providers/custody/support and exact final policy remains pending | E00–E22; final policy/configuration and applicable external approvals | L / M2 |
 | E24 | Complete security review, resolve findings and decide launch | Internal release-bound arithmetic/structural review and security characterization tests added; independent review and launch decision pending | E23; reviewer and operator sign-off | L / M3 |
 | D01 | Track xAI subscription-funded integration eligibility | External | Authoritative human response | S per update / nonblocking |
 | D02 | Compare model quality/cost across a representative sample | Deferred / approval | E10 results; separate sample/spend approval | M / optional optimization |

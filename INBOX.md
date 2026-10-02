@@ -6,6 +6,11 @@ This Inbox is cleared by triage, not because development is finished. Track exec
 
 - Disk cleanup request for Agent-Art-signatures.gallery:
 
+  **Completed October 2, 2026:** retained the unique rollback point as a private
+  lossless archive, verified all 1,587 extracted entries, and removed only the
+  redundant loose copy. Backup footprint reduced by about 3.51 GiB; active
+  rehearsal untouched. [Retention, evidence and restoration](docs/preformal-backup-retention.md).
+
   Inspect this local rehearsal backup:
 
   `/Users/bigu/Projects/Agent-Art-signatures.gallery/.local/backups/pre-formal-v1-20260910`
@@ -22,3 +27,9 @@ This Inbox is cleared by triage, not because development is finished. Track exec
   Do not modify the active `.local/rehearsal` environment. Verify disk recovery and repository/runtime health afterward.
 
 - Fix the slow-primary RPC failover defect: a slow primary can consume the overall read deadline before the secondary is tried, leaving live network checks unavailable despite a responsive secondary. Keep contradictory chain or mint evidence fail-closed, and test slow-primary, healthy-secondary recovery.
+
+  **Completed October 2, 2026:** whole-operation read-only fallback now has
+  aligned source/semantic/browser budgets plus shared-validation cancellation
+  and late-completion guards. Loopback HTTP/client tests cover slow-primary,
+  independently validated fallback, genuine conflicts and no automatic sends.
+  [Implementation and verification](docs/policy-independent-hardening.md).
