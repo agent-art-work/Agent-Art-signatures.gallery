@@ -1,10 +1,31 @@
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
 import { test, describe, before, after, beforeEach, afterEach } from "node:test";
+import { performance } from "node:perf_hooks";
 import { Client } from "pg";
 import { stagingSiteFixture } from "./fixtures/generative-staging-site.mjs";
 import { disposablePostgres } from "../../src/openMint/persistence/fixtures/postgres.ts";
 import { createStagingSite } from "./generative-staging-site.mjs";
+import { createStagingRuntime } from "./generative-staging-runtime.mjs";
+import { createStagingRuntimeApiServer } from "./generative-staging-http.mjs";
+import { controlledAssessmentTiming } from "./fixtures/generative-staging-assessment.mjs";
+
+// Harness diagnostics stay real while only the adapter's real timers are
+// advanced in the narrowly scoped transport-deadline regressions below.
+const diagnosticSetTimeout = setTimeout, diagnosticClearTimeout = clearTimeout;
+const elapsedNow = performance.now.bind(performance);
+async function bounded(operation, label) {
+  let timer;
+  try { return await Promise.race([operation, new Promise((_, reject) => {
+    timer = diagnosticSetTimeout(() => reject(Error(`${label} did not settle`)), 20000);
+  })]); } finally { diagnosticClearTimeout(timer); }
+}
+async function checkpoint(reached, operation, label) {
+  return bounded(Promise.race([reached, operation.then(
+    value => { throw Error(`${label} completed before its checkpoint: ${JSON.stringify(value)}`); },
+    cause => { throw Error(`${label} refused before its checkpoint`, { cause }); },
+  )]), label);
+}
 
 describe("future-staging site/projection: disposable PG and synthetic chain, no paid calls or broadcasting", { skip: process.env.OPEN_MINT_TEST_POSTGRES !== "1" }, () => {
   let cluster, admin, f, site;
@@ -13,25 +34,46 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
   beforeEach(async () => { f = await stagingSiteFixture(cluster, admin); });
   afterEach(async () => { f.faults.afterQuery = undefined; await site?.close(); site = undefined; await f?.close(); });
   async function start() {
-    site = await createStagingSite(f.input, f.deps); assert.equal(site.server.listening, false);
+    // Keep the already supported injected runtime clock coherent during the
+    // prepare-only virtual setup; all page/observer checks remain real-time.
+    site = await createStagingSite(f.input, f.deps, undefined, () => Date.now()); assert.equal(site.server.listening, false);
     assert.equal(f.calls.length, 0); assert.deepEqual(f.counts, { x: 0, grok: 0, sign: 0 });
     await new Promise(r => site.server.listen(0, "127.0.0.1", r));
   }
   async function http(path, body, headers = {}, method = body === undefined ? "GET" : "POST") {
-    return new Promise((resolve, reject) => {
+    const began = elapsedNow(); let request;
+    const pending = new Promise((resolve, reject) => {
       const bytes = body === undefined ? undefined : JSON.stringify(body);
-      const req = httpRequest({ host: "127.0.0.1", port: site.server.address().port, path, method,
+      request = httpRequest({ host: "127.0.0.1", port: site.server.address().port, path, method,
         headers: { host: "staging.signatures.gallery", "x-forwarded-proto": "https", cookie: f.sessions.cookie(f.session), origin: f.settings.origin, "x-csrf-token": f.session.csrf,
           ...(bytes === undefined ? {} : { "content-type": "application/json", "content-length": Buffer.byteLength(bytes) }), ...headers } }, res => {
-        const chunks = []; res.on("data", c => chunks.push(c)); res.on("end", () => { const bytes = Buffer.concat(chunks), text = bytes.toString();
-          resolve({ status: res.statusCode, headers: res.headers, text, bytes, body: res.headers["content-type"]?.includes("application/json") && text ? JSON.parse(text) : undefined }); });
-      }); req.on("error", reject); req.end(bytes);
+        const chunks = []; res.on("data", c => chunks.push(c)); res.on("error", reject);
+        res.on("aborted", () => reject(Error("Site test HTTP response aborted")));
+        res.on("end", () => { try { const bytes = Buffer.concat(chunks), text = bytes.toString();
+          resolve({ status: res.statusCode, headers: res.headers, text, bytes, body: res.headers["content-type"]?.includes("application/json") && text ? JSON.parse(text) : undefined });
+        } catch (error) { reject(error); } });
+      }); request.on("error", reject); request.end(bytes);
     });
+    try { return await bounded(pending, "site HTTP operation"); }
+    catch (cause) {
+      request?.destroy();
+      const route = path.replace(/[A-Za-z0-9_-]{43}/g, "[private-code]").split("?")[0];
+      throw Error(`Site test HTTP ${method} ${route} failed after ${Math.round(elapsedNow() - began)}ms; cause=${cause.name}; code=${cause.code ?? "none"}`, { cause });
+    }
   }
-  async function prepare() {
-    const created = await http("/api/assessments", { handle: "Alice" }); assert.equal(created.status, 202, created.text); await site.idle();
-    const code = created.body.code, plan = await http("/api/mints/begin", { code, consent: true }); assert.equal(plan.status, 200, plan.text);
-    return { code, ...plan.body };
+  async function prepare(t) {
+    // Only the covered, mocked assessment/signing setup is frozen. Restore
+    // BEFORE any viewing, inclusion, reorg, finality or observer assertions.
+    // Native HTTP/socket timers and the harness's real20s bound still apply.
+    const clock = controlledAssessmentTiming(t, f);
+    try {
+      assert.equal(JSON.parse(f.input.operatingJson).settings.hosting.requestTimeoutMs, 15000);
+      assert.equal(JSON.parse(f.input.operatingJson).settings.rpc.timeoutMs, 5000);
+      const created = await http("/api/assessments", { handle: "Alice" }); assert.equal(created.status, 202, created.text);
+      await bounded(site.idle(), "site preparation drain");
+      const code = created.body.code, plan = await http("/api/mints/begin", { code, consent: true }); assert.equal(plan.status, 200, plan.text);
+      return { code, ...plan.body };
+    } finally { try { await bounded(site.idle(), "site preparation final drain"); } finally { clock.close(); } }
   }
   const sync = async () => assert.equal(await site.sync(), "observed");
   async function galleryMint(minted, mintState) {
@@ -63,6 +105,84 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
     while (performance.now() < end) { if (await read()) return; await new Promise(r => setTimeout(r, 50)); }
     assert.fail(`Timed out: ${description}; ${JSON.stringify(site.snapshot())}`);
   }
+  for (const lane of ["read", "page"]) test(`bodyless ${lane} is not destroyed by the POST body deadline`, async t => {
+    const runtime = createStagingRuntime(f.input, f.deps);
+    let enter, release; const reached = new Promise(r => enter = r), held = new Promise(r => release = r);
+    const view = { read: async () => false, page: async () => false, status: async () => undefined };
+    view[lane] = async (_req, res) => { enter(); await held; res.end("slow public read"); return true; };
+    const server = createStagingRuntimeApiServer(runtime, view);
+    let request;
+    try {
+      await bounded(new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); }), "read-only transport listen");
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const pending = new Promise((resolve, reject) => {
+        request = httpRequest({ host: "127.0.0.1", port: server.address().port, path: "/slow-public-read",
+          headers: { host: "staging.signatures.gallery", "x-forwarded-proto": "https" } }, response => {
+          let text = ""; response.on("data", value => text += value); response.on("error", reject);
+          response.on("end", () => resolve({ status: response.statusCode, text }));
+        }); request.on("error", reject); request.end();
+      });
+      pending.catch(() => {});
+      await checkpoint(reached, pending, "bodyless public read");
+      assert.equal(runtime.timeoutMs, 15000); t.mock.timers.tick(10000);
+      await new Promise(resolve => setImmediate(resolve)); release();
+      assert.deepEqual(await bounded(pending, "bodyless public response"), { status: 200, text: "slow public read" });
+      assert.deepEqual(f.counts, { x: 0, grok: 0, sign: 0 }); assert.equal(f.calls.length, 0);
+    } finally {
+      release(); request?.destroy(); t.mock.timers.reset(); server.closeAllConnections();
+      try { if (server.listening) await bounded(new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())), "read-only transport close"); }
+      finally { await bounded(runtime.close(), "read-only runtime close"); }
+    }
+  });
+  test("a hung bodyless read still reaches the original whole-request transport deadline", async t => {
+    const runtime = createStagingRuntime(f.input, f.deps);
+    let enter, release; const reached = new Promise(r => enter = r), held = new Promise(r => release = r);
+    const server = createStagingRuntimeApiServer(runtime, { read: async () => { enter(); await held; return false; },
+      page: async () => false, status: async () => undefined });
+    let request;
+    try {
+      await bounded(new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); }), "hung-read transport listen");
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const pending = new Promise((resolve, reject) => {
+        request = httpRequest({ host: "127.0.0.1", port: server.address().port, path: "/hung-public-read",
+          headers: { host: "staging.signatures.gallery", "x-forwarded-proto": "https" } }, resolve);
+        request.on("error", reject); request.end();
+      });
+      pending.catch(() => {}); await checkpoint(reached, pending, "hung public read");
+      t.mock.timers.tick(14999); await new Promise(resolve => setImmediate(resolve));
+      assert.equal(request.destroyed, false); t.mock.timers.tick(1);
+      await assert.rejects(bounded(pending, "whole-request expiry"), error => error.code === "ECONNRESET");
+      assert.deepEqual(f.counts, { x: 0, grok: 0, sign: 0 });
+    } finally {
+      release(); request?.destroy(); t.mock.timers.reset(); server.closeAllConnections();
+      try { if (server.listening) await bounded(new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())), "hung-read transport close"); }
+      finally { await bounded(runtime.close(), "hung-read runtime close"); }
+    }
+  });
+  test("an incomplete POST body retains its original ten-second bound without starting effects", async t => {
+    const runtime = createStagingRuntime(f.input, f.deps), server = createStagingRuntimeApiServer(runtime);
+    let request, enter; const reached = new Promise(r => enter = r);
+    server.on("request", req => { req.once("data", enter); });
+    try {
+      await bounded(new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); }), "streaming-body transport listen");
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const pending = new Promise((resolve, reject) => {
+        request = httpRequest({ host: "127.0.0.1", port: server.address().port, path: "/api/assessments", method: "POST",
+          headers: { host: "staging.signatures.gallery", "x-forwarded-proto": "https", origin: f.settings.origin,
+            "content-type": "application/json", "transfer-encoding": "chunked" } }, resolve);
+        request.on("error", reject); request.write('{"handle":');
+      });
+      pending.catch(() => {}); await checkpoint(reached, pending, "streaming body read");
+      t.mock.timers.tick(9999); await new Promise(resolve => setImmediate(resolve)); assert.equal(request.destroyed, false);
+      t.mock.timers.tick(1); await assert.rejects(bounded(pending, "POST body expiry"), error => error.code === "ECONNRESET");
+      assert.deepEqual(f.counts, { x: 0, grok: 0, sign: 0 });
+      assert.equal((await f.db.query("SELECT count(*)::int n FROM open_mint.requests")).rows[0].n, 0);
+    } finally {
+      request?.destroy(); t.mock.timers.reset(); server.closeAllConnections();
+      try { if (server.listening) await bounded(new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())), "streaming-body transport close"); }
+      finally { await bounded(runtime.close(), "streaming-body runtime close"); }
+    }
+  });
   test("owned startup is inert until called, observes before listening, and close cancels the observer", async () => {
     site = await createStagingSite(f.input, f.deps);
     assert.deepEqual(site.snapshot(), { phase: "idle", observer: { state: "idle", failures: 0 } });
@@ -80,9 +200,12 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
     const count = f.calls.length; await new Promise(r => setTimeout(r, 5100)); assert.equal(f.calls.length, count);
     assert.deepEqual(f.counts, { x: 0, grok: 0, sign: 0 }); f.writer.assertHealthy();
   });
-  test("scheduled observation survives transient RPC failure, reveals/finalizes, then closes admission on a finality contradiction", async () => {
+  test("scheduled observation survives transient RPC failure, reveals/finalizes, then closes admission on a finality contradiction", async t => {
+    // Prepare before the owned poller starts: resetting preparation timers
+    // must not discard a background-observer timer or simulate its behavior.
+    await start(); const r = await prepare(t); await site.close();
     site = await createStagingSite(f.input, f.deps); await site.start(0);
-    const r = await prepare(), minted = f.include(r.transaction);
+    const minted = f.include(r.transaction);
     f.controls.mutation = (v, method, params, source) => method === "eth_chainId" && source === 1 ? "0x1" : v;
     await until(() => site.snapshot().observer.state === "backing-off", "transient backoff");
     const unavailable = await http("/api/gallery"); assert.equal(unavailable.status, 503); assert.deepEqual(unavailable.body.items, []);
@@ -183,8 +306,8 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
       assert.deepEqual(f.counts, { x: 0, grok: 0, sign: 0 });
     } finally { t.mock.timers.reset(); release?.(); }
   });
-  test("full HTTP preparation -> reported/unobserved inclusion stays hidden -> immediate Confirming gallery -> same canonical identity becomes Minted", async () => {
-    await start(); await sync(); const r = await prepare();
+  test("full HTTP preparation -> reported/unobserved inclusion stays hidden -> immediate Confirming gallery -> same canonical identity becomes Minted", async t => {
+    await start(); await sync(); const r = await prepare(t);
     const pending = await http(`/mint/${r.code}`); assert.equal(pending.status, 200); assert.doesNotMatch(pending.text, /ALIce|ENFP|data:application\/json/);
     assert.doesNotMatch(pending.text.split("</head>")[0], /og:|twitter:|rel="canonical"/);
     const reported = await http("/api/mints/report", { code: r.code, permit: r.permit, transactionHash: `0x${"9".repeat(64)}` });
@@ -240,8 +363,8 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
     const restored = await http("/signatures/alice"); assert.equal(restored.status, 200); assert.match(restored.text, /Grok selected this MBTI/);
     assert.deepEqual(f.counts, { x: 1, grok: 1, sign: 1 });
   });
-  test("unfinalized reorg withdraws reveal and media, retaining the pending dispatch and accepted assessment", async () => {
-    await start(); const r = await prepare(), m = f.include(r.transaction); await sync();
+  test("unfinalized reorg withdraws reveal and media, retaining the pending dispatch and accepted assessment", async t => {
+    await start(); const r = await prepare(t), m = f.include(r.transaction); await sync();
     assert.equal((await http(`/api/mints/status/${r.code}`)).body.state, "confirming"); await galleryMint(m, "confirming");
     f.reorg(); await sync();
     assert.equal((await http(`/api/mints/status/${r.code}`)).body.state, "pending");
@@ -257,8 +380,8 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
     assert.equal((await http(`/api/signatures/alice/artwork/${m.a.inputDigest}/svg`)).status, 503);
     assert.equal((await http("/api/mints/begin", { code: r.code, consent: true })).status, 409); assert.deepEqual(f.counts, { x: 1, grok: 1, sign: 1 });
   });
-  test("finalized contradiction safety-halts without rebuilding or disclosing saved artwork", async () => {
-    await start(); const r = await prepare(); const m = f.include(r.transaction); f.finalize(); await sync(); f.reorg();
+  test("finalized contradiction safety-halts without rebuilding or disclosing saved artwork", async t => {
+    await start(); const r = await prepare(t); const m = f.include(r.transaction); f.finalize(); await sync(); f.reorg();
     assert.equal(await site.sync(), "safety-halted"); assert.equal((await http("/api/gallery")).status, 503);
     assert.equal((await http(`/api/mints/status/${r.code}`)).body.state, "pending"); assert.equal((await http("/signatures/alice")).status, 503);
     assert.equal((await http(`/sharing/signatures/alice/${m.a.inputDigest}.png`)).status, 503);
@@ -279,16 +402,16 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
     assert.deepEqual(f.counts, { x: 0, grok: 0, sign: 0 });
     assert.equal((await f.db.query("SELECT count(*)::int n FROM open_mint.requests")).rows[0].n, 0);
   });
-  test("progress is private and validates routes without automatic preparation or retries", async () => {
-    await start(); const r = await prepare();
+  test("progress is private and validates routes without automatic preparation or retries", async t => {
+    await start(); const r = await prepare(t);
     assert.equal((await http(`/mint/${r.code}`, undefined, { cookie: "" })).status, 403);
     assert.equal((await http(`/api/assessments/${r.code}`, undefined, { cookie: "" })).status, 403);
     assert.equal((await http(`/mint/${r.code}?mbti=ENFP`)).status, 400);
     assert.equal((await http(`/mint/${"a".repeat(43)}`)).status, 404);
     assert.equal((await http(`/mint/${r.code}`)).status, 200); assert.deepEqual(f.counts, { x: 1, grok: 1, sign: 1 });
   });
-  for (const kind of ["source", "receipt", "runtime", "metadata", "review", "cancel"]) test(`withdraws reads on ${kind} failure`, async () => {
-    await start(); const r = await prepare(), m = f.include(r.transaction); await sync();
+  for (const kind of ["source", "receipt", "runtime", "metadata", "review", "cancel"]) test(`withdraws reads on ${kind} failure`, async t => {
+    await start(); const r = await prepare(t), m = f.include(r.transaction); await sync();
     f.controls.mutation = (v, method, params, source) => {
       if (kind === "source" && method === "eth_chainId" && source === 1) return "0x1";
       if (kind === "receipt" && method === "eth_getTransactionReceipt" && params[0] === m.hash) return { ...v, status: "0x0" };
@@ -307,8 +430,8 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
     assert.equal(site.server.listening, false); assert.deepEqual(await site.reads.lookup("alice"), { state: "unknown" });
     await assert.rejects(site.sync()); f.writer.assertHealthy();
   });
-  test("mint navigation waits for short read contention rather than showing raw BUSY JSON", async () => {
-    await start(); const r = await prepare();
+  test("mint navigation waits for short read contention rather than showing raw BUSY JSON", async t => {
+    await start(); const r = await prepare(t);
     for (const path of ["/mint?handle=Alice", `/mint/${r.code}`]) {
       let release, enter;
       const entered = new Promise(resolve => { enter = resolve; });
@@ -345,8 +468,8 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
     assert.deepEqual(f.counts, { x: 0, grok: 0, sign: 0 });
     assert.equal((await f.db.query("SELECT count(*)::int n FROM open_mint.requests")).rows[0].n, 0);
   });
-  test("a restarted site requires fresh observation; persisted finalized rows alone never reveal", async () => {
-    await start(); const r = await prepare(); f.include(r.transaction); f.finalize(); await sync(); await site.close();
+  test("a restarted site requires fresh observation; persisted finalized rows alone never reveal", async t => {
+    await start(); const r = await prepare(t); f.include(r.transaction); f.finalize(); await sync(); await site.close();
     site = await createStagingSite(f.input, { ...f.deps, provider: undefined, identityResolver: undefined });
     await new Promise(r => site.server.listen(0, "127.0.0.1", r));
     assert.equal((await http("/api/gallery")).status, 503); assert.equal((await http("/signatures/alice")).status, 503);

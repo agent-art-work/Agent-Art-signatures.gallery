@@ -238,7 +238,9 @@ jobs:
     runs-on: ubuntu-24.04
     # Covered runtime, site and installed-package checks run independently of
     # worker/mint campaigns, with no shared SQL, build output or private assets.
-    timeout-minutes: 20
+    # Hosted covered fixture setup takes about 13s per case, versus 5s locally.
+    # Allow the full campaign to finish; application/socket deadlines stay fixed.
+    timeout-minutes: 25
     env:
       XAI_API_KEY: ''
       OPEN_MINT_X_BEARER_TOKEN: ''

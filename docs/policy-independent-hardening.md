@@ -108,7 +108,7 @@ its earlier hosted run passed, so this is preventative, not a claim that the
 mint suite was observed hanging.
 
 All 44 inherited campaign commands now run exactly once across independent core
-(35 minutes), admission (20), worker/transport (25), mint (20), runtime/site (20)
+(35 minutes), admission (20), worker/transport (25), mint (20), runtime/site (25)
 and recovery (20) jobs. Each fresh
 lane installs locked dependencies, PostgreSQL 16 and offline contract
 prerequisites; no lane imports another lane's state or artifacts. The separate
@@ -164,14 +164,43 @@ temporary PostgreSQL cluster, never an existing environment. The disconnected
 HTTP test still uses the exact one-second request/RPC and ten-second worker
 settings, advances 1,300 ms only after actual HTTP 202 and Grok entry, and proves
 the private preparing status, busy fence, eventual ready status and zero signing.
-All 66 cases passed in the complete native-coverage campaign; it did not need a
-larger CI runtime budget.
+All 66 cases passed in that complete local native-coverage campaign. Local
+duration did not predict the later covered Linux runtime/site duration.
 The final focused safeguards propagate response parsing, stream/abort and
 listener-close errors rather than throwing from asynchronous callbacks or
 silently resolving an error. Nested cleanup still closes runtime before clock
 restoration if idle rejects. A native-timer regression proves the diagnostic
 bound expires even while application time is frozen. Read-only peer review
 passed and independently reran all ten runtime helper cases.
+
+The following hosted run passed six lanes, including all 86 assessment/worker
+and 39 mint-controller cases, but the runtime/site lane reached its 20-minute
+job ceiling after reporting concrete HTTP/runtime failures. Covered Linux
+fixture setup took about 13 seconds per case, versus about five seconds locally;
+the runtime suite alone took 598 seconds and the site suite was still executing.
+Its CI-only ceiling is now 25 minutes to fit the entire retained campaign.
+This does not fix or waive the HTTP failures: those require separate transport
+and targeted fixture-clock regressions, with application, socket, body and
+coverage limits unchanged.
+
+An isolated real-loopback regression proved a distinct adapter defect: a
+ten-second POST-body timer was also armed before asynchronous bodyless public
+reads. It now wraps only actual POST-body consumption. Four regressions prove
+slow public read/page responses survive that ten-second boundary, a hung read
+still hits the original fifteen-second whole-request limit, and an incomplete
+POST still expires at ten seconds without admitting work or starting effects.
+This is not proof that every earlier socket reset had the same cause.
+
+Only the two demonstrated runtime success flows and site mock preparation use
+scoped coherent policy clocks to avoid incidental covered fixture setup expiry.
+Native socket and diagnostic deadlines remain active. The runtime's exact
+14,999 + 1 ms expiry regression proves late signing/authority/dispatch stay
+blocked. Site clocks restore before inclusion, viewing, observer, reorg and
+finality assertions; scheduled observation starts only after restoration, so
+timer reset cannot silently discard the poller. Diagnostics identify the actual
+HTTP route, real elapsed time and original error cause/code. Targeted runtime
+checks passed five cases, the eleven runtime helpers passed independent review,
+and eight covered site/transport cases passed before the full campaign rerun.
 
 Older restore and site regressions still expected a gallery empty until
 finality. They now verify immediate **Confirming** visibility only after owned

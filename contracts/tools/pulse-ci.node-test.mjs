@@ -74,7 +74,7 @@ const npmCampaign = job => {
 function verifyInheritedLanes(workflow) {
   const jobs = jobBlocks(workflow);
   assert.deepEqual(Object.keys(jobs), ['verify', 'admission', 'staging', 'mint', 'runtime', 'recovery', 'pulse']);
-  const budgets = { verify: 35, admission: 20, staging: 25, mint: 20, runtime: 20, recovery: 20, pulse: 10 };
+  const budgets = { verify: 35, admission: 20, staging: 25, mint: 20, runtime: 25, recovery: 20, pulse: 10 };
   for (const [name, commands] of Object.entries(INHERITED_CAMPAIGNS)) {
     assert.deepEqual(npmCampaign(jobs[name]), commands, `Lost, duplicated, reordered or changed command in ${name}`);
   }

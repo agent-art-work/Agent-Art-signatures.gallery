@@ -21,18 +21,17 @@ function composeStagingRuntimeApiServer(runtime, site, installed) {
   if (site && (Object.keys(site).sort().join() !== "page,read,status" || Object.values(site).some(v => typeof v !== "function"))) throw Error("Invalid site composition.");
   const view = site && Object.freeze({ ...site });
   const server = createStagingTransportServer(runtime.transport, async (req, res, signal) => {
-    const bodyTimer = setTimeout(() => req.destroy(), Math.min(10000, runtime.timeoutMs));
+    let bodyTimer;
     try {
       if (view) {
         runtime.assertHealthy();
-        if (await view.read(req, res) || await view.page(req, res)) { clearTimeout(bodyTimer); return; }
+        if (await view.read(req, res) || await view.page(req, res)) return;
       }
       const path = req.url ?? "/", method = req.method;
       const status = /^\/api\/(?:assessments|mints\/status)\/([A-Za-z0-9_-]{43})$/.exec(path);
       const wallet = path === "/api/wallet/context" || /^\/api\/wallet\/context\?address=0x[0-9a-fA-F]{40}$/.test(path);
       if (!(method === "GET" ? path === "/api/session" || status || wallet : posts.has(path))) throw new PublicError(404, "NOT_FOUND", "Endpoint not found.");
       if (method === "GET") {
-        clearTimeout(bodyTimer);
         if (path === "/api/session") {
           const { cookie, ...result } = await runtime.session(req.headers.cookie, signal);
           if (cookie) res.setHeader("Set-Cookie", cookie);
@@ -42,6 +41,10 @@ function composeStagingRuntimeApiServer(runtime, site, installed) {
         const result = await (view ? view.status(status[1], req.headers.cookie, signal) : runtime.status(status[1], req.headers.cookie, signal));
         return json(res, 200, path.startsWith("/api/mints/status/") ? result.mint : result);
       }
+      // This deadline protects only body consumption. The outer transport
+      // independently bounds every request, including bodyless/public reads.
+      // Do not spend a POST-body budget awaiting an optional page renderer.
+      bodyTimer = setTimeout(() => req.destroy(), Math.min(10000, runtime.timeoutMs));
       const input = await readPrivateMintBody(req, runtime.transport.maxRequestBytes); clearTimeout(bodyTimer);
       const auth = Object.freeze({ cookie: req.headers.cookie, origin: req.headers.origin, csrf: typeof req.headers["x-csrf-token"] === "string" ? req.headers["x-csrf-token"] : undefined });
       if (path === "/api/wallet/challenge") { const v = fields(input, ["address"], ["code"]);
