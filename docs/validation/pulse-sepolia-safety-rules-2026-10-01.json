@@ -1,0 +1,53 @@
+{
+  "scope": "local Sepolia relay safety-rule refinement",
+  "date": "2026-10-01",
+  "collection": "0x88c435146A017338E48Abe3BEE2F11BcEab79cC2",
+  "rules": {
+    "transportFailures": "bounded retry and validated fallback",
+    "unknownFailures": "block affected read lane, retain verified presentation",
+    "explicitIntegrityConflicts": "persist safety halt and require operator review",
+    "unfinalizedHeadMovement": "retry complete read; do not manufacture a permanent integrity conflict",
+    "finalizedEvidenceConflict": "remains fail-closed",
+    "diagnostics": "bounded allowlisted metadata only, retained across restart"
+  },
+  "recovery": {
+    "reviewCheckedAt": "2026-10-01T08:20:56.127Z",
+    "finalizedBlock": "0xb45ded",
+    "revalidatedWorks": 4,
+    "checks": ["deployment binding", "receipts", "immutable inputs", "SVG bytes", "old finalized anchor", "complete current mint counter"],
+    "originalFilesArchived": true,
+    "onChainWrites": 0,
+    "signingOrKeyUnlock": false,
+    "activeRehearsalModified": false,
+    "emptyForeignRequestFileArchived": true,
+    "requestWriterDirectoryIsolationRegression": "passed"
+  },
+  "automated": {
+    "sepoliaSuiteTests": 162,
+    "sepoliaSuitePassed": 161,
+    "sepoliaSuiteSkipped": 1,
+    "separateDisposablePostgresTestPassed": 1,
+    "typecheck": "passed",
+    "gitDiffCheck": "passed"
+  },
+  "browser": {
+    "themes": ["dark", "light"],
+    "viewport": [1280, 1500],
+    "mintedCards": 4,
+    "loadedArtworkImages": 4,
+    "visibleGalleryWarning": false,
+    "warningHeight": 0,
+    "horizontalOverflow": false,
+    "allCapturedSameOriginRequests": "HTTP 200",
+    "screenshotsInspected": true,
+    "lightScreenshotInspectedAtOriginalResolution": true,
+    "lightArtworkRasterPixels": [4971, 5066, 4800, 7108]
+  },
+  "liveBackendVerified": {
+    "galleryState": "current",
+    "mintReady": true,
+    "safetyHalted": false,
+    "relayStoreEnabled": true
+  },
+  "limits": "Point-in-time verification, not a guarantee that public RPCs never become unavailable. Fresh preflight remains mandatory. The old marker did not preserve its original exception, so the original exception is not claimed as known."
+}

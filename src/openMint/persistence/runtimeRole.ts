@@ -104,6 +104,18 @@ export const GENERATIVE_BROWSER_RUNTIME_PRIVILEGES: readonly RuntimeTablePrivile
   ].map(([name, columns]) => Object.freeze({ name, columns: Object.freeze(columns.split(" ").sort()), insert: true, updates: Object.freeze([]) })),
 ]);
 export function generativeBrowserRuntimeGrants(role: string): string { return runtimeGrants(role, GENERATIVE_BROWSER_RUNTIME_PRIVILEGES); }
+/** Distinct candidate capabilities; never added to historical RC1 grants. */
+export const PULSE_TABLE_PRIVILEGES: readonly RuntimeTablePrivileges[] = Object.freeze([
+  ["pulse_profiles", "namespace_id deployment_id version candidate_lock_sha256 sale_config_hash payload", false, false],
+  ["pulse_intents", "namespace_id deployment_id request_id mint_mode slot_id max_price payload", true, false],
+  ["pulse_slot_heads", "namespace_id deployment_id slot_id request_id", true, true],
+  ["pulse_sponsorships", "namespace_id deployment_id slot_id request_id attempt_id recorded_at", true, false],
+  ["pulse_intent_releases", "namespace_id request_id reason recorded_at", true, false],
+].map(([name, columns, insert, deletion]) => Object.freeze({ name: name as string,
+  columns: Object.freeze((columns as string).split(" ").sort()), insert: insert as boolean,
+  delete: deletion as boolean, updates: Object.freeze([]) })));
+export const PULSE_BROWSER_PRIVILEGES = Object.freeze([...GENERATIVE_BROWSER_RUNTIME_PRIVILEGES, ...PULSE_TABLE_PRIVILEGES]);
+export function pulseBrowserRuntimeGrants(role: string): string { return runtimeGrants(role, PULSE_BROWSER_PRIVILEGES); }
 /** Offline operator only. No signer, provider dispatch, policy toggle, new
  * authorization, session mutation or historical-row deletion privileges. */
 export const GENERATIVE_RECOVERY_PRIVILEGES: readonly RuntimeTablePrivileges[] = Object.freeze([
@@ -117,6 +129,11 @@ export const GENERATIVE_RECOVERY_PRIVILEGES: readonly RuntimeTablePrivileges[] =
   Object.freeze({ name: "generative_recoveries", columns: Object.freeze("namespace_id recovery_id deployment_id authorization_id request_id snapshot_hash finalized_number finalized_hash finalized_timestamp evidence owner_epoch recorded_at".split(" ").sort()), insert: true, updates: Object.freeze([]) }),
 ]);
 export function generativeRecoveryGrants(role: string): string { return runtimeGrants(role, GENERATIVE_RECOVERY_PRIVILEGES); }
+export const PULSE_RECOVERY_PRIVILEGES = Object.freeze([...GENERATIVE_RECOVERY_PRIVILEGES,
+  ...GENERATIVE_BROWSER_RUNTIME_PRIVILEGES.filter(t => t.name === "requests")
+    .map(t => Object.freeze({ ...t, insert: false, delete: false, updates: Object.freeze([]) })),
+  ...PULSE_TABLE_PRIVILEGES.map(t => Object.freeze({ ...t, insert: t.name === "pulse_intent_releases", delete: t.name === "pulse_slot_heads" }))]);
+export function pulseRecoveryGrants(role: string): string { return runtimeGrants(role, PULSE_RECOVERY_PRIVILEGES); }
 /** Sepolia retirement principal, deliberately distinct from local recovery. */
 export const STAGING_RECOVERY_PRIVILEGES: readonly RuntimeTablePrivileges[] = Object.freeze([
   ...GENERATIVE_BROWSER_RUNTIME_PRIVILEGES.filter(t => ["schema_version", "writer_epoch", "namespaces", "budget_policies",

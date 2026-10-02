@@ -7,6 +7,7 @@ import { SLOGAN_TOOLTIP_SCRIPT, SLOGAN_TOOLTIP_SCRIPT_URL } from "../brand/sloga
 import { SLOGAN_MBTI_HERO_SCRIPT, SLOGAN_MBTI_HERO_SCRIPT_URL } from "../brand/sloganMbtiHero.js";
 import { QUESTION_MARK_STUDY_PATH, QUESTION_MARK_STUDY_CSS_PATH, QUESTION_MARK_STUDY_CSS, questionMarkStudyPage } from "../brand/sloganQuestionMarkStudy.js";
 import { QUESTION_MARK_REVEAL_PATH, QUESTION_MARK_REVEAL_CSS_PATH, QUESTION_MARK_REVEAL_CSS, questionMarkRevealStudyPage } from "../brand/sloganQuestionMarkRevealStudy.js";
+import { MINT_CONTROL_STUDY_PATH, MINT_CONTROL_STUDY_CSS_PATH, MINT_CONTROL_STUDY_CSS, MINT_CONTROL_STUDY_SCRIPT_PATH, MINT_CONTROL_STUDY_SCRIPT, mintControlStudyPage } from "../brand/mintControlStudy.js";
 import { formalSignatureRenderer, sha256Hex } from "../v1/renderer.js";
 import { renderSignatureSvg } from "../algorithmV2/index.js";
 import { canonicalHandle, handleDigest, isMbti, LEGACY_RENDERER_VERSION, preservedHandle, RENDERER_VERSION, seedForMbti } from "./identity.js";
@@ -108,6 +109,9 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
       const path = url.pathname;
       if (req.method === "GET") {
         if (path === "/robots.txt") return send(res, 200, LOCAL_ROBOTS_TXT, "text/plain; charset=utf-8");
+        if (options.fixture && path === MINT_CONTROL_STUDY_CSS_PATH) return send(res, 200, MINT_CONTROL_STUDY_CSS, "text/css; charset=utf-8");
+        if (options.fixture && path === MINT_CONTROL_STUDY_SCRIPT_PATH) return send(res, 200, MINT_CONTROL_STUDY_SCRIPT, "text/javascript; charset=utf-8");
+        if (options.fixture && path === MINT_CONTROL_STUDY_PATH) return send(res, 200, mintControlStudyPage(cssUrl));
         if (options.fixture && path === SLOGAN_WORDING_CSS_PATH) return send(res, 200, SLOGAN_WORDING_CSS, "text/css; charset=utf-8");
         if (options.fixture && path === SLOGAN_WORDING_PATH) return send(res, 200, sloganWordingStudyPage(cssUrl));
         if (options.fixture && path === QUESTION_MARK_REVEAL_CSS_PATH) return send(res, 200, QUESTION_MARK_REVEAL_CSS, "text/css; charset=utf-8");
@@ -237,7 +241,7 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
         const request = await service.sessionRequest(mintRequest[1], session);
         const view = await model(request, session);
         if (canRevealMint(view.mint?.state)) { res.setHeader("Location", `/signatures/${request.handle}`); return send(res, 303, ""); }
-        return send(res, 200, assessmentPage(view, pageOptions(session)));
+        return send(res, 200, assessmentPage(view, { ...pageOptions(session), mintProcess: true }));
       }
       const preview = /^\/(?:p|s)\/([^/]+)(?:\/([^/]+))?$/.exec(path);
       if (preview) {

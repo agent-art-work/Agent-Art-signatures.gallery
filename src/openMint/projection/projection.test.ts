@@ -79,6 +79,10 @@ describe("bounded projection input/cursor contracts", () => {
     const config = deployment(), filter = { kind: "home" } as const;
     const value = { version: 1 as const, deployment: config.id, filter, limit: 2, snapshot: { number: "10", hash: h(10) }, last: { block: "10", transaction: 1, log: 3, token: "2" } };
     const cursor = encodeCursor(value); expect(decodeCursor(cursor, config.id, filter, 2)).toEqual(value);
+    const included = { ...value, includeConfirming: true as const }, live = encodeCursor(included);
+    expect(decodeCursor(live, config.id, filter, 2, true)).toEqual(included);
+    expect(() => decodeCursor(live, config.id, filter, 2)).toThrow(ProjectionCursorError);
+    expect(() => decodeCursor(cursor, config.id, filter, 2, true)).toThrow(ProjectionCursorError);
     for (const text of ["!", "x".repeat(2049), `${cursor}=`, encodeCursor({ ...value, deployment: randomUUID() }), encodeCursor({ ...value, limit: 3 }),
       encodeCursor({ ...value, filter: { kind: "owner", value: a(1) } }), encodeCursor({ ...value, last: { ...value.last, block: "11" } })]) expect(() => decodeCursor(text, config.id, filter, 2)).toThrow(ProjectionCursorError);
   });

@@ -13,13 +13,14 @@ import type { GalleryPage } from "./postgres.js";
 import type { GenerativeSharing } from "../generativeSharing.js";
 import { PRIVATE_ROBOTS } from "../sharing.js";
 
-/** One finalized-card policy for home, MBTI and wallet collections. */
+/** One verified-inclusion card policy for home, MBTI and wallet collections. */
 export function generativeGalleryEntries(result: GalleryPage): GalleryEntry[] {
   if (result.state !== "confirmed") throw new Error("Gallery unavailable.");
   return result.items.map(m => {
-    if (m.availability === "quarantined" || !m.handle || !m.renderHandle || !isMbti(m.mbti) || !m.inputDigest || !m.rendererIdentity || m.artifactDigest) throw new Error("Invalid gallery record.");
+    if (m.availability === "quarantined" || !m.handle || !m.renderHandle || !isMbti(m.mbti) || !m.inputDigest || !m.rendererIdentity || m.artifactDigest
+      || (m.mintState !== undefined && m.mintState !== "confirming" && m.mintState !== "minted")) throw new Error("Invalid gallery record.");
     return { handle: m.handle, renderHandle: m.renderHandle, code: "", mbti: m.mbti, url: `/signatures/${m.handle}`,
-      imageUrl: `/api/signatures/${m.handle}/artwork/${m.inputDigest}/svg`, mint: { state: "minted", tokenId: m.tokenId, transactionHash: m.transactionHash } };
+      imageUrl: `/api/signatures/${m.handle}/artwork/${m.inputDigest}/svg`, mint: { state: m.mintState ?? "minted", tokenId: m.tokenId, transactionHash: m.transactionHash } };
   });
 }
 
@@ -73,11 +74,11 @@ export function createGenerativeGalleryPages(options: {
       }
       if ([...query.keys()].some(k => k !== "after") || query.getAll("after").length > 1) throw new Error();
       const cursor = query.get("after"); if (cursor !== null && (!/^[A-Za-z0-9_-]{1,2048}$/.test(cursor))) throw new Error();
-      const result = await gallery({ filter: isMbti(type) ? { kind: "mbti", value: type } : { kind: "home" }, limit: 24, ...(cursor ? { cursor } : {}) });
+      const result = await gallery({ filter: isMbti(type) ? { kind: "mbti", value: type } : { kind: "home" }, limit: 24, includeConfirming: true, ...(cursor ? { cursor } : {}) });
       const entries = generativeGalleryEntries(result);
       const html = isMbti(type) ? mbtiGalleryPage(type, entries, pageOptions) : homePage(pageOptions, entries);
       send(res, 200, galleryPagination(options.sharing ? options.sharing.decorate(html, raw) : html, path, result.nextCursor));
-    } catch { send(res, 503, errorPage("Mint status cannot be verified right now. No new assessment or mint was requested.", pageOptions)); }
+    } catch { send(res, 503, errorPage("This page could not be loaded right now. Please try again shortly.", pageOptions)); }
     finally { controller.abort(); res.removeListener("close", cancel); }
     return true;
   };

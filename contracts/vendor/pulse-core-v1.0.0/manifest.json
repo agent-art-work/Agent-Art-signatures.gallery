@@ -1,0 +1,55 @@
+{
+  "schema": "pulse-core-reviewed-build/v1",
+  "semanticsVersion": "1.0.0",
+  "versionId": "0x2e01a46bd995ce90b010c47771e291edb941414ea8ef01f795dcca13fa4ced88",
+  "contract": "PulseCoreV1",
+  "compiler": "0.8.24+commit.e11b9ed9",
+  "settings": {
+    "evmVersion": "shanghai",
+    "metadata": {
+      "bytecodeHash": "ipfs",
+      "appendCBOR": true
+    },
+    "optimizer": {
+      "enabled": true,
+      "runs": 200
+    },
+    "outputSelection": {
+      "*": {
+        "": [
+          "ast"
+        ],
+        "*": [
+          "abi",
+          "evm.bytecode",
+          "evm.deployedBytecode",
+          "evm.methodIdentifiers",
+          "metadata"
+        ]
+      }
+    },
+    "remappings": [],
+    "viaIR": false
+  },
+  "sourceSha256": {
+    "src/core/PulseCoreV1.sol": "98de1fc6dcf18a4acb846d0d636b8e145a67ff917b1916f4caa3134f515bf6b8",
+    "src/core/PulseMath.sol": "ba6fb3fe2a223c55884dbd41ad1a2849432b9e25e39b3138c519f6692f8c8da2",
+    "src/interfaces/IPulseCore.sol": "17bb422f14ab250809ff7b6a0722f8bc134948683e398a4725eea0abe89c76f3"
+  },
+  "packageLockSha256": "6f6bf10bb61c83e7a69e9552e4a5eb7118febe2b4bc1377152116b8b85c64910",
+  "hardhatVersion": "3.1.8",
+  "creationBytes": 2746,
+  "runtimeBytes": 2717,
+  "creationCodeHash": "0x784983cd261e3a7505011279969ee7b4e05ca2778ec0bd129d9221f9a2684de7",
+  "runtimeCodeHash": "0xfb48657163202d3cdb28060f1eb511fd1f5b93a6e0eb8657242b5632e2200a90",
+  "filesSha256": {
+    "standard-input.json": "e93b3ef4fc66f6dd4f31dcd4b0a5603daa8f82660e567d23160f65db140ac3fd",
+    "IPulseCore.abi.json": "bfeef88bd7a25cfc85e54b25ea454ce28cfb92ca4473278c8eac5ab5eb049f6d",
+    "IPulseCore.sol": "17bb422f14ab250809ff7b6a0722f8bc134948683e398a4725eea0abe89c76f3",
+    "PulseCoreV1.creation.hex": "73afcf2c11fadb7bf8ed8ac50c51b4396af3dcec1a3ec7f3d6f43ee2b19044cc",
+    "PulseCoreV1.runtime.hex": "2e2d0d9be43eaa5492ec110eebf61ef4b5c06fd5f36280abffedf3586cad1ab2",
+    "vectors.json": "6301bbfcf326bbe10ecf68d2f8406d8c6fb9a4262a1c057a2bdd6eff739d042d"
+  },
+  "provenance": "Reviewed worktree contents are pinned by hashes; no release Git tag or public deployment is asserted.",
+  "deployment": null
+}

@@ -45,6 +45,22 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1")("RPC witness → fe
     expect((await service.gallery({ filter: { kind: "mbti", value: "INTJ" }, limit: 10 })).items).toHaveLength(1);
     const calls = fixture.calls.length; await home(); await service.lookup("alice_bob_key"); expect(fixture.calls).toHaveLength(calls);
   });
+  it("shows fresh RPC-validated inclusion in presentation galleries while retaining finalized-only reads", async () => {
+    const live = (filter = { kind: "home" } as import("./model.js").GalleryFilter) => service.gallery({ filter, limit: 10, includeConfirming: true });
+    expect(await live()).toEqual({ state: "unknown", items: [] });
+    expect(await service.sync(signal())).toBe("observed");
+    const owner = (await live()).items[0].currentOwner!;
+    for (const filter of [{ kind: "home" }, { kind: "mbti", value: "INTJ" }, { kind: "owner", value: owner }] as const) {
+      const result = await live(filter);
+      expect(result.items).toEqual([expect.objectContaining({ mintState: "confirming", handle: "alice_bob_key", currentOwner: owner })]);
+      expect(result.state).toBe("confirmed");
+    }
+    expect((await home()).items).toHaveLength(0);
+    expect(await projection.gallery({ filter: { kind: "home" }, limit: 10, includeConfirming: true })).toEqual({ state: "unknown", items: [] });
+    fixture.setFinalized(11); await service.sync(signal());
+    expect((await live()).items[0].mintState).toBe("minted");
+    service.withdraw(); expect(await live()).toEqual({ state: "unknown", items: [] });
+  });
   it("requires fresh verification after restart, even with a saved available checkpoint", async () => {
     fixture.setFinalized(12); await service.sync(signal()); expect((await home()).items).toHaveLength(1);
     await writer.close(); writer = await ExclusiveWriter.acquire(factory); projection = await OpenMintProjection.open(writer, fixture.options.deployment);
@@ -188,7 +204,7 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1")("RPC witness → fe
       expect(image.headers.get("content-security-policy")).toContain("sandbox");
       expect(new Uint8Array(await image.arrayBuffer())).toEqual(fixture.evidence.artifact.svg.bytes);
       expect((await fetch(`${mediaUrl}?mbti=ENFP`)).status).toBe(400);
-      expect((await (await fetch(`${url}/api/gallery`)).json()).items).toEqual([]);
+      expect((await (await fetch(`${url}/api/gallery`)).json()).items).toEqual([expect.objectContaining({ mintState: "confirming" })]);
       fixture.setFinalized(11); await service.sync(signal()); const before = fixture.calls.length;
       expect((await (await fetch(`${url}/api/gallery?mbti=INTJ&limit=1`)).json()).items).toHaveLength(1);
       expect((await (await fetch(`${url}/api/signatures/alice_bob_key/status`)).json()).state).toBe("minted");

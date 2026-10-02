@@ -29,6 +29,7 @@ export function normalizeGenerativeAuthorization(value: GenerativeAuthorizationI
     inputDigest: generativeCommitment(value.inputDigest), recipient, nonce: generativeCommitment(value.nonce), issuedAt, deadline };
 }
 export function generativeMintTypedData(input: OpenMintDomainInput, authorization: GenerativeAuthorizationInput, profile: GenerativeInputProfile = GENERATIVE_INPUT_PROFILE) {
+  if (profile === "sg-generative-pulse-inputs-v1-rc1") throw new Error("Pulse requires its signed economic fields.");
   const domain = { ...openMintDomain(input), name: profileForInputs(profile).domainName };
   if (domain.chainId !== 31337n) throw new Error("Generative issuance remains local Anvil only; public admission is not implemented.");
   return { domain, types: GENERATIVE_MINT_TYPES, primaryType: "GenerativeMintAuthorization" as const, message: normalizeGenerativeAuthorization(authorization) };

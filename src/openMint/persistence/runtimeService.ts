@@ -15,16 +15,17 @@ import { capabilityHash, PostgresWalletSessions, type DurableSiteSession } from 
 import type { Assessment } from "../assessment.js";
 import { PostgresGenerativeInputJournal } from "./generativeInputs.js";
 import { PostgresGenerativeAuthorizationIssuer, type IssuanceIntent, type ReservedAuthorizationSigner as GenerativeSigner } from "./generativeAuthorizations.js";
-import { generativeMintCalldata, normalizeGenerativeAuthorization } from "../generativeAuthorization.js";
+import { reservedWalletTransaction } from "./reservedTransaction.js";
 import { LocalAdmissionRuntime } from "./localAdmissionRuntime.js";
 import { type PostgresWalletSubmissions, type WalletMintPlan } from "./walletSubmissions.js";
+import { readPublicChainEligibility } from "../publicChain.js";
 
 export interface RuntimeIntent {
   readonly session: DurableSiteSession;
   readonly origin: string | undefined;
   readonly csrf: string | undefined;
 }
-export interface RuntimeEligibilityInput { readonly handle: string; readonly recipient: Address; readonly nonce: Hex }
+export interface RuntimeEligibilityInput { readonly handle: string; readonly recipient: Address; readonly nonce: Hex; readonly pulseSlots?: readonly string[] }
 type Publication = Pick<Parameters<typeof publishPublicArtifact>[0], "uploader" | "reader" | "timeoutMs">;
 export interface DurableRuntimeOptions {
   readonly contractProfile?: "external-v1";
@@ -46,7 +47,7 @@ interface GenerativeRuntimeBase extends Omit<DurableRuntimeOptions, "contractPro
   readonly admission?: LocalAdmissionRuntime;
 }
 export type GenerativeRuntimeOptions = GenerativeRuntimeBase &
-  ({ readonly contractProfile: "generative-experimental-v1" } | { readonly contractProfile: "generative-v1-rc1" });
+  ({ readonly contractProfile: "generative-experimental-v1" } | { readonly contractProfile: "generative-v1-rc1" } | { readonly contractProfile: "generative-pulse-v1-rc1" });
 interface MintTransaction { from: string; to: string; chainId: string; value: string; data: Hex }
 
 function context(input: RuntimeIntent) {
@@ -76,7 +77,7 @@ export class DurableMintRuntime {
   readonly #prepare: (assessment: Assessment) => Promise<void>;
   readonly #ready: (handle: string) => Promise<boolean>;
   readonly #preflightNonce: (input: Omit<IssuanceIntent, "eligibility">) => Promise<Hex>;
-  readonly #issue: (input: IssuanceIntent) => Promise<{ expiresAt: string; transaction: MintTransaction }>;
+  readonly #issue: (input: IssuanceIntent) => Promise<{ version?: "sg-pulse-wallet-plan-v1-rc1"; expiresAt: string; transaction: MintTransaction }>;
   readonly #admission?: LocalAdmissionRuntime;
   readonly #generativeIssuer?: PostgresGenerativeAuthorizationIssuer;
   readonly #eligibility: DurableRuntimeOptions["eligibility"];
@@ -91,7 +92,7 @@ export class DurableMintRuntime {
       || sessions.writer !== repository.writer || sessions.namespaceId !== repository.namespace.id || sessions.origin !== requests.profile.origin
       || String(sessions.chainId) !== requests.profile.chain_id || worker.requests !== requests || issuer.requests !== requests
       || issuer.journal !== journal || journal.writer !== repository.writer || journal.namespaceId !== repository.namespace.id
-      || ((options.contractProfile === "generative-experimental-v1" || options.contractProfile === "generative-v1-rc1") ? options.journal.deploymentId !== requests.profile.deployment_id : options.journal.origin !== sessions.origin)
+      || ((options.contractProfile === "generative-experimental-v1" || options.contractProfile === "generative-v1-rc1" || options.contractProfile === "generative-pulse-v1-rc1") ? options.journal.deploymentId !== requests.profile.deployment_id : options.journal.origin !== sessions.origin)
       || getAddress(signer.address) !== getAddress(requests.profile.authorizer)) {
       throw new Error("Durable HTTP integration requires matching isolated local components; public startup remains disabled.");
     }
@@ -103,7 +104,7 @@ export class DurableMintRuntime {
     this.#admission = admission;
     this.#preflightNonce = issuer.preflightNonce.bind(issuer);
     this.#eligibility = options.eligibility; this.#eligibilityTimeoutMs = options.eligibilityTimeoutMs;
-    if ((options.contractProfile === "generative-experimental-v1" || options.contractProfile === "generative-v1-rc1")) {
+    if ((options.contractProfile === "generative-experimental-v1" || options.contractProfile === "generative-v1-rc1" || options.contractProfile === "generative-pulse-v1-rc1")) {
       const { journal, issuer, signer } = options, signing = Object.freeze({ address: signer.address, signTypedData: signer.signTypedData.bind(signer) });
       if (!(journal instanceof PostgresGenerativeInputJournal) || !(issuer instanceof PostgresGenerativeAuthorizationIssuer) || journal.profile.contractProfile !== options.contractProfile) throw new Error("Explicit generative components required.");
       this.#generativeIssuer = issuer;
@@ -114,11 +115,10 @@ export class DurableMintRuntime {
         this.#available();
         const saved = await journal.load(r.handle);
         if (!saved) throw new Error("Generative inputs unavailable.");
-        const { assessment: _assessment, ...inputs } = saved, a = normalizeGenerativeAuthorization(r.authorization);
-        const data = await generativeMintCalldata({ domain: r.domain, authorization: r.authorization, inputs, signature, authorizer: signing.address });
+        const a = r.authorization;
+        const transaction = reservedWalletTransaction(r, signature);
         this.#available();
-        return { expiresAt: new Date(Number(a.deadline) * 1000).toISOString(), transaction: { from: a.recipient, to: r.domain.verifyingContract,
-          chainId: `0x${BigInt(r.domain.chainId).toString(16)}`, value: "0x0", data } };
+        return { ...(requests.pulse ? { version: "sg-pulse-wallet-plan-v1-rc1" as const } : {}), expiresAt: new Date(Number(a.deadline) * 1000).toISOString(), transaction };
       };
     } else {
       const { journal, issuer, signer } = options, signing = Object.freeze({ address: signer.address, signTypedData: signer.signTypedData.bind(signer) });
@@ -155,7 +155,8 @@ export class DurableMintRuntime {
     };
     try {
       const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("Eligibility timed out.")); }, this.#eligibilityTimeoutMs); });
-      const witness = await Promise.race([Promise.resolve().then(() => { check(); return this.#eligibility(Object.freeze({ ...input }), controller.signal); }), timeout]);
+      const witness = await Promise.race([Promise.resolve().then(() => { check(); return this.#eligibility(Object.freeze({ ...input,
+        ...(this.requests.pulse ? {pulseSlots:Object.freeze(this.requests.pulse.slotIds(input.recipient))} : {}) }), controller.signal); }), timeout]);
       check(); return witness;
     } catch {
       throw new PublicError(503, "CHAIN_UNAVAILABLE", "Mint eligibility cannot be verified right now. No new assessment or signature was requested.");
@@ -166,7 +167,25 @@ export class DurableMintRuntime {
       walletVerified: proof(session, Date.now()) && !session.walletProof?.codeHash,
       walletProofExpiresAt: session.walletProof?.expiresAt, serverNow: Date.now(), chainId: this.requests.profile.chain_id, chainName: "Local Anvil" };
   }
-  async create(value: unknown, intent: RuntimeIntent) {
+  /** Private read-only quote. No admission, provider, signer or reservation. */
+  async mintOptions(value: unknown, session: DurableSiteSession) {
+    if(!this.requests.pulse) throw new PublicError(404,"NOT_FOUND","Mint options are unavailable.");
+    const handle=canonicalHandle(parseHandle(value));
+    if(!proof(session,Date.now()) || session.walletProof?.codeHash) throw new PublicError(403,"WALLET_PROOF_REQUIRED","Connect and verify your wallet first.");
+    const witness=await this.#observe({handle,recipient:session.wallet!,nonce:`0x${randomBytes(32).toString("hex")}`});
+    const e=readPublicChainEligibility(witness,{namespaceId:this.requests.repository.namespace.id,deploymentId:this.requests.profile.deployment_id,handle,recipient:session.wallet!,now:Date.now()});
+    if(!e.pulse) throw new PublicError(503,"CHAIN_UNAVAILABLE","Pulse options could not be verified.");
+    const occupied=await this.requests.repository.writer.transaction(async tx => (await tx.query<{slot_id:string}>("SELECT slot_id::text FROM open_mint.pulse_slot_heads WHERE namespace_id=$1 AND deployment_id=$2",[this.requests.repository.namespace.id,this.requests.profile.deployment_id])).rows.map(r => r.slot_id));
+    // Local expiry can withdraw a free offer, but cannot manufacture a paid
+    // quote from the old free block's zero-price placeholder.
+    if(e.pulse.phase === 0 && BigInt(Date.now()) >= BigInt(e.pulse.deployment.freeDeadline)*1000n)
+      throw new PublicError(503,"CHAIN_UNAVAILABLE","The free window ended. Wait for a fresh on-chain paid quote, then check mint options again.");
+    const free=e.pulse.phase === 0;
+    return {version:"sg-pulse-mint-options-v1",handle,wallet:session.wallet,phase:free ? "free" : "paid",priceWei:e.pulse.price,
+      availableSlots:free ? e.pulse.slots.filter(s => !s.claimed && !occupied.includes(s.slotId)).map(s => s.slotId) : [],
+      saleConfigHash:e.pulse.deployment.saleConfigHash,validUntil:e.validUntil};
+  }
+  async create(value: unknown, intent: RuntimeIntent, mintIntent?: unknown) {
     const handle = parseHandle(value), canonical = canonicalHandle(handle), captured = context(intent);
     this.#available();
     if (!proof(intent.session, Date.now()) || intent.session.walletProof?.codeHash) throw new PublicError(403, "WALLET_PROOF_REQUIRED", "Connect your wallet before preparing a mint.");
@@ -174,7 +193,7 @@ export class DurableMintRuntime {
     this.#creating = true;
     try {
       const witness = await this.#observe({ handle: canonical, recipient: intent.session.wallet!, nonce: `0x${randomBytes(32).toString("hex")}` });
-      const request = await this.requests.create({ ...captured, recipient: intent.session.wallet!, handle, eligibility: witness });
+      const request = await this.requests.create({ ...captured, recipient: intent.session.wallet!, handle, eligibility: witness, mintIntent });
       this.#available();
       if (!this.#tasks.has(canonical) && ["pending-assessment", "assessment-accepted"].includes(request.status)) {
         const task = Promise.resolve().then(async () => {
@@ -195,6 +214,7 @@ export class DurableMintRuntime {
   }
   async status(code: unknown, session: DurableSiteSession) {
     const request = await this.requests.get(parseCode(code), session.id), now = Date.now();
+    const pulseIntent = this.requests.pulse ? await this.requests.repository.writer.transaction(tx => this.requests.pulse!.load(tx, request.id)) : undefined;
     const complete = request.status === "assessment-accepted" && await this.#ready(request.handle);
     const active = this.#tasks.has(request.handle);
     const failed = !complete && (!active || !["pending-assessment", "assessment-accepted"].includes(request.status));
@@ -206,6 +226,7 @@ export class DurableMintRuntime {
       canMint: complete && request.expiresAt > now && proof(session, now)
         && (!session.walletProof?.codeHash || session.walletProof.codeHash === capabilityHash(request.code)),
       preparationActive: active, diagnosticReference: request.attemptId,
+      ...(pulseIntent ? { pulseMaxPriceWei: pulseIntent.maxPrice } : {}),
       ...(failed ? { error: request.status === "assessment-abstained" ? "Grok could not assess this handle from the available evidence."
         : "This preparation needs operator review. No assessment will be retried automatically." } : {}), serverNow: now };
   }
@@ -225,11 +246,12 @@ export class DurableMintRuntime {
   async beginSubmission(submissions: PostgresWalletSubmissions, code: string, intent: RuntimeIntent, plan: WalletMintPlan, signal: AbortSignal) {
     this.#available(); signal.throwIfAborted();
     if (submissions.requests !== this.requests) throw new Error("Wallet runtime mismatch.");
-    if (!this.#admission) return submissions.begin(code, intent, plan);
+    if (!this.#admission && !this.requests.pulse) return submissions.begin(code, intent, plan);
     const captured = { ...context(intent), code, consent: true }, request = await this.requests.get(code, intent.session.id);
     const nonce = await this.#preflightNonce(captured), eligibility = await this.#observe({ handle: request.handle, recipient: request.wallet, nonce });
     this.#available(); signal.throwIfAborted();
-    return this.#admission.submit(submissions, this.#generativeIssuer!, { ...captured, eligibility }, intent, plan, signal);
+    if (this.requests.pulse) return submissions.beginPulse(this.#generativeIssuer!, { ...captured, eligibility }, intent, plan);
+    return this.#admission!.submit(submissions, this.#generativeIssuer!, { ...captured, eligibility }, intent, plan, signal);
   }
   /** Stop accepting new work. Never reschedule jobs after drain/restart. The
    * owner must close the writer after this resolves, not underneath a task. */

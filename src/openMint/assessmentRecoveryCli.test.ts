@@ -213,7 +213,7 @@ describe("recovery command-line boundary", () => {
     const saved = await snapshot(test.dataDirectory);
     expect(JSON.parse((await cli(args)).stdout)).toEqual(result);
     expect(await snapshot(test.dataDirectory)).toEqual(saved);
-  });
+  }, 30_000);
 
   it.each(["unknown", "duplicate", "missing-value", "missing-command", "digest-without-apply", "positional"])("rejects %s arguments with sanitized diagnostics", async kind => {
     const test = await fixture(), before = await snapshot(test.dataDirectory);

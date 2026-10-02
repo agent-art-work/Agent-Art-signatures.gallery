@@ -20,3 +20,5 @@ This Inbox is cleared by triage, not because development is finished. Track exec
   Determine whether the exact pre-formal-v1 local chain/database rollback point is still required. If obsolete, delete the backup safely. If it must be retained, compact/archive it and document the restoration procedure.
 
   Do not modify the active `.local/rehearsal` environment. Verify disk recovery and repository/runtime health afterward.
+
+- Fix the slow-primary RPC failover defect: a slow primary can consume the overall read deadline before the secondary is tried, leaving live network checks unavailable despite a responsive secondary. Keep contradictory chain or mint evidence fail-closed, and test slow-primary, healthy-secondary recovery.

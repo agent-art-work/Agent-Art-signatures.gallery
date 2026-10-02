@@ -1,0 +1,453 @@
+{
+  "schema": "sg-pulse-candidate-lock/v1",
+  "status": "reviewed-for-c6-integration",
+  "publicDeploymentApproved": false,
+  "identity": {
+    "contractName": "SignaturesPulseMintV1RC1",
+    "contractVersion": "sg-generative-pulse-mint-1.0.0-rc.1",
+    "contractProfile": "generative-pulse-v1-rc1",
+    "inputProfile": "sg-generative-pulse-inputs-v1-rc1",
+    "rendererVersion": "sg-evm-renderer-1.0.0-rc.1",
+    "domainName": "SignaturesPulseMintRC1",
+    "domainVersion": "1",
+    "reservationVersion": "sg-generative-pulse-authorization-v1-rc1",
+    "walletPlanVersion": "sg-pulse-wallet-plan-v1-rc1",
+    "allowlistFormat": "sg-pulse-free-slots-v1",
+    "pulseReleaseTag": "pulse-core-v1.0.0",
+    "pulseRuntimeCodeHash": "0xfb48657163202d3cdb28060f1eb511fd1f5b93a6e0eb8657242b5632e2200a90",
+    "authorizationType": "PulseMintAuthorization(bytes32 handleKey,bytes32 assessmentDigest,bytes32 inputDigest,address recipient,bytes32 nonce,uint64 issuedAt,uint64 deadline,uint8 mintMode,uint256 slotId,uint256 maxPrice)",
+    "authorizationTypeHash": "0x65be64491ba939c2eb80eaa1c34208acaa5fc27c5d6b40889da86cce405f7150"
+  },
+  "authorization": {
+    "primaryType": "PulseMintAuthorization",
+    "types": {
+      "PulseMintAuthorization": [
+        {
+          "name": "handleKey",
+          "type": "bytes32"
+        },
+        {
+          "name": "assessmentDigest",
+          "type": "bytes32"
+        },
+        {
+          "name": "inputDigest",
+          "type": "bytes32"
+        },
+        {
+          "name": "recipient",
+          "type": "address"
+        },
+        {
+          "name": "nonce",
+          "type": "bytes32"
+        },
+        {
+          "name": "issuedAt",
+          "type": "uint64"
+        },
+        {
+          "name": "deadline",
+          "type": "uint64"
+        },
+        {
+          "name": "mintMode",
+          "type": "uint8"
+        },
+        {
+          "name": "slotId",
+          "type": "uint256"
+        },
+        {
+          "name": "maxPrice",
+          "type": "uint256"
+        }
+      ]
+    },
+    "maxWindowSeconds": 900,
+    "validity": "issuedAt <= timestamp < deadline",
+    "freeMode": 0,
+    "paidMode": 1,
+    "paidSlot": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+    "freeValue": "0",
+    "paidValue": "signed maxPrice",
+    "freeDeadlineExclusive": true
+  },
+  "selectors": {
+    "acceptDefaultAdminTransfer()": "0xcefc1429",
+    "approve(address,uint256)": "0x095ea7b3",
+    "AUTHORIZATION_TYPEHASH()": "0x73396512",
+    "authorizationDigest((bytes32,bytes32,bytes32,address,bytes32,uint64,uint64,uint8,uint256,uint256))": "0x2873e0ce",
+    "AUTHORIZER_MANAGER_ROLE()": "0x4b57f8ab",
+    "balanceOf(address)": "0x70a08231",
+    "beginDefaultAdminTransfer(address)": "0x634e93da",
+    "boundChainId()": "0x17ac2e13",
+    "cancelDefaultAdminTransfer()": "0xd602b9fd",
+    "changeDefaultAdminDelay(uint48)": "0x649a5ec7",
+    "contractURI()": "0xe8a3d485",
+    "coreRuntimeCodeHash()": "0x867363dd",
+    "DEFAULT_ADMIN_ROLE()": "0xa217fddf",
+    "defaultAdmin()": "0x84ef8ffc",
+    "defaultAdminDelay()": "0xcc8463c8",
+    "defaultAdminDelayIncreaseWait()": "0x022d63fb",
+    "deployedAt()": "0xeae4c19f",
+    "eip712Domain()": "0x84b0196e",
+    "freeDeadline()": "0xd039a0ea",
+    "freeMinted()": "0xd10a1a2b",
+    "freeMintRoot()": "0xa886c377",
+    "freeSlotCount()": "0x0e2b1747",
+    "freeSlotLeaf(uint256,address)": "0x9fd945f4",
+    "getApproved(uint256)": "0x081812fc",
+    "getCurrentPrice()": "0xeb91d37e",
+    "getPulseConfig()": "0xc5d7fca4",
+    "getPulseState()": "0xc41b5ab2",
+    "getRoleAdmin(bytes32)": "0x248a9ca3",
+    "grantRole(bytes32,address)": "0x2f2ff15d",
+    "handleKey(string)": "0x9885d849",
+    "hasRole(bytes32,address)": "0x91d14854",
+    "INPUT_PROFILE()": "0xb5af1111",
+    "inputDigest(string,string)": "0xc98b4fd4",
+    "inputs(uint256)": "0xddef9ea1",
+    "isApprovedForAll(address,address)": "0xe985e9c5",
+    "isFreeSlotClaimed(uint256)": "0x78f7b565",
+    "MAX_AUTHORIZATION_WINDOW()": "0x81713fd2",
+    "mintedHandle(bytes32)": "0x06942406",
+    "mintFree(string,string,(bytes32,bytes32,bytes32,address,bytes32,uint64,uint64,uint8,uint256,uint256),bytes,bytes32[])": "0x1cc08a94",
+    "mintPaid(string,string,(bytes32,bytes32,bytes32,address,bytes32,uint64,uint64,uint8,uint256,uint256),bytes)": "0x4f2e209c",
+    "name()": "0x06fdde03",
+    "NONCE_REVOKER_ROLE()": "0x82f5eec6",
+    "owner()": "0x8da5cb5b",
+    "ownerOf(uint256)": "0x6352211e",
+    "PAID_SLOT()": "0x3ffa6399",
+    "paused()": "0x5c975abb",
+    "pauseMinting()": "0xda8fbf2a",
+    "PAUSER_ROLE()": "0xe63ab1e9",
+    "pendingDefaultAdmin()": "0xcf6eefb7",
+    "pendingDefaultAdminDelay()": "0xa1eda53c",
+    "provenance(uint256)": "0x3840b44f",
+    "pulseCore()": "0x34c07d64",
+    "renderer()": "0x8ada6b0f",
+    "rendererIdentity()": "0xcc7e85d3",
+    "renounceRole(bytes32,address)": "0x36568abe",
+    "revokedNonces(bytes32)": "0x301dd113",
+    "revokeNonce(bytes32)": "0x83206b56",
+    "revokeRole(bytes32,address)": "0xd547741f",
+    "rollbackDefaultAdminDelay()": "0x0aa6220b",
+    "safeTransferFrom(address,address,uint256,bytes)": "0xb88d4fde",
+    "safeTransferFrom(address,address,uint256)": "0x42842e0e",
+    "saleConfigHash()": "0xa605f1f1",
+    "saleStatus()": "0xf9020e33",
+    "SEPOLIA_CORE()": "0x2164a3db",
+    "setApprovalForAll(address,bool)": "0xa22cb465",
+    "setTrustedAuthorizer(address)": "0x162e017c",
+    "supportsInterface(bytes4)": "0x01ffc9a7",
+    "svg(uint256)": "0x44b285db",
+    "symbol()": "0x95d89b41",
+    "tokenURI(uint256)": "0xc87b56dd",
+    "transferFrom(address,address,uint256)": "0x23b872dd",
+    "treasury()": "0x61d027b3",
+    "trustedAuthorizer()": "0x25e1356d",
+    "unpauseMinting()": "0xae200322",
+    "usedNonces(bytes32)": "0xfeb61724",
+    "VERSION()": "0xffa1ad74"
+  },
+  "events": {
+    "Approval(address,address,uint256)": "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925",
+    "ApprovalForAll(address,address,bool)": "0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31",
+    "CoreBound(address,uint256,bytes32)": "0x9e83582ba0e2eccf2fa8aff7b4460d61783f4a6c68e18613b94d7c68f7fa0675",
+    "DefaultAdminDelayChangeCanceled()": "0x2b1fa2edafe6f7b9e97c1a9e0c3660e645beb2dcaa2d45bdbf9beaf5472e1ec5",
+    "DefaultAdminDelayChangeScheduled(uint48,uint48)": "0xf1038c18cf84a56e432fdbfaf746924b7ea511dfe03a6506a0ceba4888788d9b",
+    "DefaultAdminTransferCanceled()": "0x8886ebfc4259abdbc16601dd8fb5678e54878f47b3c34836cfc51154a9605109",
+    "DefaultAdminTransferScheduled(address,uint48)": "0x3377dc44241e779dd06afab5b788a35ca5f3b778836e2990bdb26a2a4b2e5ed6",
+    "EIP712DomainChanged()": "0x0a6387c9ea3628b88a633bb4f3b151770f70085117a15f9bf3787cda53f13d31",
+    "GenerativeSignatureMinted(bytes32,bytes32,address,uint256,string,string,bytes32,bytes32,bytes32)": "0x6c9d93d373b0714dc56de4fa35b630d08b874f9060d82c5bc5e55b73036dc22d",
+    "MintEconomics(uint256,bytes32,uint256,uint8,uint256,uint256,uint64)": "0xfa9baec9f046ab7669195cc510812af38277c13802a656032b3765fb530eb673",
+    "NonceRevoked(bytes32)": "0xd7c09f7814c040b2a8b277ad9b7a213fd9b09926675611273f9245fb16b42c5a",
+    "PaidPhaseStarted(uint64,uint8,uint256)": "0xb87fe2849f6150437be7582604df03b8d59ded756cd7c38935510c3a3385c7b1",
+    "Paused(address)": "0x62e78cea01bee320cd4e420270b5ea74000d11b0c9f74754ebdbfc544b05a258",
+    "RoleAdminChanged(bytes32,bytes32,bytes32)": "0xbd79b86ffe0ab8e8776151514217cd7cacd52c909f66475c3af44e129f0b00ff",
+    "RoleGranted(bytes32,address,address)": "0x2f8788117e7eff1d82e926ec794901d17c78024a50270940304540a733656f0d",
+    "RoleRevoked(bytes32,address,address)": "0xf6391f5c32d9c69d2a47ea670b442974b53935d1edc7fd64eb21e047a839171b",
+    "Sale(address,uint64,uint256,uint64,uint64,uint256)": "0xa789468a0212cbe853fbdd6011d2ee7d85144ebc1d67c7dd82f087a970d9593d",
+    "SaleConfigured(bytes32,bytes32,uint256,uint64,address,uint64)": "0x5e51f23b99e48c66efc6efbbc37eeafdb77172703141b7f5434a22e2b0caa0b6",
+    "Transfer(address,address,uint256)": "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+    "TrustedAuthorizerChanged(address,address)": "0x77cf7babfc6f061f8f3bc9821335c3a3f04377a1338eb977f4fabfd223d19b4a",
+    "Unpaused(address)": "0x5db9ee0a495bf2e6ff9c91a7834c1ba4fdd244a5e8aa4e537bd38aeae4b073aa"
+  },
+  "foundryConfigSha256": "c8da2e4411e8c3ddd626ec2381f90331c02f978da8071bd7322369afe86092a6",
+  "interfaceSha256": "5c95c0253581123c55bec00b82fd612eae842c92658f1832827de2e210f440b7",
+  "core": {
+    "schema": "sg-pulse-core-consumer-lock/v1",
+    "repository": "https://github.com/inshell-art/pulse",
+    "tag": "pulse-core-v1.0.0",
+    "tagCommit": "a08ec26e396b9d3e20ccebd8871f176368bcd713",
+    "releaseDirectory": "evm/releases/pulse-core-v1",
+    "semanticsVersion": "1.0.0",
+    "compiler": "0.8.24+commit.e11b9ed9",
+    "evmVersion": "shanghai",
+    "licenseSha256": "4e8144dd3b1212ca8eec4219f2f981cbecfa9c717b3e79ddf1800b77e6693e8b",
+    "runtimeCodeHash": "0xfb48657163202d3cdb28060f1eb511fd1f5b93a6e0eb8657242b5632e2200a90",
+    "supportedChains": [
+      31337,
+      11155111
+    ],
+    "sepoliaCore": "0xfb1Cc26356b1b0361c414Ec1B5fB52c5FEDc3EAC",
+    "mainnetCore": null,
+    "abiSha256": "d7b545bb27ca2da37effbe5e44c50fde42c748a27e68d40f197b4afe83ad2836",
+    "releaseManifestSha256": "9a188cfcf503aa94607c76311f222fb45300697dadb6dd62064d000533c32723",
+    "consumerLockSha256": "16663e7e69086c80561b9af473b267248bb7ae1f345251dc8261f46d8342bd74"
+  },
+  "historicalRelease": {
+    "releaseLockSha256": "508eefdca3073b8ba97d8a56bc407b9c5c3a6cd8e85a009ad483949d47c386b4",
+    "status": "candidate-not-approved",
+    "renderer": "sg-evm-renderer-1.0.0-rc.1",
+    "collection": "sg-generative-mint-1.0.0-rc.1",
+    "inputProfile": "sg-generative-inputs-v1-rc1",
+    "domainName": "SignaturesGenerativeMintRC1",
+    "domainVersion": "1"
+  },
+  "collection": {
+    "compilerVersion": "0.8.30+commit.73712a01",
+    "metadataSha256": "064628170ca114e7c42e65e67f188512f7531ddd1a92771c0594ffef9999522e",
+    "sourceSha256": "365e52951b24ec9bf257238efc1ca12b4486f45cb8f903dfaa70e4bc4cc3bb28",
+    "settingsSha256": "98087bc5b6a0347689532c7a6c3f5d64c878435915f4c0a1fba8b3cd1b29e99e",
+    "abiSha256": "2f3de90db104d37d87bf7e0912a9fa2807268ec322edfaba32b7fadca54a5678",
+    "creationCodeHash": "0xbda1111775c78f9da2f1e801b5b64c5d950d7f4e4d370b0069ba6994ad5c9fba",
+    "runtimeTemplateHash": "0x72f059a5d2a182d1cac94f55d65d221913cd6d0011d18914036409005611a91a",
+    "creationBytes": 43720,
+    "constructorBytes": 544,
+    "runtimeBytes": 23819,
+    "immutableReferences": [
+      [
+        {
+          "start": 1379,
+          "length": 32
+        },
+        {
+          "start": 4882,
+          "length": 32
+        },
+        {
+          "start": 7343,
+          "length": 32
+        },
+        {
+          "start": 10183,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 1475,
+          "length": 32
+        },
+        {
+          "start": 10730,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 1812,
+          "length": 32
+        },
+        {
+          "start": 4921,
+          "length": 32
+        },
+        {
+          "start": 6250,
+          "length": 32
+        },
+        {
+          "start": 9799,
+          "length": 32
+        },
+        {
+          "start": 13095,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 2172,
+          "length": 32
+        },
+        {
+          "start": 6844,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 2675,
+          "length": 32
+        },
+        {
+          "start": 5852,
+          "length": 32
+        },
+        {
+          "start": 8488,
+          "length": 32
+        },
+        {
+          "start": 8685,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 2960,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 3011,
+          "length": 32
+        },
+        {
+          "start": 4704,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 3261,
+          "length": 32
+        },
+        {
+          "start": 8880,
+          "length": 32
+        },
+        {
+          "start": 9078,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 3410,
+          "length": 32
+        },
+        {
+          "start": 4406,
+          "length": 32
+        },
+        {
+          "start": 4535,
+          "length": 32
+        },
+        {
+          "start": 6536,
+          "length": 32
+        },
+        {
+          "start": 10054,
+          "length": 32
+        },
+        {
+          "start": 10229,
+          "length": 32
+        },
+        {
+          "start": 10296,
+          "length": 32
+        },
+        {
+          "start": 13012,
+          "length": 32
+        },
+        {
+          "start": 13216,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 3700,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 8315,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 8353,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 8391,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 8429,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 13605,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 13650,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 16362,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 16404,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 16446,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 16527,
+          "length": 32
+        }
+      ],
+      [
+        {
+          "start": 16567,
+          "length": 32
+        }
+      ]
+    ]
+  },
+  "renderer": {
+    "compilerVersion": "0.8.30+commit.73712a01",
+    "sourceSha256": "12d813297510b7e0c84997e6b5f0518035c0ada8e51a73ed57d822fb75164368",
+    "metadataSha256": "0bd9589f8c985fd571822054016fbbe9718eb6359d9d3a6b86ecdc71f15f38a8",
+    "settingsSha256": "54c2d9610f6766e5c82ce28563d06442682c6835a8bd03b5edb88634944384f6",
+    "abiSha256": "c201c2b9326d136d5614e99db42394041655bc0398fbf2d488fc22007121cee0",
+    "creationCodeHash": "0xd8d43cfeb4e49c88cfb5ff51be628acfa95a1fe683cb21fa3f63fc83cab038cd",
+    "runtimeTemplateHash": "0xf6cb0e67c29b58ec55be33aba097b89e4877c13721739d8972d98f16053d7bec",
+    "creationBytes": 14764,
+    "runtimeBytes": 14736,
+    "immutableReferences": []
+  }
+}

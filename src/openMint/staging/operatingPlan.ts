@@ -112,7 +112,7 @@ export function parseOperatingJson(json: string): unknown {
  * retrieved or verified. No clock, environment, secret resolver, RPC or DB use. */
 export function validateOperatingSettings(input: unknown, binding: CandidateOperatingBinding) {
   if (input && typeof input === "object" && !Array.isArray(input)
-    && (input as Record<string, unknown>).schema === "sg-sepolia-operating-settings-v2") {
+    && Object.getOwnPropertyDescriptor(input, "schema")?.value === "sg-sepolia-operating-settings-v2") {
     const value = plainCopy(input) as OperatingSettingsV2;
     const database = object(value.database, ["resourceReference", "migrationPlanReference", "backupEvidenceReference", "roles",
       "exclusiveWriter", "migrateOnStartup", "initialIssuanceEnabled", "initialGenerationEnabled", "schemaProfile"], "database v2");

@@ -7,6 +7,7 @@ import { isCode, opaqueCode, PublicError } from "../security.js";
 import { OpenMintRepository, validateAssessmentTerminal, type AssessmentTerminal } from "./repository.js";
 import { capabilityHash } from "./sessions.js";
 import { PersistenceConflictError, type OwnershipConnection } from "./writer.js";
+import { PostgresPulseEconomics } from "./pulseEconomics.js";
 
 type Transaction = Pick<OwnershipConnection, "query">;
 export interface CreateDurableMintRequest {
@@ -19,6 +20,7 @@ export interface CreateDurableMintRequest {
   readonly handle: string;
   /** Ephemeral opaque witness, issued by the configured backend chain gate. */
   readonly eligibility: unknown;
+  readonly mintIntent?: unknown;
 }
 export interface DurableMintRequest {
   readonly id: string;
@@ -62,8 +64,10 @@ const notFound = () => new PublicError(404, "NOT_FOUND", "Signature request not 
  * authority; adapters must never expose the lower-level admitInitial method.
  */
 export class PostgresMintRequests {
-  private constructor(readonly repository: OpenMintRepository, readonly profile: Readonly<RequestProfile>) {}
-  static async open(repository: OpenMintRepository, deploymentId: string): Promise<PostgresMintRequests> {
+  private constructor(readonly repository: OpenMintRepository, readonly profile: Readonly<RequestProfile>, readonly pulse?: PostgresPulseEconomics) {}
+  static async open(repository: OpenMintRepository, deploymentId: string, pulse?: PostgresPulseEconomics): Promise<PostgresMintRequests> {
+    if (pulse && (!(pulse instanceof PostgresPulseEconomics) || pulse.writer !== repository.writer || pulse.namespaceId !== repository.namespace.id
+      || pulse.deploymentId !== deploymentId || repository.namespace.profile !== "local-real")) throw new PersistenceConflictError("Pulse request composition mismatch.");
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(deploymentId)) throw new PersistenceConflictError("Invalid request deployment identifier.");
     const profile = await repository.writer.transaction(async tx => {
       const row = (await tx.query<RequestProfile>(`SELECT p.*, p.chain_id::text, p.deployment_block::text, s.origin, s.chain_id::text AS session_chain_id
@@ -72,7 +76,7 @@ export class PostgresMintRequests {
       if (!row || row.chain_id !== row.session_chain_id) throw new PersistenceConflictError("Request deployment/session profile mismatch.");
       return Object.freeze({ ...row });
     });
-    return new PostgresMintRequests(repository, profile);
+    return new PostgresMintRequests(repository, profile, pulse);
   }
   async #now(tx: Transaction): Promise<Date> { return (await tx.query<{ now: Date }>("SELECT clock_timestamp() AS now")).rows[0]!.now; }
   async #session(tx: Transaction, sessionHash: string, now: Date): Promise<SessionRow> {
@@ -85,6 +89,7 @@ export class PostgresMintRequests {
     try { evidence = readPublicChainEligibility(witness, { namespaceId: this.repository.namespace.id, deploymentId: this.profile.deployment_id, handle, recipient, now }); }
     catch { throw new PublicError(503, "CHAIN_UNAVAILABLE", "Fresh verified chain eligibility is required. No assessment was requested."); }
     const expected = this.profile;
+    if ((evidence.contractProfile === "generative-pulse-v1-rc1") !== !!this.pulse) throw new PublicError(503, "CHAIN_PROFILE_MISMATCH", "Explicit Pulse request composition required.");
     if (uint(evidence.chainId) !== expected.chain_id || evidence.contract.toLowerCase() !== expected.contract_address
       || evidence.genesisHash !== expected.genesis_hash || evidence.runtimeCodeHash !== expected.runtime_code_hash
       || evidence.authorizer.toLowerCase() !== expected.authorizer || uint(evidence.deploymentBlock.number) !== expected.deployment_block
@@ -113,7 +118,8 @@ export class PostgresMintRequests {
     // Capture every caller-owned value before entering the asynchronous queue.
     const sessionHash = capabilityHash(input.sessionToken), origin = input.origin, csrf = input.csrf,
       generation = input.sessionGeneration, recipient = getAddress(input.recipient), handle = canonicalHandle(input.handle),
-      requestedHandle = preservedHandle(input.handle), witness = input.eligibility;
+      requestedHandle = preservedHandle(input.handle), witness = input.eligibility, mintIntent = input.mintIntent === undefined ? undefined : structuredClone(input.mintIntent);
+    if (!this.pulse && mintIntent !== undefined) throw new PublicError(400, "INVALID_INPUT", "Mint economics are not supported by this deployment.");
     if (!/^(?:0|[1-9][0-9]{0,18})$/.test(generation)) throw new PublicError(409, "WALLET_CHANGED", "Connect your wallet again before preparing a mint.");
     return this.repository.admissionTransaction(async (tx, admit) => {
       await guard?.(tx, false);
@@ -125,7 +131,9 @@ export class PostgresMintRequests {
       const evidence = this.#preflight(witness, handle, recipient, now.getTime());
       const count = (await tx.query<{ count: string }>("SELECT count(*)::text AS count FROM open_mint.requests WHERE namespace_id = $1 AND session_hash = $2 AND expires_at > $3", [this.repository.namespace.id, sessionHash, now])).rows[0];
       if (!count || BigInt(count.count) >= 10n) throw new PublicError(429, "REQUEST_LIMIT", "Please finish an existing request first.");
-      const admission = await admit(handle), code = opaqueCode(), id = randomUUID(), expires = new Date(now.getTime() + 900_000);
+      const code = opaqueCode(), id = randomUUID(), expires = new Date(now.getTime() + 900_000);
+      await this.pulse?.reserve(tx, { requestId: id, wallet: recipient, handle, generation, sessionHash, consent: mintIntent, evidence, now: now.getTime() });
+      const admission = await admit(handle);
       if (admission.kind === "accepted" && this.repository.namespace.provenance === "grok" && admission.assessment.xIdentity?.provenance !== "x-api") throw new PersistenceConflictError("Saved assessment lacks verified X identity.");
       await tx.query(`INSERT INTO open_mint.requests(namespace_id, request_id, code_hash, deployment_id, session_hash, session_generation,
         wallet, handle, requested_handle, created_at, expires_at, attempt_id, assessment_id, owner_epoch,
@@ -143,6 +151,7 @@ export class PostgresMintRequests {
       const end = await this.#now(tx);
       if (session.expires_at.getTime() <= end.getTime() || session.proof_expires_at.getTime() <= end.getTime()) throw sessionRequired();
       this.#preflight(witness, handle, recipient, end.getTime());
+      await this.pulse?.check(tx, id, evidence, end.getTime());
       await guard?.(tx, admission.kind !== "accepted");
       if (guard) {
         const final = await this.#now(tx);

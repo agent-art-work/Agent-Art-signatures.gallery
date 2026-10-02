@@ -1,0 +1,15 @@
+{
+  "schema": "sg-pulse-core-consumer-lock/v1",
+  "repository": "https://github.com/inshell-art/pulse",
+  "tag": "pulse-core-v1.0.0",
+  "tagCommit": "a08ec26e396b9d3e20ccebd8871f176368bcd713",
+  "releaseDirectory": "evm/releases/pulse-core-v1",
+  "semanticsVersion": "1.0.0",
+  "compiler": "0.8.24+commit.e11b9ed9",
+  "evmVersion": "shanghai",
+  "licenseSha256": "4e8144dd3b1212ca8eec4219f2f981cbecfa9c717b3e79ddf1800b77e6693e8b",
+  "runtimeCodeHash": "0xfb48657163202d3cdb28060f1eb511fd1f5b93a6e0eb8657242b5632e2200a90",
+  "supportedChains": [31337, 11155111],
+  "sepoliaCore": "0xfb1Cc26356b1b0361c414Ec1B5fB52c5FEDc3EAC",
+  "mainnetCore": null
+}

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { aboutPage, assessmentPage, canonicalPageHandle, collectionPage, errorPage, handoffPrompt, homePage, mbtiGalleryPage, mintPage, OPEN_MINT_CSS, previewPage, previewVariationsPage, requestPage, type AssessmentPageModel, type GalleryEntry } from "./pages.js";
+import { aboutPage, assessmentPage, canonicalPageHandle, collectionPage, errorPage, handoffPrompt, homePage, mbtiGalleryPage, mintPage, revealedSignature, OPEN_MINT_CSS, previewPage, previewVariationsPage, requestPage, type AssessmentPageModel, type GalleryEntry } from "./pages.js";
 import { MBTI_TYPES, RENDERER_VERSION } from "./identity.js";
 import { HOME_LINK } from "../v1/navigation.js";
-import { SITE_CSS_URL } from "../v1/siteCss.js";
+import { SITE_CSS, SITE_CSS_URL } from "../v1/siteCss.js";
+import { SITE_ACTION_SELECTOR, SITE_FIELD_SELECTOR, SITE_CONTROLS_CSS } from "../v1/controlsCss.js";
 import { SLOGAN_MBTI_HERO_MANIFEST, SLOGAN_MBTI_HERO_SCRIPT_URL, SLOGAN_MBTI_HERO_SVG } from "../brand/sloganMbtiHero.js";
 import { SLOGAN_TOOLTIP_SCRIPT_URL } from "../brand/sloganTooltipScript.js";
 import type { PublicPreviewState } from "./previewState.js";
@@ -14,6 +15,43 @@ const publicMint: PublicPreviewState = {
   state: "minted", renderHandle: "Alice_Bob_Key", mbti: "INTJ", rendererVersion: RENDERER_VERSION,
   imageUrl: "/art/archived-mint.svg", url: "/signatures/alice_bob_key",
 };
+
+it('server-rendered failures and uncertain submissions share the inline warning style, not ordinary progress', () => {
+  for (const status of ['failed', 'abstained'] as const) {
+    const page = assessmentPage({ ...ready, status, canMint: false, error: '<script>bad</script>' });
+    expect(page).toContain('class="open-feedback open-preview-notice open-preview-warning" data-mint-feedback');
+    expect(page).toContain('<strong class="open-preview-notice-label">Warning</strong> <span>');
+    expect(page).not.toContain('<script>bad</script>');
+  }
+  const uncertain = assessmentPage({ ...ready, mint: { state: 'pending', submissionUncertain: true } });
+  expect(uncertain).toContain('class="open-feedback open-preview-notice open-preview-warning" data-mint-feedback');
+  expect(uncertain).toContain('<span>A wallet submission was started, but its outcome is unknown.');
+  const pending = assessmentPage({ ...ready, mint: { state: 'pending' } });
+  expect(pending).toContain('class="open-feedback" data-mint-feedback role="status" aria-live="polite">Waiting for the transaction to be confirmed.</p>');
+  expect(pending).not.toContain('class="open-feedback open-preview-notice open-preview-warning"');
+  expect(OPEN_MINT_CSS).toContain('.open-mint :is(.open-feedback,[data-pulse-feedback],[data-poll-feedback],[data-reveal-feedback]).open-preview-warning{color:var(--ink)}');
+});
+
+it('sample-backed pages keep developer copy out of the user flow without claiming a Grok assessment', () => {
+  const options = { assessmentSource: 'sample' as const, generativeArtwork: true, pulseMint: true, chainName: 'Ethereum Sepolia',
+    pulseSaleNotice: 'Free mint ended · 2/2 slots used.' };
+  const pages = [homePage(options), mintPage('Alice', options), aboutPage(options), collectionPage([], options),
+    previewPage('Alice', 'INTJ', options), previewVariationsPage('Alice', options), mbtiGalleryPage('INTJ', [], options)];
+  for (const page of pages) {
+    expect(page).not.toMatch(/deterministic fixture|test runtime|Test MBTI fixture|Sepolia test|development fixture/i);
+    expect(page).not.toContain('Grok chooses the final signature.');
+    expect(page).not.toContain('Grok interprets it.');
+    expect(page).not.toContain('asks Grok to research public X posts');
+  }
+  expect(pages[1]).toContain('data-pulse-sale-status role="status">Free mint ended · 2/2 slots used.');
+  expect(pages[1]).toContain('The final signature may differ from');
+  expect(mintPage('', { ...options, pulseSaleNotice: '<script>bad</script>' })).toContain('&lt;script&gt;bad&lt;/script&gt;');
+  expect(mintPage()).toContain('Grok chooses the final signature.');
+  expect(homePage()).toContain('Choose any X handle.');
+  const detail = assessmentPage({ ...minted, assessmentProvenance: 'development-fixture' }, options);
+  expect(detail).toContain('Sample MBTI input; Grok was not called.');
+});
+
 const previewRows = [
   ["ISTJ", "ESTJ", "ISFJ", "ESFJ"],
   ["INFJ", "ENFJ", "INTJ", "ENTJ"],
@@ -82,6 +120,20 @@ function expectNoDevelopmentChrome(html: string): void {
 }
 
 describe("open mint pages", () => {
+  it('exposes only the saved Pulse ceiling before reveal and keeps historical fee copy', () => {
+    const html=assessmentPage({...ready,pulseMaxPriceWei:'1500000000'},{pulseMint:true});
+    expect(html).toContain('data-pulse-max-price-wei="1500000000"');
+    expect(html).not.toContain('secret-svg-digest');
+    expect(html).not.toContain('/art/hidden.svg');
+    expect(()=>assessmentPage({...ready,pulseMaxPriceWei:'1500000000'})).toThrow();
+    expect(()=>assessmentPage({...ready,pulseMaxPriceWei:'01'},{pulseMint:true})).toThrow();
+    expect(aboutPage()).toContain('No mint fee. You pay network gas.');
+    expect(aboutPage({pulseMint:true})).not.toContain('No mint fee.');
+    const entry=mintPage('Alice',{pulseMint:true});
+    expect(entry).toContain('data-pulse-options');
+    expect(entry).toContain('Maximum mint price (ETH)');
+    expect(entry).not.toContain(' checked');
+  });
   it.each([
     ["home", () => homePage({}, [entry])],
     ["MBTI gallery", () => mbtiGalleryPage("INTJ", [entry])],
@@ -127,7 +179,7 @@ describe("open mint pages", () => {
   });
 
   it("presents the eight v2 slogan shapes once while preserving the literal tooltip and keyboard label", () => {
-    const approvedSlogan = "The_First_Agent_Artwork";
+    const approvedSlogan = "Anyone_Can_Sign_Anyone";
     const html = homePage();
     const heading = html.match(/<h1\b[^>]*id="slogan-heading"[^>]*>([\s\S]*?)<\/h1>/);
     expect(heading?.[1]).toBe(approvedSlogan);
@@ -160,11 +212,12 @@ describe("open mint pages", () => {
   });
 
   it("pairs the approved case-sensitive slogan with the mint-and-reveal supporting sentence", () => {
-    for (const html of [homePage(), homePage({}, [entry])]) {
+    for (const html of [homePage(), homePage({}, [entry]), homePage({ assessmentSource: "grok" }), homePage({ assessmentSource: "sample" })]) {
       const guidance = html.match(/<p class="home-guidance">([\s\S]*?)<\/p>/)?.[1];
-      expect(guidance).toBe('<span>Choose any X handle.</span>&nbsp; <span>Grok interprets it.</span>&nbsp; <span>Mint to reveal the signature.</span>');
-      expect(guidance?.replace(/<[^>]+>/g, "").replaceAll("&nbsp;", "\u00a0"))
-        .toBe("Choose any X handle.\u00a0 Grok interprets it.\u00a0 Mint to reveal the signature.");
+      expect(guidance).toBe('<span>Choose any X handle.</span> <span>One signature per handle—mint to reveal it.</span>');
+      expect(guidance?.replace(/<[^>]+>/g, ""))
+        .toBe("Choose any X handle. One signature per handle—mint to reveal it.");
+      expect(guidance).not.toContain("&nbsp;");
       expect(html).not.toContain("Any X handle. One minted signature.");
       expect(html).not.toContain("What_shape_do_you_go_by?");
       expect(html).not.toContain("Whose_shape_will_you_reveal?");
@@ -248,7 +301,7 @@ describe("open mint pages", () => {
     expect(html).toContain('class="collection-shortcut" href="/me"');
     expect(html).toContain('aria-label="My Collection"');
     expect(html).toContain(SITE_CSS_URL);
-    expect(html).toContain('instrument-sans-latin-wght-normal.woff2');
+    expect(html).toContain('playpen-sans-latin-wght-normal.woff2');
     expect(html).toContain('href="/mint"><span>Mint a signature</span>');
     expect(html).not.toContain('data-assessment-request');
     expect(html).not.toMatch(/Sign in with X|Claim with X|withdraw|\/auth\/x/);
@@ -355,6 +408,239 @@ describe("open mint pages", () => {
     expect(verified).toContain('data-wallet-label>0x123');
     expect(verified).toContain('data-review-chain>Local Anvil');
     expect(mintPage("", { wallet: "0x123" })).toContain('<span>Verify wallet</span>');
+  });
+
+  it("starts with the handle field and gives way to the revealed artwork without an introductory heading", () => {
+    const html = mintPage(" @Alice_Bob_Key ");
+    const form = html.match(/<form\b[^>]*data-assessment-request[^>]*>([\s\S]*?)<\/form>/)?.[1];
+    expect(form).toBeDefined();
+    expect(form?.trim()).toMatch(/^<section class="mint-entry-part mint-entry-handle"/);
+    expect(html).not.toMatch(/mint-entry-intro|A name,|a signature\.<\/h1>|<h1\b/);
+    expect(OPEN_MINT_CSS).not.toContain("mint-entry-intro");
+    expect(form?.match(/<input\b[^>]*name="handle"[^>]*>/g)).toHaveLength(1);
+    expect(form).toContain('<label for="open-handle"><span class="mint-section-title">Choose any X handle.</span>');
+    expect(form).toContain('id="open-handle" name="handle" value="Alice_Bob_Key"');
+    expect(form).toContain('autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="16" pattern="@?[A-Za-z0-9_]{1,15}" required aria-describedby="handle-validation mint-explanation request-feedback"');
+    expect(form).toContain('<p id="handle-validation" class="open-preview-notice open-preview-warning" data-handle-validation role="status" aria-live="polite" hidden></p>');
+    expect(OPEN_MINT_CSS).toContain('.open-mint .mint-entry-sheet .mint-entry-handle [data-handle-validation]{margin:.65rem 0 0;font-size:14px;max-width:none}');
+    expect(form).toContain('data-mint-preview href="/p/Alice_Bob_Key/variations"');
+    expect(html).toContain('<div data-mint-result hidden tabindex="-1" aria-label="Revealed signature"><div data-mint-result-artwork></div>');
+    expect(html.indexOf('data-mint-result hidden')).toBeGreaterThan(html.indexOf('</form>'));
+    expect(form).not.toMatch(/<img\b|<figure\b|signature-provenance|name="mbti"|\/art\//);
+    expect(html).not.toMatch(/<img\b|<figure\b|<article class="signature-page"|signature-provenance|\/art\//);
+  });
+
+  it("caps mint entry at the 853px visible-slogan midpoint while its form and explanation fill the sheet", () => {
+    const rules = [...OPEN_MINT_CSS.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .map(([, selector, declarations]) => ({ selector: selector.trim(), declarations }));
+    const declarations = (selector: string) => {
+      const matches = rules.filter(rule => rule.selector === selector);
+      expect(matches, selector).toHaveLength(1);
+      return matches[0].declarations;
+    };
+    expect(declarations(".open-mint .mint-entry-sheet")).toBe("max-width:853px");
+    expect(declarations(".open-mint .home-grid .slogan-lockup")).toBe("max-width:56rem");
+    expect(declarations(".open-mint .mint-entry-sheet .open-mint-form")).toBe("gap:0;max-width:none");
+    expect(declarations(".open-mint .mint-entry-sheet .open-mint-explanation")).toBe("max-width:none");
+    // The entry overrides follow their defaults; unrelated forms, explanatory
+    // copy and the progress sheet retain their existing readable widths.
+    expect(declarations(".open-mint .open-mint-form")).toContain("max-width:35rem");
+    expect(declarations(".open-mint .open-mint-explanation")).toContain("max-width:35rem");
+    expect(declarations(".open-mint .open-mint-progress")).toBe("max-width:35rem");
+    expect(OPEN_MINT_CSS.indexOf(".open-mint .mint-entry-sheet .open-mint-form{")).toBeGreaterThan(OPEN_MINT_CSS.indexOf(".open-mint .open-mint-form{"));
+    expect(OPEN_MINT_CSS.indexOf(".open-mint .mint-entry-sheet .open-mint-explanation{")).toBeGreaterThan(OPEN_MINT_CSS.indexOf(".open-mint .open-mint-explanation{"));
+    expect(OPEN_MINT_CSS).not.toContain(".open-mint .auth-sheet{max-width:none");
+    for (const pulseMint of [false, true]) {
+      expect(mintPage("Alice", { pulseMint })).toContain('class="auth-sheet mint-entry-sheet"');
+    }
+    expect(assessmentPage(ready)).toContain('class="auth-sheet open-mint-progress"');
+    expect(assessmentPage(ready)).not.toContain('class="auth-sheet mint-entry-sheet"');
+    expect(errorPage("Unavailable")).not.toContain("mint-entry-sheet");
+  });
+
+  it("keeps the 1024px shell and responsive gutters around the 853px mint entry cap", () => {
+    expect(SITE_CSS).toContain(".book-page{position:relative;width:100%;max-width:1024px;margin-inline:auto;--page-gutter:32px;");
+    expect(SITE_CSS).toContain("html{font-size:16px;");
+    expect(OPEN_MINT_CSS).toContain(".open-mint .mint-entry-sheet{max-width:853px}");
+    expect(SITE_CSS).toContain(".auth-page{padding:5rem var(--page-gutter) 3rem}");
+    expect(SITE_CSS).toContain(".auth-sheet{width:100%;max-width:42rem;margin-inline:auto;");
+    expect(SITE_CSS).toContain("@media(max-width:600px){.book-page{--page-gutter:20px}");
+    expect(OPEN_MINT_CSS).toContain("@media(max-width:480px){.open-mint [data-mint-entry]{padding-inline:24px}");
+    const field = SITE_CONTROLS_CSS.split(`${SITE_FIELD_SELECTOR}{`)[1].split("}")[0];
+    expect(field).toContain("width:100%;");
+    expect(field).toContain("box-sizing:border-box;");
+    expect(OPEN_MINT_CSS).not.toMatch(/\.open-mint \.mint-entry-sheet\{[^}]*\b(?:width|padding):(?:1024px|960px|0)/);
+    expect(mintPage("Alice")).toContain('<body class="book-page open-mint"');
+  });
+
+  it.each([false, true])("keeps 14px section titles and enlarges only the handle text and placeholder to 48px (Pulse: %s)", pulseMint => {
+    const html = mintPage("Alice", { pulseMint });
+    const titles = [...html.matchAll(/<(?:span|h2)\b[^>]*class="mint-section-title"[^>]*>([^<]+)<\/(?:span|h2)>/g)]
+      .map(match => match[1]);
+    expect(titles).toEqual(["Choose any X handle.", "To your wallet", ...(pulseMint ? ["Mint price", "Resolve previous mint"] : [])]);
+    expect(html).toContain('<label for="open-handle"><span class="mint-section-title">Choose any X handle.</span><input');
+    expect(html).toContain('aria-labelledby="recipient-heading"><h2 id="recipient-heading" class="mint-section-title"');
+    expect(OPEN_MINT_CSS).toContain(".open-mint .mint-entry-sheet .mint-section-title{display:block;min-width:0;font-size:14px;font-weight:var(--ui-font-weight);line-height:1.6;");
+    expect(OPEN_MINT_CSS).toContain(".open-mint .mint-entry-handle .open-handle-input{font-size:48px;line-height:1.35;height:90px}");
+    expect(OPEN_MINT_CSS).toContain(".open-mint .mint-entry-handle .open-handle-input::placeholder{font-size:inherit}");
+    expect(OPEN_MINT_CSS).not.toContain(".open-mint .open-handle-input{font-size:48px");
+    expect(OPEN_MINT_CSS).not.toContain(".mint-entry-wallet h2{margin:0 0 .5rem;font-size:14px");
+    expect(OPEN_MINT_CSS).not.toContain("[data-pulse-options] h2{font-size:14px");
+    expect(SITE_CONTROLS_CSS.match(/font-size:16px;font-weight:var\(--ui-font-weight\)/g)).toHaveLength(2);
+  });
+
+  it("inherits the site-wide field and pill-button system throughout the mint flow", () => {
+    const css = (SITE_CONTROLS_CSS + OPEN_MINT_CSS).replace(/\/\*[\s\S]*?\*\//g, "");
+    const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .map(([, selector, declarations]) => ({ selector: selector!.trim(), declarations: declarations! }));
+    const declarations = (selector: string): string => {
+      const matches = rules.filter(rule => rule.selector === selector);
+      expect(matches.length, selector).toBeGreaterThan(0);
+      return matches.map(rule => rule.declarations).join(";");
+    };
+    const buttonSelector = SITE_ACTION_SELECTOR;
+    const field = declarations(SITE_FIELD_SELECTOR);
+    for (const property of ["width:100%", "box-sizing:border-box", "height:48px", "min-height:48px",
+      "padding:12px 0", "border:0", "border-bottom:1px solid var(--line)", "border-radius:0",
+      "font-size:16px", "font-weight:var(--ui-font-weight)", "line-height:var(--control-line-height)", "letter-spacing:normal"]) {
+      expect(field).toContain(property);
+    }
+    expect(field).not.toMatch(/clamp\(|box-shadow:(?!none)/);
+    const fieldFeedback = declarations(`${SITE_FIELD_SELECTOR}:not(:disabled):is(:hover,:focus)`);
+    expect(fieldFeedback).toContain("border-bottom-color:var(--ink)");
+    const fieldFocus = declarations(`${SITE_FIELD_SELECTOR}:is(:focus,:focus-visible)`);
+    expect(fieldFocus).toContain("outline:none;box-shadow:none");
+    const buttonFocus = declarations(`${SITE_ACTION_SELECTOR}:focus-visible,body :is(input[type=radio],input[type=checkbox]):focus-visible`);
+    expect(buttonFocus).toContain("outline:2px solid var(--ink)");
+    expect(buttonFocus).toContain("outline-offset:4px");
+
+    const button = declarations(buttonSelector);
+    for (const property of ["min-height:48px", "padding:var(--control-padding)", "border:0", "border-radius:999px",
+      "background:var(--ink)", "color:var(--paper)", "font-size:16px", "font-weight:var(--ui-font-weight)",
+      "line-height:var(--control-line-height)", "box-shadow:none"]) {
+      expect(button).toContain(property);
+    }
+    const buttonHover = declarations(`${buttonSelector}:not(:disabled):not([aria-disabled=true]):hover`);
+    for (const property of ["background:var(--paper)", "color:var(--ink)", "box-shadow:inset 0 0 0 1px var(--ink)"]) {
+      expect(buttonHover).toContain(property);
+    }
+    expect(declarations(`${buttonSelector}:is(:disabled,[aria-disabled=true])`))
+      .toContain("opacity:.45");
+    const label = declarations("body .auth-action>span:first-child");
+    for (const property of ["border:0", "padding:0", "background:transparent"]) {
+      expect(label).toContain(property);
+    }
+    // The earlier optical nudge is not part of the approved control study.
+    expect(label).not.toContain("transform:");
+    expect(declarations(`${SITE_ACTION_SELECTOR}>span:not(.action-tooltip)`))
+      .toContain("font-size:inherit;font-weight:inherit;line-height:inherit");
+    expect(OPEN_MINT_CSS).not.toContain("border-radius:999px");
+    expect(OPEN_MINT_CSS).not.toContain("translateY(1px)");
+    const pillRules = rules.filter(rule => /border-radius:999px|padding:12px 24px/.test(rule.declarations));
+    expect(pillRules).toHaveLength(1);
+    expect(pillRules[0]!.selector).toBe(buttonSelector);
+    // The price ceiling must not retain a more specific rectangular-field override.
+    expect(css).not.toContain(".mint-entry-ceiling [name=pulse-max-eth]{");
+    expect(css).not.toContain(".mint-entry-action [data-request-submit]{");
+    expect(declarations(`${SITE_FIELD_SELECTOR}:disabled`)).toContain("cursor:not-allowed");
+    expect(declarations(".open-mint .mint-entry-modes label")).toContain("font-size:16px");
+    expect(declarations(".open-mint .mint-entry-modes label")).toContain("min-height:48px");
+
+    const disconnected = mintPage("Alice", { pulseMint: true });
+    const connected = mintPage("Alice", { pulseMint: true, wallet: "0x123", walletVerified: true });
+    expect(disconnected).toContain('data-request-submit disabled><span>Mint &amp; reveal</span>');
+    expect(connected).toContain('data-request-submit><span>Mint &amp; reveal</span>');
+    for (const html of [disconnected, connected]) {
+      expect(html).toContain('data-assessment-request data-pulse-mint="true"');
+      expect(html).toContain('data-connect-wallet><span>');
+      expect(html).toContain('data-pulse-check><span>Check price</span>');
+      expect(html).toContain('class="open-handle-input" name="pulse-max-eth"');
+      expect(html).toContain('class="auth-action" data-mint-result-link');
+      expect(html).toContain('data-mint-another><span>Mint another signature</span>');
+      expect(html).toContain('name="pulse-mode" value="free" disabled');
+      expect(html).toContain('name="pulse-mode" value="paid" disabled');
+      expect(html).not.toMatch(/\bchecked(?:\s|=|>)/);
+      expect(html.indexOf("Minting creates a permanent public token. Network gas is additional."))
+        .toBeLessThan(html.indexOf("data-request-submit"));
+    }
+  });
+
+  it.each([false, true])("keeps compact wallet identity, network and the styled connection control (verified: %s)", verified => {
+    const options = { chainName: "Ethereum Sepolia", ...(verified ? { wallet: "0x123", walletVerified: true } : {}) };
+    const html = mintPage("Alice", options);
+    const wallet = html.match(/<section class="mint-entry-part mint-entry-wallet"[^>]*>([\s\S]*?)<\/section>/)?.[1];
+    expect(wallet).toContain('<h2 id="recipient-heading" class="mint-section-title">To your wallet</h2>');
+    expect(wallet).toContain('<div data-wallet-controls><div class="mint-entry-wallet-summary">');
+    expect(wallet).toContain(`data-wallet-label>${verified ? "0x123" : ""}</p>`);
+    expect(wallet).toContain('Network: <span data-review-chain>Ethereum Sepolia</span>');
+    expect(wallet).toContain(`type="button" data-connect-wallet><span>${verified ? "Change wallet" : "Connect wallet"}</span></button>`);
+    expect(wallet).toContain('data-mint-feedback role="status" aria-live="polite"');
+    expect(wallet).not.toContain('Connect the wallet that will receive the token.');
+  });
+
+  it("keeps payment consent and irreversible-mint disclosures visible before the artistic entry CTA", () => {
+    const html = mintPage("Alice", { pulseMint: true, wallet: "0x123", walletVerified: true,
+      pulseSaleNotice: "Free mint ended · 2/2 slots used." });
+    const form = html.match(/<form\b[^>]*data-assessment-request[^>]*>([\s\S]*?)<\/form>/)?.[1];
+    expect(form).toBeDefined();
+    expect(html).toContain('data-assessment-request data-pulse-mint="true"');
+    const modes = form?.match(/<fieldset class="mint-entry-modes">([\s\S]*?)<\/fieldset>/)?.[1];
+    expect(modes).toContain('<legend class="visually-hidden">Choose how to mint</legend>');
+    expect(modes?.match(/<input\b[^>]*name="pulse-mode"[^>]*>/g)).toHaveLength(2);
+    expect(modes).toContain('type="radio" name="pulse-mode" value="free" disabled');
+    expect(modes).toContain('type="radio" name="pulse-mode" value="paid" disabled');
+    expect(modes).not.toMatch(/\bchecked(?:\s|=|>)/);
+    expect(form).toContain('name="pulse-max-eth" inputmode="decimal" placeholder="Your ceiling" disabled aria-describedby="mint-price-note"');
+    for (const disclosure of ["Maximum mint price (ETH)", "Paid mint sends your ceiling; unused ETH is refunded.",
+      "Free slots expire with the free phase.", "Grok chooses the final signature.", "Reveal after minting.",
+      "Minting creates a permanent public token. Network gas is additional."]) {
+      expect(form).toContain(disclosure);
+      expect(form!.indexOf(disclosure)).toBeLessThan(form!.indexOf('data-request-submit'));
+    }
+    expect(form).toContain('data-pulse-check><span>Check price</span>');
+    expect(form).toContain('data-pulse-sale-status role="status">Free mint ended · 2/2 slots used.');
+    expect(form).toContain('data-request-submit><span>Mint &amp; reveal</span>');
+    expect(form).not.toMatch(/<details\b|<summary\b|checkbox/);
+    expect(form).not.toContain('No mint fee.');
+  });
+
+  it("places the one conditional operational warning immediately beneath the mint CTA", () => {
+    const notice = "Mint availability cannot be checked right now. Please try again shortly.";
+    for (const value of [undefined, notice]) {
+      const html = mintPage("Alice", { mintObservationNotice: value });
+      const warning = html.match(/<p class="open-preview-notice open-preview-warning"[^>]*data-mint-observation-warning[^>]*>([\s\S]*?)<\/p>/)?.[0];
+      expect(warning).toBeDefined();
+      expect(html.match(/data-mint-observation-warning/g)).toHaveLength(1);
+      expect(warning).toContain(`data-mint-observation-warning role="status"${value ? "" : " hidden"}`);
+      expect(warning).toContain(`<span data-mint-observation-message>${value ?? ""}</span>`);
+      const form = html.match(/<form\b[^>]*data-assessment-request[^>]*>([\s\S]*?)<\/form>/)?.[1];
+      expect(form?.trim()).toMatch(/^<section class="mint-entry-part mint-entry-handle"/);
+      expect(form).toContain(warning);
+      expect(form!.indexOf('data-request-submit')).toBeLessThan(form!.indexOf('data-mint-observation-warning'));
+      expect(form!.indexOf('data-mint-observation-warning')).toBeLessThan(form!.indexOf('id="request-feedback"'));
+      expect(form).toContain('aria-describedby="mint-explanation mint-observation-warning request-feedback"');
+      expect(warning).toContain('id="mint-observation-warning" aria-live="polite"');
+      expect(form).toContain('class="mint-entry-submit" data-mint-action-notice');
+      expect(html).toContain('<div data-mint-result-notice></div>');
+      expect(html.match(/id="mint-observation-warning"/g)).toHaveLength(1);
+    }
+  });
+
+  it("provides explicit Pulse recovery beside the mint CTA with optional inline-validated transaction input", () => {
+    const html = mintPage("Alice", { pulseMint: true });
+    const form = html.match(/<form\b[^>]*data-assessment-request[^>]*>([\s\S]*?)<\/form>/)?.[1]!;
+    expect(form).toContain('data-mint-recovery hidden aria-label="Resolve previous mint"');
+    expect(form).toContain('data-mint-recovery-check><span>Check previous mint</span>');
+    expect(form).toContain('data-mint-recovery-transaction><span>Check transaction</span>');
+    expect(form.indexOf('data-request-submit')).toBeLessThan(form.indexOf('data-mint-recovery hidden'));
+    expect(form).toContain('<span data-mint-recovery-handle></span>');
+    const hash = form.match(/<input\b[^>]*name="mint-recovery-hash"[^>]*>/)?.[0]!;
+    expect(hash).toContain('type="text"');
+    expect(hash).toContain('aria-describedby="mint-recovery-feedback"');
+    expect(hash).not.toMatch(/\bpattern=|\brequired\b/);
+    expect(form).toContain('data-mint-recovery-feedback role="status" aria-live="polite"');
+    expect(form).toContain('data-mint-retry-note hidden');
+    expect(mintPage("Alice")).not.toContain('data-mint-recovery');
   });
 
   it.each(MBTI_TYPES)("renders only the chosen %s preview and bridges with handle only", mbti => {
@@ -486,16 +772,10 @@ describe("open mint pages", () => {
 
     for (const html of [grid, previewPage("Alice_Bob_Key", "ENFP", options, context)]) {
       const notices = [...html.matchAll(/<p\b[^>]*data-preview-status[^>]*>[\s\S]*?<\/p>/g)].map(match => match[0]);
-      expect(notices).toHaveLength(state === "pending" || state === "unavailable" ? 1 : 0);
+      expect(notices).toHaveLength(state === "pending" ? 1 : 0);
       expect(html).not.toContain('data-preview-renderer-notice');
-      if (state === "unavailable") {
-        expect(notices[0]).toContain('class="open-preview-notice open-preview-warning"');
-        expect(notices[0]).toContain('<strong class="open-preview-notice-label">Warning</strong>');
-        expect(notices[0]).toContain('Mint status cannot be verified right now. You can still explore these previews.');
-      } else {
-        expect(html).not.toContain('class="open-preview-notice open-preview-warning"');
-        expect(html).not.toContain('<strong class="open-preview-notice-label">Warning</strong>');
-      }
+      expect(html).not.toContain('class="open-preview-notice open-preview-warning"');
+      expect(html).not.toContain('<strong class="open-preview-notice-label">Warning</strong>');
       if (state === "pending") {
         expect(notices[0]).toContain('class="open-preview-notice"');
         expect(notices[0]).toContain('<strong class="open-preview-notice-label">Pending</strong>');
@@ -514,10 +794,8 @@ describe("open mint pages", () => {
     expect(OPEN_MINT_CSS).toContain('.open-mint :is(.open-preview-warning,.provenance-caveats) .open-preview-notice-label{display:inline;font-weight:500;color:var(--preview-warning)}');
     expect(OPEN_MINT_CSS).toContain('.open-mint :is(.open-preview-warning,.provenance-caveats) .open-preview-notice-label::after{content:":"}');
     expect(OPEN_MINT_CSS).toContain('@media(prefers-color-scheme:dark){.open-mint :is(.open-preview-warning,.provenance-caveats){--preview-warning:#c6a65a}}');
-    for (const html of [previewPage('Alice_Bob_Key', 'INTJ', {}, { state: 'unavailable' }), previewVariationsPage('Alice_Bob_Key', {}, { state: 'unavailable' })]) {
-      expect(html).toContain('class="open-preview-notice open-preview-warning" data-preview-status role="status"');
-      expect(html).toContain('Mint status cannot be verified right now. You can still explore these previews.');
-    }
+    expect(mintPage('Alice', { mintObservationNotice: 'Mint availability cannot be checked right now.' }))
+      .toContain('class="open-preview-notice open-preview-warning" data-mint-observation-warning role="status"');
   });
 
   it.each(MBTI_TYPES)("keeps all 16 variations in order and marks only the archived %s mint", mbti => {
@@ -604,7 +882,8 @@ describe("open mint pages", () => {
       expect(html).toContain(`data-preview-mint-state="${state}"`);
       expect(html).toContain('>Preview</span>');
       expectHandleNavigation(html, "aLiCe_BoB_KeY", html === grid ? 17 : 1);
-      expect(html).toContain(state === "pending" ? "Mint submitted. Waiting for confirmation." : "Mint status cannot be verified right now.");
+      if (state === "pending") expect(html).toContain("Mint submitted. Waiting for confirmation.");
+      else expect(html).not.toMatch(/Mint status cannot be verified|open-preview-warning|data-mint-observation-warning/);
       expect(html).not.toMatch(/href="\/mint|Mint for this handle|View minted signature|data-preview-minted=|\/art\/|\/signatures\//);
       expect(html).not.toMatch(/No signatures minted|One minted signature|data-token-id|data-assessment-code/);
     }
@@ -682,6 +961,115 @@ describe("open mint pages", () => {
     expect(legacy).toContain('class="gallery-handle" href="/p/alice_bob_key/variations"');
   });
 
+  it.each(["home", "MBTI", "collection"])("immediately shows verified confirming artwork in %s with an honest nonfinal label", kind => {
+    const entries: GalleryEntry[] = [{ ...entry, mint: { state: "confirming" } }];
+    const html = kind === "home" ? homePage({}, entries) : kind === "MBTI" ? mbtiGalleryPage("INTJ", entries) : collectionPage(entries);
+    expect(html).toContain('class="gallery-item" data-mint-state="confirming"');
+    expect(html).toContain('src="/art/test.svg"');
+    expect(html).toContain('artwork-confirming">Confirming</span>');
+    expect(html).not.toContain('>Minted</a>');
+    expect(html).not.toMatch(/No signatures minted|no minted signatures/);
+  });
+
+  it.each(["home", "MBTI", "collection"])("retains finalized Minted in %s without a viewing network warning", kind => {
+    const entries: GalleryEntry[] = [{ ...entry, mintObservationUnavailable: true }];
+    const render = (items: GalleryEntry[]) => kind === "home" ? homePage({}, items) : kind === "MBTI" ? mbtiGalleryPage("INTJ", items) : collectionPage(items);
+    const html = render(entries);
+    expect(html).toContain('class="gallery-item" data-mint-state="minted"');
+    expect(html).toContain('src="/art/test.svg"');
+    expect(html).toContain('href="/">Minted</a>');
+    expect(html).not.toMatch(/>Status unavailable<|>Confirming</);
+    expect(html).not.toContain('data-mint-observation-warning');
+    expect(html).not.toContain('Live network checks are temporarily unavailable.');
+    expect(html).not.toContain('<strong class="open-preview-notice-label">Warning</strong>');
+    for (const patch of [{ mint: { state: "confirming" as const } }, { mintEvidenceInvalidated: true }]) {
+      const uncertain = render([{ ...entries[0], ...patch }]);
+      expect(uncertain).toContain('data-mint-state="unknown"');
+      expect(uncertain).toContain('>Status unavailable</span>');
+      expect(uncertain).not.toContain('>Minted</a>');
+    }
+    for (const state of ["unknown", "unminted", "pending"] as const) {
+      expect(render([{ ...entry, mintObservationUnavailable: true, mint: { state } }])).not.toContain('src="/art/test.svg"');
+    }
+  });
+
+  it("keeps a previously verified detail visible with a status recheck, but never reveals an unverified assessment", () => {
+    const final = assessmentPage({ ...minted, mintObservationUnavailable: true });
+    expect(final).toContain('class="signature-page" data-mint-state="minted"');
+    expect(final).toContain('>Minted</a>');
+    expect(final).not.toContain('data-reveal-monitor');
+    expect(final).not.toContain('data-mint-observation-warning');
+    const result = revealedSignature({ ...minted, mint: { state: "confirming" }, mintObservationUnavailable: true });
+    expect(result).toContain('data-mint-state="unknown" data-reveal-monitor');
+    expect(result).toContain('>Status unavailable</span>');
+    expect(result).not.toContain('Its current mint status cannot be checked right now.');
+    expect(result).toContain(`src="${minted.svgUrl}"`);
+    const conflict = revealedSignature({ ...minted, mintEvidenceInvalidated: true });
+    expect(conflict).toContain('data-mint-state="unknown" data-reveal-monitor');
+    expect(conflict).not.toContain('>Minted</a>');
+    for (const state of ["unknown", "unminted", "pending"] as const) {
+      expect(() => revealedSignature({ ...minted, mintObservationUnavailable: true, mint: { state } })).toThrow(/verified successful inclusion/);
+    }
+  });
+
+  it('escapes network warning copy and keeps its single shared mount hidden when healthy', () => {
+    const page = mintPage('Alice', { mintObservationNotice: '<script>not markup</script>' });
+    expect(page).toContain('&lt;script&gt;not markup&lt;/script&gt;');
+    expect(page.match(/data-mint-observation-warning/g)).toHaveLength(1);
+    expect(mintPage()).toContain('data-mint-observation-warning role="status" hidden');
+  });
+
+  it('keeps every viewing surface quiet even when a caller supplies operational warning copy', () => {
+    const notice = 'Gallery updates could not be checked. Previously verified signatures are shown.';
+    const options = { mintObservationNotice: notice };
+    const item = { ...entry, mintObservationUnavailable: true, mintEvidenceInvalidated: true };
+    for (const html of [homePage(options, [item]), mbtiGalleryPage('INTJ', [item], options),
+      collectionPage([item], options), assessmentPage({ ...minted, mintEvidenceInvalidated: true }, options),
+      previewPage('Alice', 'INTJ', options, { state: 'unavailable' }), previewVariationsPage('Alice', options, { state: 'unavailable' })]) {
+      expect(html).not.toContain(notice);
+      expect(html).not.toContain('data-mint-observation-warning');
+      expect(html).not.toContain('<strong class="open-preview-notice-label">Warning</strong>');
+    }
+    for (const html of [homePage(options), mbtiGalleryPage('INTJ', [], options)]) {
+      expect(html).toContain('Checking for minted signatures…');
+      expect(html).not.toContain('No signatures minted');
+    }
+    expect(collectionPage([], { ...options, wallet: '0xwallet' })).not.toContain('This wallet has no minted signatures yet.');
+  });
+
+  it('mounts exactly one warning for active assessment progress and unfinished mint results only', () => {
+    const notice = 'Mint availability cannot be checked right now. Please try again shortly.';
+    const progress = assessmentPage({ ...ready, mint: { state: 'pending' } }, { mintObservationNotice: notice });
+    expect(progress.match(/data-mint-observation-warning/g)).toHaveLength(1);
+    expect(progress).toContain(notice);
+    const model = { ...minted, mint: { state: 'confirming' as const }, mintObservationUnavailable: true };
+    const active = assessmentPage(model, { mintProcess: true });
+    expect(active).toContain('<section data-mint-process>');
+    expect(active.match(/data-mint-observation-warning/g)).toHaveLength(1);
+    expect(active).toContain('Your signature is revealed, but confirmation could not be checked. Please do not submit another mint.');
+    expect(assessmentPage(model)).not.toContain('data-mint-observation-warning');
+    expect(assessmentPage({ ...minted, mintObservationUnavailable: true }, { mintProcess: true }))
+      .toContain('data-mint-observation-warning role="status" hidden');
+  });
+
+  it("provides an initially empty inline mint result and shares the verified reveal with the detail page", () => {
+    const initial = mintPage("Alice_Bob_Key");
+    expect(initial).toContain('data-mint-result hidden tabindex="-1"');
+    expect(initial).toContain('<div data-mint-result-artwork></div>');
+    expect(initial).not.toContain(minted.svgUrl);
+    for (const state of ["confirming", "minted"] as const) {
+      const model = { ...minted, mint: { state } };
+      const result = revealedSignature(model);
+      expect(assessmentPage(model)).toContain(result.replace('<!--mint-observation-warning-->', ''));
+      expect(result).toContain(`data-mint-state="${state}"`);
+      expect(result).toContain(`src="${minted.svgUrl}"`);
+      expect(result).not.toMatch(/gallery once confirmed|not yet in the gallery/);
+    }
+    for (const state of ["unknown", "unminted", "pending"] as const) {
+      expect(() => revealedSignature({ ...minted, mint: { state } })).toThrow(/verified successful inclusion/);
+    }
+  });
+
   it("shows only existing minted signatures with the exact requested MBTI", () => {
     const entries: GalleryEntry[] = [
       entry,
@@ -713,7 +1101,7 @@ describe("open mint pages", () => {
   it.each(MBTI_TYPES)("groups gallery handles with %s tags while keeping both destinations distinct", mbti => {
     const taggedEntry = { ...entry, mbti };
     for (const html of [homePage({}, [taggedEntry]), collectionPage([taggedEntry]), mbtiGalleryPage(mbti, [taggedEntry])]) {
-      const card = html.match(/<article class="gallery-item">[\s\S]*?<\/article>/)![0];
+      const card = html.match(/<article class="gallery-item"[^>]*>[\s\S]*?<\/article>/)![0];
       const handle = '<a class="gallery-handle" href="/p/Alice_Bob_Key/variations">@Alice_Bob_Key</a>';
       expect(card).toContain(handle);
       const captions = artworkCaptions(card);
@@ -1054,5 +1442,36 @@ describe("open mint pages", () => {
     expectCleanProductCopy(about);
     const fixtureAbout = aboutPage({ development: { fixture: true, galleryFixtures: true } });
     expectNoDevelopmentChrome(fixtureAbout);
+  });
+});
+
+describe("completed mint-result outage notice policy", () => {
+  it.each([
+    "Mint availability cannot be checked right now. Please try again shortly.",
+    "Your signature is revealed, but confirmation could not be checked. Please do not submit another mint.",
+    "Live network checks are temporarily unavailable. Previously verified mints are shown.",
+  ])("does not flash an ordinary outage on a finalized result: %s", notice => {
+    const html = assessmentPage({ ...minted, mintObservationUnavailable: true }, { mintProcess: true, mintObservationManaged: true, mintObservationNotice: notice });
+    expect(html).toContain('data-mint-state="minted"');
+    expect(html).toContain('data-mint-state-label>Minted');
+    expect(html).toContain('data-mint-observation-warning role="status" hidden');
+    expect(html).not.toContain(notice); expect(html).toContain('src="/art/hidden.svg"');
+  });
+
+  it("keeps actual invalidation visible and preserves the previously revealed image", () => {
+    const html = assessmentPage({ ...minted, mintEvidenceInvalidated: true }, { mintProcess: true });
+    expect(html).toContain('data-mint-state="unknown"'); expect(html).toContain('data-mint-state-label>Status unavailable');
+    expect(html).toContain("Previously verified mints need to be checked before minting can continue.");
+    expect(html).toContain('data-mint-observation-warning role="status" id="mint-observation-warning" aria-live="polite"><strong');
+    expect(html).toContain('src="/art/hidden.svg"');
+    const supplied = "Mint availability cannot be checked right now. Please try again shortly.";
+    expect(assessmentPage({ ...minted, mintEvidenceInvalidated: true }, { mintProcess: true, mintObservationNotice: supplied })).toContain(supplied);
+  });
+
+  it("does not erase an unfamiliar explicit safety notice or suppress an unfinished confirmation", () => {
+    const notice = "This mint needs operator review.";
+    expect(assessmentPage(minted, { mintProcess: true, mintObservationNotice: notice })).toContain(notice);
+    const outage = "Mint availability cannot be checked right now. Please try again shortly.";
+    expect(assessmentPage({ ...minted, mint: { state: "confirming" } }, { mintProcess: true, mintObservationNotice: outage })).toContain(outage);
   });
 });

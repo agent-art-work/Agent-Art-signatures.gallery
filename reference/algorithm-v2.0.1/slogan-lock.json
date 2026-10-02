@@ -19,7 +19,7 @@
     "ownerVisualApproval": "Not asserted; ready for review"
   },
   "source": {
-    "displayText": "The_First_Agent_Artwork",
+    "displayText": "Anyone_Can_Sign_Anyone",
     "rendererVersion": "sg-renderer-2.0.1",
     "upstreamCommit": "d00c018d1a740a5807480126d1f1bd0c620fb96d",
     "pythonSha256": "bfa7ebdfb6e5ced7ddc0b92c3facb3709863ee6c6d10cf9a2f1596c018ecb896",
@@ -27,62 +27,62 @@
   },
   "layout": {
     "extended": true,
-    "character_count": 23,
+    "character_count": 22,
     "reference_character_limit": 15,
     "segment_width": 21.428571428571427,
-    "curve_span": 471.4285714285714,
-    "canonical_width": 591.4285714285713,
+    "curve_span": 449.99999999999994,
+    "canonical_width": 570,
     "canonical_height": 420,
-    "proportional_output_width": 1521,
+    "proportional_output_width": 1466,
     "proportional_output_height": 1080
   },
   "files": {
     "reference/algorithm-v2.0.1/signature_renderer_v2.0.1.py": "bfa7ebdfb6e5ced7ddc0b92c3facb3709863ee6c6d10cf9a2f1596c018ecb896",
     "reference/algorithm-v2.0.1/signature_renderer_v2.0.1.json": "c305da7492b26749e9d4e88c4b0cb4de4deb1f654f334a6aaa6abe367078faa6",
     "reference/algorithm-v2.0.1/SHA256SUMS": "1f04082c2cc02dfefb03864519021d67ec3be874d72ea65cf327eab8861c57e0",
-    "scripts/capture-slogan-v2.py": "924a5f948d079d48658035aab5a7ae86e4017cea985c8c73e867b6c24200e819",
-    "src/brand/sloganMbtiFrames.ts": "75f149f88780a3d5eb6fd180468422da047f01a719581448218756f90d2e7ff1"
+    "scripts/capture-slogan-v2.py": "1b477c0a6de549b64dd02f243737f9c56099d4f3de894f80f00f2dc9f42a30a7",
+    "src/brand/sloganMbtiFrames.ts": "8156de83552dfce167dbaea7822f66c843a7d7ee5f22c7546864657ae832705c"
   },
   "frames": [
     {
       "mbti": "ISTJ",
       "pairedMbti": "ESTJ",
-      "sha256": "7c1a268bb2667b2be8c3494c89a86370fc275eddfeb0aed44a7a2a842fbc1626"
+      "sha256": "aad982b5c28a7ceab375afc14e9da44764a521962d54bb096e1c4e630baf0cd4"
     },
     {
       "mbti": "ISFJ",
       "pairedMbti": "ESFJ",
-      "sha256": "0459d310b30ab34b65854f98e5cda7d6de8c0dc9177c0a866ebc218c7c269623"
+      "sha256": "2c26515e008d27abd5cf790cd3482a77401c3507d02fa8ecfbbd8f10e08bbecc"
     },
     {
       "mbti": "INFJ",
       "pairedMbti": "ENFJ",
-      "sha256": "92b5a310c694b4d1a5f064db765cc6ec21bb8ae9ab6611c624ca784fcf211c4a"
+      "sha256": "db14d1413439fc94e0ba5e080f6aa07655d1331ca161811286728b580ef0b205"
     },
     {
       "mbti": "INTJ",
       "pairedMbti": "ENTJ",
-      "sha256": "ffe31feb3c325919cd78aadded10184c32f2a65fc822b2eee6bfe5d378b3038c"
+      "sha256": "02af528901114e67c9426f8f7ef43a1a98166ca4e3e8d91003f53c46c000ef40"
     },
     {
       "mbti": "ISTP",
       "pairedMbti": "ESTP",
-      "sha256": "33a1049a5f149b4d62e5afe6227648e84d1d60adff16106fbd757464c2eb0a7c"
+      "sha256": "bea3bb697e7abcb7c461c31f3cf95302e7c3d62ddc4e5fef3d9e42a85af20fe0"
     },
     {
       "mbti": "ISFP",
       "pairedMbti": "ESFP",
-      "sha256": "b0029cec5dba26b986c0795bc8aa66f171ad1d7cf6a97a83ca4cfc1e7b38cbe9"
+      "sha256": "8f022553bb05c709cdbed6c720c7f86585e309bd313bbd553b8aa4712bf730c9"
     },
     {
       "mbti": "INFP",
       "pairedMbti": "ENFP",
-      "sha256": "7032525eafe9c48392d31a43dee40e0d63f83c68b33cb609a004b497e7c775b4"
+      "sha256": "0fa85c2f9e92282a951a87eedf313926f2fdbf6ce789b08abeef94a9fd7bcaa1"
     },
     {
       "mbti": "INTP",
       "pairedMbti": "ENTP",
-      "sha256": "0f9195aeebfcf0c63db364efe14b87dbf14d61cfb8b2c14db06044f589f8d0f2"
+      "sha256": "385a0573ef05f36977156a53b9ab2f0b855c0d03d247664264e81b04a0d4734b"
     }
   ]
 }

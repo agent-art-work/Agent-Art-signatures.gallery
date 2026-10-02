@@ -26,7 +26,7 @@ PYTHON_PATH = ROOT / "reference/algorithm-v2.0.1/signature_renderer_v2.0.1.py"
 SNAPSHOT_PATH = ROOT / "src/brand/sloganMbtiFrames.ts"
 PYTHON_SHA256 = "bfa7ebdfb6e5ced7ddc0b92c3facb3709863ee6c6d10cf9a2f1596c018ecb896"
 UPSTREAM_COMMIT = "d00c018d1a740a5807480126d1f1bd0c620fb96d"
-DISPLAY_TEXT = "The_First_Agent_Artwork"
+DISPLAY_TEXT = "Anyone_Can_Sign_Anyone"
 MBTI_ORDER = ("ISTJ", "ISFJ", "INFJ", "INTJ", "ISTP", "ISFP", "INFP", "INTP")
 
 

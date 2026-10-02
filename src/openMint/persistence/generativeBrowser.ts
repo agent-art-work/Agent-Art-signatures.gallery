@@ -30,7 +30,7 @@ export class GenerativeMintBrowser {
   async begin(code: string, consent: unknown, intent: RuntimeIntent, signal: AbortSignal) {
     const authorized = await this.authorize(code, consent, intent, signal);
     signal.throwIfAborted();
-    const dispatch = await this.runtime.beginSubmission(this.submissions, code, intent, { expiresAt: authorized.expiresAt, transaction: authorized.transaction }, signal);
+    const dispatch = await this.runtime.beginSubmission(this.submissions, code, intent, { ...(authorized.version ? { version: authorized.version } : {}), expiresAt: authorized.expiresAt, transaction: authorized.transaction }, signal);
     return { ...dispatch, transaction: authorized.transaction };
   }
   async mintStatus(code: string, session: DurableSiteSession) {
@@ -63,7 +63,8 @@ export class GenerativeMintBrowser {
     res.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
     if (raw === "/assets/generative-wallet.js") { res.setHeader("Content-Type", "text/javascript; charset=utf-8"); res.end(OPEN_MINT_CLIENT_SCRIPT); return true; }
     const options: OpenMintPageOptions = { stylesheetUrl: "/assets/generative-gallery.css", clientScriptUrl: "/assets/generative-wallet.js",
-      chainId: "31337", chainName: "Local Anvil", contract: this.runtime.requests.profile.contract_address, durableWalletSubmission: true };
+      chainId: "31337", chainName: "Local Anvil", contract: this.runtime.requests.profile.contract_address, durableWalletSubmission: true,
+      pulseMint:!!this.runtime.requests.pulse };
     let body: string;
     if (match) {
       if (url.search) throw new PublicError(400, "INVALID_REQUEST", "Mint progress accepts no parameters.");
@@ -71,7 +72,7 @@ export class GenerativeMintBrowser {
       if (model.mint?.state === "minted" || model.mint?.state === "confirming") {
         res.statusCode = 303; res.setHeader("Location", `/signatures/${model.handle}`); res.end(); return true;
       }
-      body = assessmentPage(model, { ...options, wallet: session.wallet, walletVerified: model.walletProvedForCode });
+      body = assessmentPage(model, { ...options, mintProcess: true, wallet: session.wallet, walletVerified: model.walletProvedForCode });
     } else {
       if ([...url.searchParams.keys()].some(k => k !== "handle") || url.searchParams.getAll("handle").length > 1) throw new PublicError(400, "INVALID_REQUEST", "Choose one handle.");
       const handle = url.searchParams.get("handle") ?? "";

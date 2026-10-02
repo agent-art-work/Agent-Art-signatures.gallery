@@ -12,6 +12,7 @@ interface MintRow { token_id: string; handle: string; mbti: string; original_rec
 export type ArtifactAvailability = "available" | "unavailable" | "quarantined";
 export interface ProjectedMint {
   readonly tokenId: string; readonly availability: ArtifactAvailability;
+  readonly mintState?: "confirming" | "minted";
   readonly handle?: string; readonly mbti?: string; readonly originalRecipient?: string; readonly currentOwner?: string;
   readonly assessmentDigest?: string; readonly artifactDigest?: string; readonly tokenURIHash?: string;
   readonly transactionHash?: string;
@@ -242,19 +243,26 @@ export class OpenMintProjection {
         artifactDigest: event.artifactDigest, tokenURIHash: event.tokenURIHash, transactionHash: event.transactionHash };
     } catch { return { tokenId: row.token_id, availability: "quarantined" }; }
   }
-  gallery(input: { filter: GalleryFilter; limit: number; cursor?: string }, witness?: ProjectionObservation): Promise<GalleryPage> {
+  gallery(input: { filter: GalleryFilter; limit: number; cursor?: string; includeConfirming?: boolean }, witness?: ProjectionObservation): Promise<GalleryPage> {
     const filter = validateFilter(input.filter), limit = input.limit; validateLimit(limit);
-    const cursor = input.cursor === undefined ? undefined : decodeCursor(input.cursor, this.#deployment.id, filter, limit);
+    if (input.includeConfirming !== undefined && typeof input.includeConfirming !== "boolean") throw new Error("Invalid gallery confidence policy.");
+    const included = input.includeConfirming === true;
+    const cursor = input.cursor === undefined ? undefined : decodeCursor(input.cursor, this.#deployment.id, filter, limit, included);
     return this.writer.transaction(async tx => {
       if (witness) await this.#fresh(tx, witness);
       const state = await this.#state(tx), id = this.#deployment.id;
       if (state.health === "safety-halted") return { state: "safety-halted", items: [] };
-      if (state.health !== "available" || state.promoted_number === null) return { state: "unknown", items: [] };
-      const snapshot = cursor?.snapshot ?? { number: state.promoted_number, hash: state.promoted_hash! };
-      const saved = (await tx.query<{ hash: string }>(`SELECT p.hash FROM open_mint.projection_promotions p JOIN open_mint.projection_blocks b
-        ON b.deployment_id=p.deployment_id AND b.hash=p.hash WHERE p.deployment_id=$1 AND p.number=$2 AND b.canonical`, [id, snapshot.number])).rows[0];
-      if (saved?.hash !== snapshot.hash || BigInt(snapshot.number) > BigInt(state.promoted_number)
-        || BigInt(state.promoted_number) - BigInt(snapshot.number) > BigInt(this.#deployment.policy.snapshotRetentionBlocks)) throw new ProjectionCursorError("Expired or noncanonical gallery snapshot; restart pagination.");
+      // Inclusion views require a fresh authenticated RPC witness. Stored
+      // checkpoints alone never grant early reveal authority after a restart.
+      const horizon = included ? state.head_number : state.promoted_number;
+      if (state.health !== "available" || horizon === null || (included && !witness)) return { state: "unknown", items: [] };
+      const snapshot = cursor?.snapshot ?? { number: horizon, hash: (included ? state.head_hash : state.promoted_hash)! };
+      const saved = (await tx.query<{ hash: string }>(included
+        ? "SELECT hash FROM open_mint.projection_blocks WHERE deployment_id=$1 AND number=$2 AND canonical"
+        : `SELECT p.hash FROM open_mint.projection_promotions p JOIN open_mint.projection_blocks b
+          ON b.deployment_id=p.deployment_id AND b.hash=p.hash WHERE p.deployment_id=$1 AND p.number=$2 AND b.canonical`, [id, snapshot.number])).rows[0];
+      if (saved?.hash !== snapshot.hash || BigInt(snapshot.number) > BigInt(horizon)
+        || BigInt(horizon) - BigInt(snapshot.number) > BigInt(this.#deployment.policy.snapshotRetentionBlocks)) throw new ProjectionCursorError("Expired or noncanonical gallery snapshot; restart pagination.");
       const params: unknown[] = [id, snapshot.number], conditions = ["m.deployment_id=$1", "m.block_number<=$2", "o.start_block<=$2", "(o.end_block IS NULL OR o.end_block>$2)"];
       if (filter.kind !== "home") { params.push(filter.value); conditions.push(`${filter.kind === "mbti" ? "m.mbti" : "o.owner"}=$${params.length}`); }
       if (cursor) {
@@ -269,8 +277,10 @@ export class OpenMintProjection {
       const selected = rows.slice(0, limit), last = selected[selected.length - 1];
       const position: Position | undefined = last && { block: last.block_number, transaction: last.transaction_index, log: last.log_index, token: last.token_id };
       if (witness) await this.#fresh(tx, witness);
-      return { state: "confirmed", snapshot, items: selected.map(row => this.#item(row)), ...(rows.length > limit && position ? {
-        nextCursor: encodeCursor({ version: 1, deployment: id, filter, limit, snapshot, last: position }),
+      return { state: "confirmed", snapshot, items: selected.map(row => ({ ...this.#item(row), ...(included ? {
+        mintState: state.promoted_number !== null && BigInt(row.block_number) <= BigInt(state.promoted_number) ? "minted" as const : "confirming" as const,
+      } : {}) })), ...(rows.length > limit && position ? {
+        nextCursor: encodeCursor({ version: 1, deployment: id, filter, limit, snapshot, last: position, ...(included ? { includeConfirming: true as const } : {}) }),
       } : {}) };
     });
   }

@@ -65,13 +65,13 @@ export function createProjectionReadHandler(reads: ProjectionReads, artwork?: Pi
       const limit = Number(text), filter: GalleryFilter = query.has("mbti") ? { kind: "mbti", value: query.get("mbti")! }
         : query.has("owner") ? { kind: "owner", value: query.get("owner")! } : { kind: "home" };
       try { validateFilter(filter); validateLimit(limit); } catch { throw new PublicError(400, "INVALID_REQUEST", "Invalid gallery filter or limit."); }
-      const result = await gallery({ filter, limit, ...(after !== null ? { cursor: after } : {}) });
+      const result = await gallery({ filter, limit, includeConfirming: true, ...(after !== null ? { cursor: after } : {}) });
       // Explicit public projection. Never spread database or private evidence rows.
       const confirmed = result.state === "confirmed";
       json(res, confirmed ? 200 : 503, { state: result.state,
         ...(confirmed && result.snapshot ? { snapshot: { number: result.snapshot.number, hash: result.snapshot.hash } } : {}),
         items: (confirmed ? result.items : []).map(item => ({ tokenId: item.tokenId, availability: item.availability,
-          ...(item.availability === "quarantined" ? {} : { handle: item.handle, mbti: item.mbti,
+          ...(item.availability === "quarantined" ? {} : { handle: item.handle, mbti: item.mbti, mintState: item.mintState ?? "minted",
             originalRecipient: item.originalRecipient, currentOwner: item.currentOwner,
             assessmentDigest: item.assessmentDigest, artifactDigest: item.artifactDigest, tokenURIHash: item.tokenURIHash, transactionHash: item.transactionHash,
             ...(item.inputDigest ? { inputDigest: item.inputDigest, rendererIdentity: item.rendererIdentity, renderHandle: item.renderHandle } : {}) }) })),

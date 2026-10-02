@@ -4,7 +4,9 @@ import { decodeFunctionResult, encodeFunctionData, getAddress, keccak256, number
 import { PUBLIC_CHAIN_READ_ABI, PublicChainGate, createStagingEligibilityReader, type PublicChainGateConfig } from "../publicChain.js";
 import type { PublicChainRpc, PublicChainReadMethod } from "../publicChainRpc.js";
 import { decodeOpenSignaturesBlock, normalizeProjectionLog, OPEN_PROJECTION_TOPICS } from "./decode.js";
-import { decodeGenerativeSignaturesBlock, GENERATIVE_PROJECTION_TOPICS } from "./generativeDecode.js";
+import { decodeGenerativeSignaturesBlock, GENERATIVE_PROJECTION_TOPICS, PULSE_PROJECTION_TOPICS } from "./generativeDecode.js";
+import { PULSE_TOPIC_COUNTS } from "./pulseDecode.js";
+import { verifyPulseImmutables } from "../pulseEconomics.js";
 import { createGenerativeArtworkReader, createStagingGenerativeArtworkReader } from "../generativeReads.js";
 import { GENERATIVE_MINT_ABI } from "../generativeAuthorization.js";
 import { profileForRenderer } from "../generativeInputs.js";
@@ -105,7 +107,8 @@ function projectionObserver(options: ProjectionObserverOptions, now: () => numbe
   if (generative !== !!deployment.generativeRenderer || (generative && (options.resolveMint !== undefined
     || stable(deployment.generativeRenderer) !== stable(config.generativeRenderer)))) fail();
   const readGenerative = generative ? (staging ? createStagingGenerativeArtworkReader : createGenerativeArtworkReader)(options) : undefined;
-  const topics = generative ? GENERATIVE_PROJECTION_TOPICS : OPEN_PROJECTION_TOPICS;
+  const topics = config.pulse ? PULSE_PROJECTION_TOPICS : generative ? GENERATIVE_PROJECTION_TOPICS : OPEN_PROJECTION_TOPICS;
+  const topicCounts = config.pulse ? PULSE_TOPIC_COUNTS : {};
   // Reuse all explicit chain-configuration validation; do not use its unminted
   // eligibility preflight to verify already-minted works.
   if (staging) createStagingEligibilityReader(config, options.rpcs, now);
@@ -172,6 +175,9 @@ function projectionObserver(options: ProjectionObserverOptions, now: () => numbe
             if (typeof raw !== "string" || raw.length > 4098 || !/^0x(?:[0-9a-f]{2})+$/.test(raw)
               || decodeFunctionResult({ abi: GENERATIVE_MINT_ABI, functionName: name, data: raw as Hex }) !== expected) fail();
           }
+          if(config.pulse) await verifyPulseImmutables(config.pulse,config.chainId,
+            async data => await request(r,"eth_call",[{to:config.contract,data},selector]) as Hex,
+            async () => await request(r,"eth_getCode",[config.pulse!.core,selector]) as Hex);
         }
       }));
     };
@@ -212,7 +218,7 @@ function projectionObserver(options: ProjectionObserverOptions, now: () => numbe
           const all = await Promise.all(rpcs.map(async r => {
             const raw = await request(r, "eth_getLogs", [{ address: config.contract, blockHash: block.hash, topics: [topics] }]);
             if (!Array.isArray(raw) || raw.length > MAX_BLOCK_EVENTS) return fail();
-            return raw.map(log => normalizeProjectionLog(log, deployment, block, topics));
+            return raw.map(log => normalizeProjectionLog(log, deployment, block, topics, topicCounts));
           }));
           if (stable(all[0]) !== stable(all[1]) || (totalEvents += all[0].length) > MAX_BATCH_EVENTS) fail();
           const logs = all[0];
@@ -227,13 +233,13 @@ function projectionObserver(options: ProjectionObserverOptions, now: () => numbe
               const relevant = (receipt.logs as unknown[]).filter(raw => {
                 const l = record(raw);
                 return l.address === deployment.contractAddress && Array.isArray(l.topics) && topics.includes(l.topics[0]);
-              }).map(l => normalizeProjectionLog(l, deployment, block, topics));
+              }).map(l => normalizeProjectionLog(l, deployment, block, topics, topicCounts));
               if (stable(relevant) !== stable(expected)) fail();
             }));
           }
           const common = { deployment, block: { number: block.number, hash: block.hash, parentHash: block.parentHash, timestamp: block.timestamp }, logs,
             timeoutMs: config.observationTimeoutMs, signal: controller.signal };
-          const decoded = readGenerative ? await decodeGenerativeSignaturesBlock({ ...common, read: readGenerative })
+          const decoded = readGenerative ? await decodeGenerativeSignaturesBlock({ ...common, read: readGenerative, ...(config.pulse ? {pulse:config.pulse} : {}) })
             : await decodeOpenSignaturesBlock({ ...common, authorizer: config.authorizer,
               contractProfile: contractProfile as "external-v1" | "onchain-v1" | undefined, resolveMint: resolveMint! });
           check(); blocks.push(decoded.block); previous = block;

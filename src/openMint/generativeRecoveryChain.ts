@@ -90,10 +90,12 @@ export class GenerativeRecoveryChain {
           || BigInt(anchors.finalized.timestamp) <= BigInt(r.authorization.deadline)) fail();
         const observed = await Promise.all([anchors.finalized, anchors.latest].map(async block => {
           const witness = await this.#gate.preflight({ block: { number: BigInt(block.number), hash: block.hash }, handle: r.handle,
-            recipient: r.authorization.recipient, nonce: r.authorization.nonce, signal: controller.signal });
+            recipient: r.authorization.recipient, nonce: r.authorization.nonce, signal: controller.signal,
+            ...(c.pulse && r.authorization.mintMode === 0 ? {pulseSlots:[r.authorization.slotId!]} : {}) });
           const evidence = readPublicChainEligibility(witness, { namespaceId: r.namespaceId, deploymentId: r.deploymentId,
             handle: r.handle, recipient: r.authorization.recipient, nonce: r.authorization.nonce, now: Date.now() });
           if (evidence.block.timestamp.toString() !== block.timestamp) fail();
+          if(c.pulse && r.authorization.mintMode === 0 && !evidence.pulse?.slots.some(s => s.slotId === r.authorization.slotId && !s.claimed)) fail();
           return evidence;
         }));
         if (!same(await heads(), anchors)) fail();

@@ -112,7 +112,7 @@ describe("minimal My Collection", () => {
     expect(html).toMatch(/<h1\b[^>]*>My Collection<\/h1>/);
     expect(visibleBody(html)).toContain("@alice");
     expect(html).toContain('<meta name="robots" content="noindex">');
-    expect(SITE_CSS).toContain("body,body :not(svg,svg *){font-size:var(--ui-font-size);font-weight:400}");
+    expect(SITE_CSS).toContain("body,body :not(svg,svg *){font-size:var(--ui-font-size);font-weight:var(--ui-font-weight)}");
     expect(body(html)).not.toMatch(/class="(?:wallet-card|eyebrow|button)(?:\s|\")/);
   });
 

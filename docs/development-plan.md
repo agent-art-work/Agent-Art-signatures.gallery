@@ -1,5 +1,24 @@
 # Development execution plan
 
+**September 27 disposable Sepolia checkpoint:** the user approved test-only
+settings and the existing deployment wallet. Renderer and Pulse collection are
+deployed and byte-verified; two free slots and the first paid mint succeeded.
+See [addresses and test-site evidence](pulse-sepolia-test.md).
+The loopback Sepolia test site now runs at **http://127.0.0.1:3004** after
+finalized deployment verification. Four real-browser page checks, actual SIWE,
+HTTP preparation and two-source read-only mint simulation pass. Installed-wallet
+confirmation is the next user check. No real Grok call, new chain transaction or
+active Anvil migration occurred in this readiness pass. This authorization does not approve
+production settings or complete paused R5–R10. Older no-public-deployment
+statements below describe their historical checkpoints.
+
+Public transparency approved and completed September 27: the collection and
+renderer have exact-match creation/runtime verification on Sourcify. Their
+public sources and raw compiler metadata match the local frozen build. See the
+[public verification record](pulse-sepolia-test.md#public-source-verification).
+No additional chain transaction or gas was needed. This disposable local website
+acceptance is separate from hosted staging and real-provider acceptance.
+
 Evaluated: 2026-09-19. Source: the consolidated Inbox, current active code, focused tests and three independent read-only subsystem reviews.
 
 This is the task table extracted from `INBOX.md`, not another handoff. The Inbox returns to collecting new, untriaged items. Update task status and evidence here as work lands; moving an item here does not complete it. The previous token-saving/lightweight-night limit is superseded. Implementation is now authorized below; paid calls, provisioning, public transactions and deployment still require their specific approvals.
@@ -16,17 +35,44 @@ Staging origin selected September 20: **`https://staging.signatures.gallery`**, 
 
 Reveal policy selected September 20: **early reveal with “Confirming”** after backend-verified canonical inclusion. Terminal gallery/ownership promotion stays separate; no reveal on submission alone. The [reveal policy](mint-reveal-policy.md) records implemented local behavior and the remaining Sepolia integration boundary. This resolves reveal timing, not public deployment or RPC operating configuration.
 
-## Current execution order — September 25 pre-Pulse checkpoint
+## Current execution order — September 26 Pulse C8 checkpoint
+
+September 25 alignment update: the user accepted a deployment-fixed Merkle
+allowlist of one-mint wallet slots (`N` equals total slots), free closure at
+exhaustion or deadline, and ETH Pulse paid minting without an overall supply
+cap, limited to one paid mint per block. The [contract refactor plan](pulse-contract-plan.md)
+now defines **C1–C8 manual model checkpoints**, concrete outputs and verification.
+C1's [contract specification](pulse-contract-spec.md), C2's
+[pinned Pulse dependency and wallet-slot tools](pulse-contract-c2.md), and C3's
+[contract implementation and focused tests](pulse-contract-c3.md), C4's
+[adversarial tests and measured gas](pulse-contract-c4.md), and C5's
+[contract review and frozen integration boundary](pulse-contract-c5.md) are complete.
+C6's [versioned backend/DB/wallet/observer integration](pulse-contract-c6.md)
+is complete with targeted local tests. C7's [complete isolated mint/reveal rehearsal](pulse-contract-c7.md)
+is complete: four browser paths and the deadline/price/race/recovery matrix pass.
+**C8's [final cross-layer review](pulse-contract-c8.md) is complete locally.**
+It fixed wallet-plan identity bindings and stale paid quotes, corrected the race
+test's handle hash, and added real free/paid reorg checks. Four browser paths,
+eight economic/recovery scenarios, 496 focused application tests and 120
+database/HTTP/projection tests pass (7 existing skips). Contract bytes are unchanged.
+C7 reran 230 Foundry tests and all 67 released-core EVM vectors;
+its actual transaction gas supersedes C4's execution-only samples. The contract
+has not been activated in the application or publicly deployed.
+Preview-link MBTI collection is deferred.
+**Next: discuss website/UI/flow changes.** C1–C8 are locally complete; R5–R10
+remain paused. The C8 handoff separates reused R1–R4 mechanisms from still-needed
+Pulse operating, distribution and restore certifications.
 
 The user chose to preserve the current code and evidence, pause R5–R10, and
 return to product development before selecting the next release candidate.
 The proposed contract change integrates the tagged Pulse Core v1.0.0 after a
 limited free-mint allowlist, together with website and mint-flow refinements.
-This paragraph records the change in direction, not a finalized allowlist,
-quota, transition rule, Pulse configuration, payment policy or deployment.
-The present RC1 contract and browser transaction path accept zero mint value;
-the new economics need an explicit candidate and coordinated contract,
-backend and UI design. Preserve the existing historical candidate and its
+The checkpoint initially recorded the change in direction only. The accepted
+rules are now in the contract plan above; actual allowlist entries, economics,
+deadline, custody and deployment inputs are still to be selected.
+The historical RC1 contract and browser transaction path accept zero mint value;
+the new economics now have a separate Pulse candidate and locally verified
+backend/minimal UI adapters. Broader UI/flow design comes next. Preserve the historical candidate and its
 evidence. Resume release acceptance against the revised candidate after the
 product behavior is settled. The fresh-writer-epoch review-pin issue described
 below remains unresolved and must be revisited when R5 resumes.

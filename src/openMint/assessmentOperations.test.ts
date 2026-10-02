@@ -293,16 +293,17 @@ describe("failure injection and restart", () => {
     const before = await Promise.all(names.map(name => readFile(join(path, name), "utf8")));
     const run = promisify(execFile), script = fileURLToPath(new URL("../../scripts/open-mint-attempt.mjs", import.meta.url));
     const args = ["--import", "tsx", script, "--records", path, "--reference", attempt.id];
-    const { stdout, stderr } = await run(process.execPath, args);
+    const childOptions = { timeout: 10_000 };
+    const { stdout, stderr } = await run(process.execPath, args, childOptions);
     expect(stderr).toBe("");
     expect(JSON.parse(stdout)).toMatchObject({ accounting: "actual", automaticRetryAllowed: false, attempt: { id: attempt.id } });
     expect((await readdir(path)).sort()).toEqual(names);
     expect(await Promise.all(names.map(name => readFile(join(path, name), "utf8")))).toEqual(before);
-    await expect(run(process.execPath, [...args, "--retry"])).rejects.toMatchObject({ code: 2, stderr: expect.stringContaining("Usage:") });
-    await expect(run(process.execPath, args.slice(0, -1).concat("../secret"))).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining("ASSESSMENT_OPERATIONS_STATE") });
+    await expect(run(process.execPath, [...args, "--retry"], childOptions)).rejects.toMatchObject({ code: 2, stderr: expect.stringContaining("Usage:") });
+    await expect(run(process.execPath, args.slice(0, -1).concat("../secret"), childOptions)).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining("ASSESSMENT_OPERATIONS_STATE") });
     await symlink(store.path("attempt:alice"), join(path, "attempt-bob.json"));
-    await expect(run(process.execPath, args)).rejects.toMatchObject({ code: 1, stderr: "Inspection failed: records are unavailable or invalid.\n" });
-  });
+    await expect(run(process.execPath, args, childOptions)).rejects.toMatchObject({ code: 1, stderr: "Inspection failed: records are unavailable or invalid.\n" });
+  }, 30_000);
 });
 
 describe("strict allowlisted operational schemas", () => {

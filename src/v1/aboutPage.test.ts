@@ -45,7 +45,7 @@ describe("footer and About the work", () => {
     expect(html).toContain('aria-label="Gallery"');
     expect(html).toContain('class="account-panel"');
     expect(html).toContain('<h1 id="about-heading">About the work</h1>');
-    expect(SITE_CSS).toContain('body,body :not(svg,svg *){font-size:var(--ui-font-size);font-weight:400}');
+    expect(SITE_CSS).toContain('body,body :not(svg,svg *){font-size:var(--ui-font-size);font-weight:var(--ui-font-weight)}');
     expect(SITE_CSS).toMatch(/\.about-sheet\{[^}]*max-width:42rem/);
     expect(SITE_CSS).toMatch(/\.footer-about\{[^}]*margin-inline-start:auto/);
     expect(SITE_CSS).toContain('.footer-about:focus-visible');

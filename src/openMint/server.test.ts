@@ -24,6 +24,8 @@ import { QUESTION_MARK_STUDY_CSS, QUESTION_MARK_STUDY_CSS_PATH, QUESTION_MARK_ST
 import { QUESTION_MARK_REVEAL_CSS, QUESTION_MARK_REVEAL_CSS_PATH, QUESTION_MARK_REVEAL_PATH, REVEAL_QUESTION_MARK_OPTIONS } from "../brand/sloganQuestionMarkRevealStudy.js";
 import { SLOGAN_MBTI_FRAMES } from "../brand/sloganMbtiFrames.js";
 import { OPEN_MINT_GALLERY_FIXTURES } from "./galleryFixtures.js";
+import { MINT_CONTROL_STUDY_PATH, MINT_CONTROL_STUDY_CSS_PATH, MINT_CONTROL_STUDY_CSS, MINT_CONTROL_STUDY_SCRIPT_PATH, MINT_CONTROL_STUDY_SCRIPT } from "../brand/mintControlStudy.js";
+import { SITE_FONT_CSS, SITE_FONT_PRELOAD, siteFontAsset } from "../v1/fonts.js";
 
 const servers: Server[] = [];
 const wallet = privateKeyToAccount(`0x${"7".repeat(64)}`);
@@ -81,15 +83,15 @@ function expectPreviewNoticePolicy(html: string, state: "unminted" | "pending" |
     expect(intros[0]![0]).not.toMatch(/role=|open-preview-notice|open-preview-warning/);
   }
   const notices = [...main.matchAll(/<p\b[^>]*data-preview-status[^>]*>[\s\S]*?<\/p>/g)].map(match => match[0]);
-  expect(notices).toHaveLength(state === "pending" || state === "unavailable" ? 1 : 0);
+  expect(notices).toHaveLength(state === "pending" ? 1 : 0);
   for (const notice of notices) {
     expect(notice).toContain('role="status"');
     expect(notice).not.toMatch(/data-preview-intro|role="alert"/);
-    expect(notice).toContain(`<strong class="open-preview-notice-label">${state === "unavailable" ? "Warning" : "Pending"}</strong>`);
-    expect(notice).toContain(state === "unavailable" ? 'class="open-preview-notice open-preview-warning"' : 'class="open-preview-notice"');
+    expect(notice).toContain('<strong class="open-preview-notice-label">Pending</strong>');
+    expect(notice).toContain('class="open-preview-notice"');
     if (variations) expect(main.indexOf(intros[0]![0])).toBeLessThan(main.indexOf(notice));
   }
-  if (state !== "unavailable") expect(main).not.toContain('open-preview-warning');
+  expect(main).not.toContain('open-preview-warning');
   const mintedNotes = [...main.matchAll(/<p\b[^>]*data-preview-minted-note[^>]*>([\s\S]*?)<\/p>/g)];
   expect(mintedNotes).toHaveLength(variations && (state === "minted" || state === "fixture") ? 1 : 0);
   for (const [, note] of mintedNotes) expect(note).toBe("One minted signature. Fifteen alternative interpretations, for exploration only.");
@@ -253,7 +255,7 @@ async function recordedGrokFixture() {
 }
 
 describe("verified early reveal", () => {
-  it("reveals one confirming artifact consistently, while galleries and ownership remain terminal-only", async () => {
+  it("reveals one confirming artifact consistently in details, galleries and the verified owner's collection", async () => {
     const f = await fixture(), owner = f.client(), viewer = f.client(); await owner.init();
     const { code, url } = await owner.assess("Alice_Bob");
     const artifact = (await f.service.artifact("alice_bob"))!;
@@ -277,7 +279,10 @@ describe("verified early reveal", () => {
     expect(status.headers.get("cache-control")).toContain("no-store");
     for (const path of ["/", `/${artifact.assessment.mbti}/`, "/me"]) {
       const gallery = await owner.request(path);
-      expect(gallery.text).not.toContain('class="gallery-item"');
+      expect(gallery.text).toContain('class="gallery-item" data-mint-state="confirming"');
+      expectArtworkCaptionPolicy(gallery.text, 1, 0);
+      expect(gallery.text).toContain('>Confirming</span>');
+      expect(gallery.text).not.toContain('data-mint-observation-warning');
     }
     const variations = await viewer.request("/p/Alice_Bob/variations");
     expectArtworkCaptionPolicy(variations.text, 16, 0, 15);
@@ -358,6 +363,42 @@ describe("local-only crawl policy", () => {
 });
 
 describe("open mint HTTP boundary", () => {
+  it("serves control comparisons without sessions, chain reads or assessment calls", async () => {
+    const test = await fixture();
+    const session = vi.spyOn(test.sessions, "session");
+    const page = await test.client().request(MINT_CONTROL_STUDY_PATH);
+    expect(page.status).toBe(200);
+    expect(page.text.match(/data-control-style=/g)).toHaveLength(5);
+    expect(page.text).not.toMatch(/<form\b|data-assessment-request|data-wallet/);
+    for (const [path, content, type] of [
+      [MINT_CONTROL_STUDY_CSS_PATH, MINT_CONTROL_STUDY_CSS, "text/css; charset=utf-8"],
+      [MINT_CONTROL_STUDY_SCRIPT_PATH, MINT_CONTROL_STUDY_SCRIPT, "text/javascript; charset=utf-8"],
+    ]) {
+      const response = await test.client().request(path!);
+      expect(response.status).toBe(200);
+      expect(response.text).toBe(content);
+      expect(response.headers.get("content-type")).toBe(type);
+      expect(response.headers.get("set-cookie")).toBeNull();
+    }
+    expect(page.headers.get("set-cookie")).toBeNull();
+    expect(page.headers.get("content-security-policy")).not.toMatch(/unsafe-inline|unsafe-eval/);
+    expect(session).not.toHaveBeenCalled();
+    expect(test.assess).not.toHaveBeenCalled();
+    expect(test.network.state).not.toHaveBeenCalled();
+  });
+
+  it("keeps control comparisons unavailable outside fixture mode", async () => {
+    const test = await fixture({ fixture: false });
+    for (const path of [MINT_CONTROL_STUDY_PATH, MINT_CONTROL_STUDY_CSS_PATH, MINT_CONTROL_STUDY_SCRIPT_PATH]) {
+      const response = await test.client().request(path);
+      expect(response.status).toBe(404);
+      expect(response.text).not.toContain('class="mcs-grid"');
+      expect(response.text).not.toBe(MINT_CONTROL_STUDY_CSS);
+      expect(response.text).not.toBe(MINT_CONTROL_STUDY_SCRIPT);
+    }
+    expect(test.assess).not.toHaveBeenCalled();
+  });
+
   it("serves the Reveal question-mark comparisons and CSS without sessions or assessment under the existing CSP", async () => {
     const test = await fixture();
     const session = vi.spyOn(test.sessions, "session");
@@ -510,9 +551,9 @@ describe("open mint HTTP boundary", () => {
     const scripts = [...home.text.matchAll(/<script src="([^"]+)" defer><\/script>/g)].map(match => match[1]!);
     expect(scripts.filter(path => path === SLOGAN_TOOLTIP_SCRIPT_URL)).toHaveLength(1);
     expect(home.text).toContain('aria-labelledby="slogan-heading"');
-    expect(home.text).toContain('<h1 id="slogan-heading" class="visually-hidden">The_First_Agent_Artwork</h1>');
-    expect(home.text).toContain('title="The_First_Agent_Artwork"');
-    expect(home.text).toContain('role="tooltip" aria-hidden="true" hidden>The_First_Agent_Artwork</span>');
+    expect(home.text).toContain('<h1 id="slogan-heading" class="visually-hidden">Anyone_Can_Sign_Anyone</h1>');
+    expect(home.text).toContain('title="Anyone_Can_Sign_Anyone"');
+    expect(home.text).toContain('role="tooltip" aria-hidden="true" hidden>Anyone_Can_Sign_Anyone</span>');
     const csp = home.headers.get("content-security-policy")!;
     expect(csp).toContain("script-src 'self';");
     expect(csp).not.toMatch(/unsafe-inline|unsafe-eval/);
@@ -1036,6 +1077,8 @@ describe("open mint HTTP boundary", () => {
     const home = await owner.request("/");
     const icon = home.text.match(/<link rel="icon"[^>]*href="([^"]+)"/)![1]!;
     const font = home.text.match(/<link rel="preload"[^>]*href="([^"]+)"/)![1]!;
+    expect(home.text).toContain(SITE_FONT_PRELOAD);
+    expect(font).toMatch(/\/playpen-sans-latin-wght-normal\.woff2$/);
     for (const [path, type] of [[icon, "image/svg+xml"], [font, "font/woff2"]]) {
       const response = await visitor.request(path!);
       expect(response.status).toBe(200);
@@ -1044,7 +1087,19 @@ describe("open mint HTTP boundary", () => {
       expect(response.headers.get("cache-control")).toContain("immutable");
       expect(response.bytes.length).toBeGreaterThan(0);
     }
-    for (const path of [`/artifacts/${"0".repeat(64)}.png`, `/artifacts/${artifact.pngSha256}.svg`, `/assets/fonts/private.woff2`]) {
+    const fontPaths = [...SITE_FONT_CSS.matchAll(/url\(([^)]+)\)/g)].map(match => match[1]!);
+    expect(fontPaths).toHaveLength(16);
+    for (const path of fontPaths) {
+      const response = await visitor.request(path);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("font/woff2");
+      expect(response.bytes).toEqual(siteFontAsset(path)!.bytes);
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(response.headers.get("cache-control")).toContain("immutable");
+    }
+    const licensePath = fontPaths[0]!.replace(/[^/]+$/, "LICENSE.txt");
+    expect((await visitor.request(licensePath)).text).toContain("Copyright 2023 The Playpen Sans Project Authors");
+    for (const path of [`/artifacts/${"0".repeat(64)}.png`, `/artifacts/${artifact.pngSha256}.svg`, `/assets/fonts/private.woff2`, "/assets/fonts/playpen-sans-5.3.0/playpen-sans-latin-wght-italic.woff2", "/assets/fonts/instrument-sans-5.3.0/instrument-sans-latin-wght-normal.woff2"]) {
       const missing = await visitor.request(path);
       expect(missing.status).toBe(404);
       expect(missing.headers.get("cache-control")).toBe("no-store");
@@ -1469,7 +1524,7 @@ describe("open mint HTTP boundary", () => {
     expect(status.json).not.toHaveProperty("verifiedXUserId");
     expect(status.json).not.toHaveProperty("identityVerifiedAt");
     const page = await owner.request("/signatures/alice");
-    expect(page.text).toContain("<dt>Assessor</dt><dd>Development fixture</dd>");
+    expect(page.text).toContain("<dt>Assessor</dt><dd>Sample input</dd>");
     expect(page.text).toContain("<dt>Model</dt><dd>development-fixture-v1</dd>");
     expect(page.text).toContain("Sample MBTI input; Grok was not called.");
     expect(page.text).not.toContain("data-assessment-sources");
@@ -1480,7 +1535,7 @@ describe("open mint HTTP boundary", () => {
     const gallery = await fixture({ offline: true });
     const sample = await gallery.client().request(OPEN_MINT_GALLERY_FIXTURES[0]!.url);
     expect(sample.status).toBe(200);
-    expect(sample.text).toContain("<dt>Assessor</dt><dd>Development fixture</dd>");
+    expect(sample.text).toContain("<dt>Assessor</dt><dd>Sample input</dd>");
     expect(sample.text).toContain("Sample MBTI input; Grok was not called.");
     expect(sample.text).not.toContain("<dt>Model</dt>");
     expect(sample.text).not.toContain("data-assessment-sources");
@@ -1560,7 +1615,7 @@ describe("open mint HTTP boundary", () => {
     const script = home.text.match(/<script src="([^"]+)"/)![1]!;
     expect(style).toMatch(/^\/assets\/open-mint-[a-f0-9]+\.css$/);
     expect(script).toMatch(/^\/assets\/open-mint-[a-f0-9]+\.js$/);
-    expect((await client.request(style)).text).toContain("Instrument Sans");
+    expect((await client.request(style)).text).toContain("Playpen Sans");
     expect((await client.request(script)).text).toContain("eth_sendTransaction");
     for (const path of ["/", "/me", "/about", "/p/alice", "/signatures/alice"]) expect((await client.request(path)).text).not.toMatch(/(?:xai|sk)-[A-Za-z0-9]{16,}|authorizerPrivateKey|providerResponse|walletProof|client_secret/);
   });
@@ -1612,7 +1667,7 @@ describe("open mint HTTP boundary", () => {
     for (const path of ["/", `/${mbti}/`, "/me"]) {
       const gallery = await client.request(path);
       expect(gallery.status, path).toBe(200);
-      const card = gallery.text.match(/<article class="gallery-item">[\s\S]*?<\/article>/)![0];
+      const card = gallery.text.match(/<article class="gallery-item"[^>]*>[\s\S]*?<\/article>/)![0];
       const handleHref = card.match(/<a class="gallery-handle" href="([^"]+)">@Alice_Bob_Key<\/a>/)?.[1];
       expect(handleHref, path).toBe("/p/Alice_Bob_Key/variations");
       expect(card).toContain('<span class="artwork-personality-separator" aria-hidden="true">×</span>');
@@ -1880,7 +1935,7 @@ describe("open mint HTTP boundary", () => {
       expect(response.status).toBe(200);
       expect(response.headers.get('location')).toBeNull();
       expect(response.text).toContain('data-preview-mint-state="unavailable"');
-      expect(response.text).toContain('Mint status cannot be verified');
+      expect(response.text).not.toMatch(/Mint status cannot be verified|data-mint-observation-warning|open-preview-warning/);
       expectPreviewNoticePolicy(response.text, "unavailable", suffix === 'variations');
       expectArtworkCaptionPolicy(response.text, suffix === 'variations' ? 16 : 1, 0, suffix === 'variations' ? 16 : 1);
       expect(response.text).toContain('/preview/Unknown_Case/');

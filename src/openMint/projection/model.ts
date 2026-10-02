@@ -34,6 +34,7 @@ export interface ValidatedGenerativeMint extends EventPosition {
   readonly kind: "GenerativeSignatureMinted"; readonly handle: string; readonly renderHandle: string; readonly handleKey: string;
   readonly recipient: string; readonly assessmentDigest: string; readonly inputDigest: string; readonly rendererIdentity: string;
   readonly nonce: string; readonly authorizationDigest: string; readonly mbti: string; readonly evidenceReference: string;
+  readonly economics?: import("./pulseDecode.js").ProjectedPulseEconomics;
 }
 export type AnyValidatedMint = ValidatedMint | ValidatedGenerativeMint;
 export type ValidatedEvent = AnyValidatedMint | ValidatedTransfer;
@@ -43,6 +44,8 @@ export type GalleryFilter = { readonly kind: "home" } | { readonly kind: "mbti" 
 export interface Position { readonly block: string; readonly transaction: number; readonly log: number; readonly token: string }
 export interface ProjectionCursor {
   readonly version: 1; readonly deployment: string; readonly filter: GalleryFilter; readonly limit: number;
+  /** Bind pagination to its confidence horizon; never mix live and finalized pages. */
+  readonly includeConfirming?: true;
   readonly snapshot: { readonly number: string; readonly hash: string }; readonly last: Position;
 }
 export class ProjectionConflictError extends Error {}
@@ -96,7 +99,18 @@ export function validateEvent(value: ValidatedEvent, profile?: GenerativeInputPr
     address(value.recipient); reference(value.evidenceReference);
     for (const key of ["assessmentDigest", "artifactDigest", "tokenURIHash", "nonce", "authorizationDigest"] as const) hash(value[key]);
   } else if (value.kind === "GenerativeSignatureMinted") {
-    fields(value, [...common, "handle", "renderHandle", "handleKey", "recipient", "assessmentDigest", "inputDigest", "rendererIdentity", "nonce", "authorizationDigest", "mbti", "evidenceReference"]);
+    const pulse=profile === "sg-generative-pulse-inputs-v1-rc1";
+    fields(value, [...common, "handle", "renderHandle", "handleKey", "recipient", "assessmentDigest", "inputDigest", "rendererIdentity", "nonce", "authorizationDigest", "mbti", "evidenceReference", ...(pulse ? ["economics"] : [])]);
+    if(pulse) {
+      const e=value.economics;
+      if(!e) throw new Error("Missing Pulse economics.");
+      fields(e,["mintMode","slotId","price","maxPrice","epochIndex","saleConfigHash"]);
+      for(const n of [e.slotId,e.price,e.maxPrice]) quantity(n,256);
+      quantity(e.epochIndex,64); hash(e.saleConfigHash);
+      if((e.mintMode !== 0 && e.mintMode !== 1) || BigInt(e.price) > BigInt(e.maxPrice)
+        || (e.mintMode === 0 ? e.price !== "0" || e.maxPrice !== "0" || e.epochIndex !== "0" || BigInt(e.slotId) === 2n**256n-1n
+          : BigInt(e.slotId) !== 2n**256n-1n || e.epochIndex === "0")) throw new Error("Invalid Pulse economics.");
+    }
     if (preservedHandle(value.renderHandle) !== value.renderHandle || canonicalHandle(value.renderHandle) !== value.handle
       || value.handleKey !== openMintHandleKey(value.handle) || !isMbti(value.mbti)) throw new Error("Invalid generative mint identity.");
     address(value.recipient); reference(value.evidenceReference);
@@ -145,12 +159,12 @@ export function validateFilter(value: GalleryFilter): GalleryFilter {
 }
 export function validateLimit(value: number): void { if (!Number.isSafeInteger(value) || value < 1 || value > MAX_PAGE_SIZE) throw new Error("Invalid gallery limit."); }
 export function encodeCursor(value: ProjectionCursor): string { return Buffer.from(stable(value)).toString("base64url"); }
-export function decodeCursor(text: string, deployment: string, filter: GalleryFilter, limit: number): ProjectionCursor {
+export function decodeCursor(text: string, deployment: string, filter: GalleryFilter, limit: number, includeConfirming = false): ProjectionCursor {
   try {
     if (typeof text !== "string" || text.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(text)) throw new Error();
     const value = JSON.parse(Buffer.from(text, "base64url").toString("utf8"));
-    fields(value, ["version", "deployment", "filter", "limit", "snapshot", "last"]);
-    if (value.version !== 1 || value.deployment !== deployment || value.limit !== limit || stable(value.filter) !== stable(filter) || encodeCursor(value as unknown as ProjectionCursor) !== text) throw new Error();
+    fields(value, ["version", "deployment", "filter", "limit", "snapshot", "last", ...(includeConfirming ? ["includeConfirming"] : [])]);
+    if ((includeConfirming && value.includeConfirming !== true) || value.version !== 1 || value.deployment !== deployment || value.limit !== limit || stable(value.filter) !== stable(filter) || encodeCursor(value as unknown as ProjectionCursor) !== text) throw new Error();
     fields(value.snapshot, ["number", "hash"]); quantity(value.snapshot.number, 63); hash(value.snapshot.hash);
     fields(value.last, ["block", "transaction", "log", "token"]); quantity(value.last.block, 63); index(value.last.transaction); index(value.last.log); quantity(value.last.token, 256, true);
     if (BigInt(value.last.block) > BigInt(value.snapshot.number)) throw new Error();

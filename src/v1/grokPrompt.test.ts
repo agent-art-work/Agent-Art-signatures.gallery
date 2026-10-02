@@ -101,9 +101,10 @@ describe("private Grok handoff", () => {
     expect(homePage(false)).toContain("data-grok-handoff");
   });
 
-  it("makes participation guidance primary text with compact hairline CTAs", () => {
+  it("makes participation guidance primary text with shared pill CTAs", () => {
     expect(SITE_CSS).toContain(".grok-intro,.grok-steps{color:var(--ink)}");
-    expect(SITE_CSS).toMatch(/\.auth-action>span:first-child\{[^}]*background:transparent;color:var\(--ink\)/);
+    expect(SITE_CSS).toMatch(/body \.auth-action>span:first-child\{[^}]*padding:0;border:0;border-radius:0;background:transparent/);
+    expect(SITE_CSS).toContain("border-radius:999px;background:var(--ink);color:var(--paper)");
     expect(SITE_CSS).toContain(".grok-step-copy .grok-step-arrow{padding:0;margin-inline-start:4px;background:transparent}");
     expect(SITE_CSS).toMatch(/\.auth-disclosure>summary\{[^}]*color:var\(--muted\)/);
     expect(SITE_CSS).toContain("--ui-font-size:14px");

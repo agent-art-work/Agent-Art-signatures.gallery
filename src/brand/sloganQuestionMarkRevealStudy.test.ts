@@ -80,7 +80,7 @@ describe("read-only Reveal question-mark comparison", () => {
     expect(rows[1]![2]).toContain('<span class="qm-reveal-tag">Historical selection</span>');
     expect(html.match(/class="qm-reveal-tag">Historical selection</g)).toHaveLength(1);
     expect(html).toContain("Earlier punctuation study");
-    expect(html).toContain("The homepage title is The_First_Agent_Artwork, with no punctuation.");
+    expect(html).toContain("The homepage title is Anyone_Can_Sign_Anyone, with no punctuation.");
     expect(html).not.toMatch(/On home|now on home|Selected: Rebalanced ink hook/);
   });
 
@@ -88,7 +88,7 @@ describe("read-only Reveal question-mark comparison", () => {
     const html = questionMarkRevealStudyPage(stylesheet, frame.mbti);
     const contexts = [...html.matchAll(/<svg\b[^>]*data-context="([^"]+)"[^>]*>[\s\S]*?<\/svg>/g)];
     expect(contexts.map(context => context[1])).toEqual(optionIds);
-    expect(SLOGAN_MBTI_SOURCE.displayText).toBe("The_First_Agent_Artwork");
+    expect(SLOGAN_MBTI_SOURCE.displayText).toBe("Anyone_Can_Sign_Anyone");
     for (const [index, context] of contexts.entries()) {
       const mark = REVEAL_QUESTION_MARK_OPTIONS[index]!;
       expect(context[0]).toContain(`data-shape="${frame.mbti}"`);

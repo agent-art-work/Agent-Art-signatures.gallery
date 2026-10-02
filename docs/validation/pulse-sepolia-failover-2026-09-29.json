@@ -1,0 +1,88 @@
+{
+  "date": "2026-09-29",
+  "scope": "Disposable local Sepolia frontend/backend only; not production release acceptance",
+  "policy": "validated-primary-fallback/v1",
+  "origin": "http://127.0.0.1:3004",
+  "chainId": 11155111,
+  "collection": "0x88c435146A017338E48Abe3BEE2F11BcEab79cC2",
+  "rpcTrustModel": "One validated source per semantic operation; no quorum or provider-independence claim",
+  "validation": {
+    "chainGenesisCoreAndExactDeploymentChecksRetained": true,
+    "sourceValidationTtlMs": 60000,
+    "unavailableSourceCooldownMs": 30000,
+    "wholeOperationRestartAtFallback": true,
+    "partialHistoryNeverPublished": true,
+    "effectfulRpcMethodsRefused": true,
+    "mintAdmissionFreshnessMs": 90000,
+    "detectedFinalizedOrBoundRuntimeConflictsLatchUntilReviewedRestart": true,
+    "historyCompleteness": "Bytecode-bound, non-burnable collection: observed mint count equals freeMinted plus paid epochIndex at the same pinned block"
+  },
+  "tests": {
+    "sepoliaNode": { "passed": 108, "failed": 0 },
+    "sharedClientPagesProvenanceRevealAndPulse": { "files": 7, "passed": 551, "failed": 0 },
+    "frozenIntegration": { "passed": 2, "failed": 0 },
+    "totalAutomatedPassed": 661,
+    "typecheck": "passed",
+    "whitespace": "passed",
+    "frozenCandidateLockSha256": "029851c5130f685b54abaf7f9b45ae03e56d31a42cfd72bb7de2756e63fed4a8",
+    "postgresOrProductionAcceptanceRerun": false
+  },
+  "live": {
+    "frontendOnlyProcessReplaced": true,
+    "temporaryPort3005Closed": true,
+    "bootstrapUsedValidatedFallback": true,
+    "subsequentIncrementalObserverRecoveredToPrimary": true,
+    "observerHealthy": true,
+    "observedMintCount": 4,
+    "expectedMintCount": 4,
+    "evidenceConflict": false,
+    "lastVerifiedPrimarySnapshotAt": 1790669132745,
+    "lastVerifiedPrimaryRefreshMs": 29435,
+    "lastVerifiedPrimaryScanFrom": "0xb42656",
+    "lastVerifiedPrimaryScanTo": "0xb4269d",
+    "incompletePrimaryHistoryDiagnosis": {
+      "fromBlock": "0xb3e83f",
+      "toBlock": "0xb3ec26",
+      "primaryLogCount": 0,
+      "secondaryLogCount": 3,
+      "earlierServedGalleryCheckFailed": true,
+      "resolvedBy": "Contract-counter completeness check classified missing history as unavailable and retried the full scan on fallback"
+    }
+  },
+  "browser": {
+    "apiResponsesMocked": false,
+    "installedWalletAccessed": false,
+    "seededState": "Public handle reference only for existing inline-reveal restoration; no wallet proof or minted flag",
+    "passedAssertions": 46,
+    "failedAssertions": 0,
+    "failedHttpRequests": 0,
+    "apiWriteRequests": 0,
+    "screenshotsInspected": true,
+    "scenarios": [
+      { "page": "/mint", "viewport": "1024x1250", "theme": "light", "checks": 9, "output": "Existing on-chain inline reveal" },
+      { "page": "/mint", "viewport": "390x1250", "theme": "dark", "checks": 9, "output": "Existing on-chain inline reveal" },
+      { "page": "/", "viewport": "1024x1250", "theme": "dark", "checks": 10, "output": "All four actual Minted works and SVG images" },
+      { "page": "/INFP/", "viewport": "390x1250", "theme": "light", "checks": 10, "output": "Actual AnAgentARTist × INFP gallery entry" },
+      { "page": "/mint", "viewport": "1024x1250", "theme": "light", "checks": 8, "output": "Enabled styled wallet button, Sepolia and actual paid-phase labels" }
+    ]
+  },
+  "authorityScope": {
+    "newChainTransactions": 0,
+    "walletSignatures": 0,
+    "paidProviderCalls": 0,
+    "deployerKeyUnlocked": false,
+    "solidityOrDeploymentChanged": false,
+    "privateEnvironmentEdited": false,
+    "activeRehearsalOrDatabaseModified": false,
+    "productionStartupPolicyChanged": false,
+    "gitCommitOrPushPerformed": false
+  },
+  "sourceSha256": {
+    "scripts/pulse-sepolia-rpc.mjs": "46620f98a7a31dbff6e24947cc305f46174e3ac5b87f99920d22a7b61c4833cd",
+    "scripts/pulse-sepolia.mjs": "8fee3721cf79e8ba614ffb585f761fbe44a2731baa2cc99ad1b9d5676a4a9acb",
+    "scripts/pulse-sepolia-site.mjs": "379022e647dbe08e5a0883138ed9c03c19d087c328dff5db374592cac5f0f642",
+    "scripts/pulse-sepolia-errors.mjs": "8223d58e131cdc6308674158a43d71239ca69fb442a40229a931e3dac4c66077",
+    "contracts/tools/pulse-sepolia-failover.node-test.mjs": "06ccb9b392e1eea19341e9a97d1c5c699c7462ddfffaa19345e0b7052d3823ae",
+    "contracts/tools/pulse-sepolia-reads.node-test.mjs": "9022cb2d173d690578c43110571490e01ad24e1944a3eb7b9b1aaad54ce69b01"
+  }
+}

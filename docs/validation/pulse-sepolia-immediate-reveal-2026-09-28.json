@@ -1,0 +1,98 @@
+{
+  "scope": "pulse-sepolia-immediate-reveal-presentation",
+  "date": "2026-09-28",
+  "candidateOrDeploymentChanged": false,
+  "automatedTests": {
+    "sharedUiServiceAndPageTests": 627,
+    "disposablePostgresProjectionAndHttpTests": 188,
+    "sepoliaNodeTests": 65,
+    "passed": 880,
+    "failed": 0,
+    "typecheck": "passed",
+    "diffWhitespaceCheck": "passed"
+  },
+  "isolatedBrowserChecks": {
+    "passed": 64,
+    "failed": 0,
+    "scenarios": [
+      "inline mint result: desktop light, 1024x1250",
+      "inline mint result: mobile dark, 390x1250",
+      "home Confirming gallery: desktop dark",
+      "MBTI Confirming gallery: desktop light",
+      "wallet Confirming gallery: mobile dark",
+      "historical home gallery: desktop light, Status unavailable",
+      "historical MBTI gallery: mobile dark, Status unavailable",
+      "historical wallet gallery: mobile light, Status unavailable"
+    ],
+    "screenshotsInspected": true,
+    "realSharedMarkupStylesFontsAndSepoliaClient": true,
+    "mockedStatusResponsesAndSession": true,
+    "pollingIntervalAcceleratedForScenarioQa": true,
+    "newWalletSignaturesOrTransactions": 0,
+    "failedAssetRequests": 0,
+    "horizontalOverflow": false
+  },
+  "liveReadOnlyBrowserChecks": {
+    "origin": "http://127.0.0.1:3004",
+    "passed": 28,
+    "failed": 0,
+    "scenarios": [
+      "actual AnAgentARTist inline result: desktop light",
+      "actual AnAgentARTist inline result: mobile dark",
+      "actual home gallery: desktop dark, all four images loaded",
+      "actual INFP gallery: mobile light, image loaded"
+    ],
+    "actualDeployedContractArtwork": true,
+    "mockedApiResponses": false,
+    "mintResultRestoreReference": "handle-only sessionStorage reference seeded in an isolated browser; fresh public status validation required",
+    "screenshotsInspected": true,
+    "failedAssetRequests": 0,
+    "horizontalOverflow": false,
+    "newWalletSignaturesOrTransactions": 0
+  },
+  "localRuntime": {
+    "updatedSiteRestarted": true,
+    "primaryReadOverride": "https://ethereum-sepolia.publicnode.com",
+    "secondaryReadRpc": "https://sepolia.gateway.tenderly.co",
+    "privateEnvironmentOrAuthorityChanged": false,
+    "observerHealth": "successful startup; subsequent public-RPC refreshes remain intermittent",
+    "historicalPresentation": "live gallery remains visible with an unavailable label when fresh observation fails"
+  },
+  "readOnlyExistingMintValidation": {
+    "chainId": 11155111,
+    "collection": "0x88c435146A017338E48Abe3BEE2F11BcEab79cC2",
+    "handle": "anagentartist",
+    "mbti": "INFP",
+    "wallet": "0x170AF4D923De5E3155067e104134C3b11d82E100",
+    "transactionHash": "0x0a7b04eca5943e0234cf4bd0ac9239acfbc9a71256edaacc242cfb24e7565a4e",
+    "stateAtSuccessfulRead": "minted",
+    "verifiedSvgBytes": 1422,
+    "checks": [
+      "matching canonical receipts from both sources",
+      "successful canonical block inclusion",
+      "collection, sender, recipient and mint event binding",
+      "zero-address Transfer for the same token and recipient",
+      "renderer input commitment and immutable handle/MBTI",
+      "matching renderer SVG and pinned authorizer at an agreed head"
+    ]
+  },
+  "behavior": {
+    "reveal": "inline after successful RPC-validated inclusion, never from a wallet hash alone",
+    "galleries": "fresh witnessed inclusion with per-work Confirming or Minted",
+    "historicalGalleries": "previously RPC-validated in-process records remain visible as Status unavailable; never treated as current authority",
+    "historyFailure": "independently fresh receipt evidence can reveal without a healthy full-history snapshot",
+    "finalization": "updates the inline result without redirect or resubmission",
+    "rpcFailureAfterReveal": "retain image and show Status unavailable",
+    "noncanonicalRecheckAfterReveal": "retain image and show Rechecking mint",
+    "revertedReceipt": "failed transaction message, no new artwork or automatic retry",
+    "refresh": "saved handle reference requires fresh validated evidence",
+    "authority": "wallet, submission, finalized evidence and sharing gates unchanged"
+  },
+  "limitations": [
+    "Isolated browser scenarios do not certify an installed-wallet mint.",
+    "No new mint, X lookup or Grok request was made during this verification.",
+    "Public RPC availability and latency remain external dependencies.",
+    "A first inline reveal or status-API success requires fresh verification; historical gallery presentation is explicitly unavailable.",
+    "Previously validated gallery/artwork and wallet-collection caches are in-process only and do not survive a server restart."
+  ]
+}

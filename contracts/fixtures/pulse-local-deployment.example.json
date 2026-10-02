@@ -1,0 +1,36 @@
+{
+  "schema": "sg-pulse-candidate-local-inputs-example/v1",
+  "chainId": 31337,
+  "candidate": "sg-generative-pulse-mint-1.0.0-rc.1",
+  "rendererVersion": "sg-evm-renderer-1.0.0-rc.1",
+  "renderer": {
+    "artifact": "../out/SignatureRendererV1RC1.sol/SignatureRendererV1RC1.json",
+    "address": null
+  },
+  "core": {
+    "creationArtifact": "../vendor/pulse-core-v1.0.0/PulseCoreV1.creation.hex",
+    "runtimeCodeHash": "0xfb48657163202d3cdb28060f1eb511fd1f5b93a6e0eb8657242b5632e2200a90",
+    "address": null
+  },
+  "sale": {
+    "freeMintRoot": "0xd56fcadc336e04d31a7146c6472fd61dc315e9dd74f8b56b7b25166b4402b36a",
+    "freeSlotCount": 3,
+    "freeDeadline": 4102444800,
+    "treasury": "0x3333333333333333333333333333333333333333",
+    "pulse": {
+      "k": "600",
+      "genesisPrice": "1000",
+      "genesisFloor": "900",
+      "pts": "1"
+    }
+  },
+  "authorities": {
+    "adminDelay": 0,
+    "admin": "0x4444444444444444444444444444444444444444",
+    "manager": "0x5555555555555555555555555555555555555555",
+    "pauser": "0x6666666666666666666666666666666666666666",
+    "revoker": "0x7777777777777777777777777777777777777777",
+    "authorizer": "0x8888888888888888888888888888888888888888"
+  },
+  "note": "Test-only input template. Deploy the renderer and the vendored Core locally, then fill their addresses before constructing the consumer. This is not a signed or operational release configuration."
+}

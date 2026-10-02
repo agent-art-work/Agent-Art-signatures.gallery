@@ -314,7 +314,7 @@ describe("minimal shared signature detail", () => {
   });
 
   it("keeps shared regular typography, borderless artwork and home-style milestone tags", () => {
-    expect(SITE_CSS).toContain("body,body :not(svg,svg *){font-size:var(--ui-font-size);font-weight:400}");
+    expect(SITE_CSS).toContain("body,body :not(svg,svg *){font-size:var(--ui-font-size);font-weight:var(--ui-font-weight)}");
     expect(SITE_CSS).toContain(".signature-sheet{width:100%;max-width:42rem;margin-inline:auto}");
     expect(SITE_CSS).toMatch(/\.signature-tag\{[^}]*padding:var\(--tag-padding\)/);
     expect(SITE_CSS).toMatch(/\.signature-tag\{[^}]*border:0/);

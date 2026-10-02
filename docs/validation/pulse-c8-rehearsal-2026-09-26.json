@@ -1,0 +1,257 @@
+{
+  "version": "sg-pulse-c7-rehearsal-v2",
+  "publicStartupApproved": false,
+  "output": "/tmp/sg-pulse-c7-evidence-npqBIc",
+  "browser": [
+    {
+      "handle": "C7_Free_A",
+      "mode": "free",
+      "scenario": "success",
+      "stages": [
+        "SIWE",
+        "quote-without-default",
+        "explicit-free",
+        "hidden-pending",
+        "writer-restart",
+        "reload-no-duplicate-send",
+        "Confirming-not-in-gallery",
+        "Minted-in-gallery"
+      ],
+      "sends": 1,
+      "broadcasts": 1,
+      "providerCalls": {
+        "x": 1,
+        "grok": 1
+      },
+      "signs": 1,
+      "price": "0",
+      "cap": "0x0",
+      "refundVerified": true,
+      "gas": "294087",
+      "transactionHash": "0x7c897478d098c0c6dbe5fcb77e85cadc0e6c0f98946ea93e740da8046352131c",
+      "screenshot": "/tmp/sg-pulse-c7-evidence-npqBIc/C7_Free_A.png",
+      "imageLoaded": true,
+      "overflow": false,
+      "previewTiles": 15,
+      "provenanceVerified": true,
+      "networkErrors": []
+    },
+    {
+      "handle": "C7_Free_B",
+      "mode": "free",
+      "scenario": "success",
+      "stages": [
+        "SIWE",
+        "quote-without-default",
+        "explicit-free",
+        "hidden-pending",
+        "writer-restart",
+        "reload-no-duplicate-send",
+        "Confirming-not-in-gallery",
+        "Minted-in-gallery"
+      ],
+      "sends": 1,
+      "broadcasts": 1,
+      "providerCalls": {
+        "x": 1,
+        "grok": 1
+      },
+      "signs": 1,
+      "price": "0",
+      "cap": "0x0",
+      "refundVerified": true,
+      "gas": "315647",
+      "transactionHash": "0xb372a600bbc5941085bbd05f2d1901fa9f49ffdc49d3744316988315337156c4",
+      "screenshot": "/tmp/sg-pulse-c7-evidence-npqBIc/C7_Free_B.png",
+      "imageLoaded": true,
+      "overflow": false,
+      "previewTiles": 15,
+      "provenanceVerified": true,
+      "networkErrors": []
+    },
+    {
+      "handle": "C7_Paid_A",
+      "mode": "paid",
+      "scenario": "reject",
+      "stages": [
+        "SIWE",
+        "quote-without-default",
+        "explicit-paid",
+        "wallet-rejected-no-broadcast",
+        "hidden-pending",
+        "writer-restart",
+        "reload-no-duplicate-send",
+        "Confirming-not-in-gallery",
+        "Minted-in-gallery"
+      ],
+      "sends": 2,
+      "broadcasts": 1,
+      "providerCalls": {
+        "x": 1,
+        "grok": 1
+      },
+      "signs": 1,
+      "price": "946153846153",
+      "cap": "0x2386f26fc10000",
+      "refundVerified": true,
+      "gas": "301786",
+      "transactionHash": "0xc21d965bc742efc79ee9260d37cb8ebf0323f76e9f05a0f4973e92e356703e5f",
+      "screenshot": "/tmp/sg-pulse-c7-evidence-npqBIc/C7_Paid_A.png",
+      "imageLoaded": true,
+      "overflow": false,
+      "previewTiles": 15,
+      "provenanceVerified": true,
+      "networkErrors": []
+    },
+    {
+      "handle": "C7_Paid_B",
+      "mode": "paid",
+      "scenario": "uncertain",
+      "stages": [
+        "SIWE",
+        "quote-without-default",
+        "explicit-paid",
+        "hidden-pending",
+        "writer-restart",
+        "reload-no-duplicate-send",
+        "Confirming-not-in-gallery",
+        "Minted-in-gallery"
+      ],
+      "sends": 1,
+      "broadcasts": 1,
+      "providerCalls": {
+        "x": 1,
+        "grok": 1
+      },
+      "signs": 1,
+      "price": "952675585283",
+      "cap": "0x2386f26fc10000",
+      "refundVerified": true,
+      "gas": "276398",
+      "transactionHash": "0xe35d8e31d92c1e3843d033ba8240fb3fa867fb1b3151234e4e059a1410f0fe01",
+      "screenshot": "/tmp/sg-pulse-c7-evidence-npqBIc/C7_Paid_B.png",
+      "imageLoaded": true,
+      "overflow": false,
+      "previewTiles": 15,
+      "provenanceVerified": true,
+      "networkErrors": []
+    }
+  ],
+  "matrix": [
+    {
+      "scenario": "exhaustion",
+      "freeMinted": "2",
+      "repeatedWallet": true,
+      "paidEpoch": "2",
+      "counts": {
+        "x": 4,
+        "grok": 4,
+        "sign": 4,
+        "broadcast": 4,
+        "send": 5
+      }
+    },
+    {
+      "scenario": "paid-unfinalized-reorg",
+      "confirmingWithdrawn": true,
+      "galleryExcluded": true,
+      "economicsRolledBack": true,
+      "signedAuthorityRetained": true,
+      "acceptedInputsRetained": true,
+      "noAutomaticResend": true,
+      "transactionHash": "0xeb9001a257e2e6ed578c5ade6f095de54e982583b8fd5f898b95e3250e22588e"
+    },
+    {
+      "scenario": "free-assessment-crosses-deadline",
+      "counts": {
+        "x": 1,
+        "grok": 1,
+        "sign": 1,
+        "broadcast": 1,
+        "send": 1
+      },
+      "assessmentRetained": true,
+      "unusedSlotsExpired": true,
+      "paidStartTime": "1790417928",
+      "transactionHash": "0x7aaa07a05a7ef9ed51560f68edab16e79b59f091eaba86e312ddd6cee7c7e42d"
+    },
+    {
+      "scenario": "quote-change-requires-new-explicit-ceiling",
+      "oldPrice": "986714285714",
+      "newPrice": "987714285714",
+      "noExtraProviderOrSigner": true
+    },
+    {
+      "scenario": "same-block-paid-competition",
+      "statuses": [
+        "success",
+        "reverted"
+      ],
+      "epochAdvance": "1",
+      "winnerHandleMinted": true,
+      "failedHandleUnminted": true,
+      "failedReceiptHasNoLogs": true,
+      "treasuryPaid": "987714285714",
+      "transactionHashes": [
+        "0x182dc082487fb8091e80e33c286694ffadb4122ad05958165e99302bdf63463b",
+        "0x51f88e3052a0c587b31daaa0be508f002d581b883cb930b98fb17c7d87d2e317"
+      ],
+      "counts": {
+        "x": 4,
+        "grok": 4,
+        "sign": 4,
+        "broadcast": 4,
+        "send": 4
+      }
+    },
+    {
+      "scenario": "restricted-operator-recovery-after-real-revert",
+      "beforeExpiryBlocked": true,
+      "authorizationRetired": true,
+      "acceptedInputsRetained": true,
+      "sponsorshipRetained": true,
+      "issuanceRemainsDisabled": true,
+      "noNewEffects": true
+    },
+    {
+      "scenario": "deadline-before-Grok-dispatch",
+      "counts": {
+        "x": 1,
+        "grok": 0,
+        "sign": 0,
+        "broadcast": 0,
+        "send": 0
+      },
+      "noAutomaticPaidFallback": true
+    },
+    {
+      "scenario": "free-unfinalized-reorg",
+      "confirmingWithdrawn": true,
+      "galleryExcluded": true,
+      "economicsRolledBack": true,
+      "signedAuthorityRetained": true,
+      "acceptedInputsRetained": true,
+      "noAutomaticResend": true,
+      "slotReservationAndSponsorshipRetained": true,
+      "transactionHash": "0xbf4af060f5378af4569e723b96cd9a4688b86dfeaf519fdfb7313c34c9833bec"
+    }
+  ],
+  "inventory": "bbc85d5af406fa8e7184e67531a18c4b3161457fe670e685f14d41dabd646f0b",
+  "localOnly": true,
+  "realProviderCalls": 0,
+  "publicTransactions": 0,
+  "singleAnvilNode": true,
+  "finality": "explicit-test-boundary-not-public-consensus",
+  "sourceSha256": {
+    "pulse-c7-rehearsal.mjs": "ea1ccf21bd6a2845880ff726bea4c62243ee659ee69e593cfeec5df6106f5e46",
+    "pulse-c7-browser.mjs": "7b037e046b0fdf92caf184b78a5bec01f0358116184a71b19481054564baabc4"
+  },
+  "status": "passed",
+  "cleanup": {
+    "writersClosed": true,
+    "postgresRemoved": true,
+    "anvilStopped": true,
+    "activeRehearsalUntouched": true,
+    "errors": []
+  }
+}

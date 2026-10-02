@@ -29,7 +29,7 @@ describe("read-only v2 question-mark proposal page", () => {
     expect(html).toContain('name="robots" content="noindex,nofollow"');
     expect(html).toContain("Earlier study");
     expect(html).toContain("Previous selection");
-    expect(html).toContain("The homepage title is The_First_Agent_Artwork, with no punctuation.");
+    expect(html).toContain("The homepage title is Anyone_Can_Sign_Anyone, with no punctuation.");
     expect(html).not.toMatch(/now on home|On home|homepage now uses/);
     expect(html).not.toContain("Preview only — nothing has changed on home.");
     expect(html).toContain("authored vector marks, not renderer output");

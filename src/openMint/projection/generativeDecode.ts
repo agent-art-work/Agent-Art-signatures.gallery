@@ -6,11 +6,14 @@ import { canonicalHandle } from "../identity.js";
 import type { createGenerativeArtworkReader } from "../generativeReads.js";
 import { normalizeProjectionLog } from "./decode.js";
 import { hash, quantity, MAX_BLOCK_EVENTS, validateBatch, validateDeployment, type ProjectionDeployment, type ValidatedEvent, type ValidatedBlock } from "./model.js";
+import { decodePulseEconomics, PULSE_ECONOMIC_TOPICS, PULSE_TOPIC_COUNTS } from "./pulseDecode.js";
+import type { PulseDeploymentPin } from "../pulseEconomics.js";
 
 export const GENERATIVE_PROJECTION_TOPICS = Object.freeze([
   encodeEventTopics({ abi: GENERATIVE_MINT_ABI, eventName: "Transfer" })[0],
   encodeEventTopics({ abi: GENERATIVE_MINT_ABI, eventName: "GenerativeSignatureMinted" })[0],
 ]);
+export const PULSE_PROJECTION_TOPICS = Object.freeze([...GENERATIVE_PROJECTION_TOPICS,...PULSE_ECONOMIC_TOPICS]);
 const DATA = [{ type: "uint256" }, { type: "string" }, { type: "string" }, { type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" }] as const;
 const fail = (): never => { throw new Error("Generative event/input evidence failed validation."); };
 
@@ -20,12 +23,16 @@ export async function decodeGenerativeSignaturesBlock(input: {
   deployment: ProjectionDeployment; block: { number: string; hash: string; parentHash: string; timestamp: string };
   logs: readonly unknown[]; signal: AbortSignal; timeoutMs: number;
   read: ReturnType<typeof createGenerativeArtworkReader>;
+  pulse?: PulseDeploymentPin;
 }): Promise<{ block: ValidatedBlock; chainAuthenticated: false }> {
   const deployment = validateDeployment(input.deployment), block = { ...input.block }, read = input.read;
   if (!deployment.generativeRenderer || !Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1 || input.timeoutMs > 30000
     || !Array.isArray(input.logs) || input.logs.length > MAX_BLOCK_EVENTS || typeof read !== "function") fail();
   quantity(block.number, 63); quantity(block.timestamp, 64); hash(block.hash); hash(block.parentHash);
-  const logs = input.logs.map(log => normalizeProjectionLog(log, deployment, block, GENERATIVE_PROJECTION_TOPICS));
+  if((profileForRenderer(deployment.generativeRenderer!).contractProfile === "generative-pulse-v1-rc1") !== !!input.pulse) fail();
+  const all = input.logs.map(log => normalizeProjectionLog(log, deployment, block, input.pulse ? PULSE_PROJECTION_TOPICS : GENERATIVE_PROJECTION_TOPICS, input.pulse ? PULSE_TOPIC_COUNTS : {}));
+  const economics = input.pulse ? decodePulseEconomics(all,input.pulse,block.timestamp) : undefined;
+  const logs=all.filter(l => GENERATIVE_PROJECTION_TOPICS.includes(l.topics[0]));
   const controller = new AbortController(), end = performance.now() + input.timeoutMs;
   let timer: ReturnType<typeof setTimeout> | undefined, abort: (() => void) | undefined;
   const check = () => { if (input.signal.aborted || controller.signal.aborted || performance.now() >= end) fail(); };
@@ -55,7 +62,8 @@ export async function decodeGenerativeSignaturesBlock(input: {
           || evidence.recipient !== a.recipient.toLowerCase()) fail();
         events.push({ ...position, kind: "GenerativeSignatureMinted", handle, renderHandle: a.renderHandle, handleKey: a.handleKey,
           nonce: a.nonce, recipient: evidence.recipient, assessmentDigest: a.assessmentDigest, inputDigest: a.inputDigest,
-          rendererIdentity: evidence.inputs.rendererIdentity, authorizationDigest: a.authorizationDigest, mbti: a.mbti, evidenceReference: `generative:${log.transactionHash}` });
+          rendererIdentity: evidence.inputs.rendererIdentity, authorizationDigest: a.authorizationDigest, mbti: a.mbti, evidenceReference: `generative:${log.transactionHash}`,
+          ...(economics ? {economics:economics.get(`${log.transactionHash}:${a.nonce}`)!} : {}) });
       }
       const result = { number: block.number, hash: block.hash, parentHash: block.parentHash, events };
       validateBatch({ chainId: deployment.chainId, contractAddress: deployment.contractAddress, manifestHash: deployment.manifestHash, blocks: [result] }, deployment);

@@ -7,6 +7,7 @@ import type { PublicChainRpc } from "./publicChainRpc.js";
 import { onchainMintDigest, verifyOnchainMintAuthorization } from "./onchainAuthorization.js";
 import { GENERATIVE_MINT_ABI, generativeMintDigest, normalizeGenerativeAuthorization, verifyGenerativeMintAuthorization, type GenerativeAuthorizationInput } from "./generativeAuthorization.js";
 import { profileForRenderer, validateGenerativeInputs, validateGenerativeRendererPin, type GenerativeInputs, type GenerativeRendererPin } from "./generativeInputs.js";
+import { observePulse, validatePulseDeployment, type PulseDeploymentPin, type PulseObservation } from "./pulseEconomics.js";
 
 /** Deliberately read-only subset; independent of the local runtime's ABI. */
 export const PUBLIC_CHAIN_READ_ABI = parseAbi([
@@ -25,6 +26,7 @@ export interface PublicChainGateConfig {
   /** Explicit deployment profile; absence preserves the historical external-URI contract. */
   contractProfile?: "external-v1" | "onchain-v1" | GenerativeContractProfile;
   generativeRenderer?: GenerativeRendererPin;
+  pulse?: PulseDeploymentPin;
   namespaceId: string; deploymentId: string; chainId: bigint; genesisHash: Hex;
   deploymentBlock: PublicChainBlock; contract: Address; runtimeCodeHash: Hex; authorizer: Address;
   maxBlockAgeMs: number; maxFutureSkewMs: number; evidenceTtlMs: number; observationTimeoutMs: number;
@@ -32,6 +34,7 @@ export interface PublicChainGateConfig {
 export interface PublicChainEvidence {
   readonly contractProfile?: "external-v1" | "onchain-v1" | GenerativeContractProfile;
   readonly generativeRenderer?: Readonly<GenerativeRendererPin>;
+  readonly pulse?: PulseObservation;
   readonly namespaceId: string; readonly deploymentId: string; readonly chainId: bigint; readonly genesisHash: Hex;
   readonly deploymentBlock: PublicChainBlock; readonly contract: Address; readonly runtimeCodeHash: Hex; readonly authorizer: Address;
   readonly handle: string; readonly handleKey: Hex; readonly recipient: Address; readonly nonce: Hex;
@@ -114,13 +117,15 @@ export class PublicChainGate {
   readonly #rpcs: readonly [PublicChainRpc, PublicChainRpc];
   readonly #now: () => number;
   constructor(config: PublicChainGateConfig, rpcs: readonly [PublicChainRpc, PublicChainRpc], now: () => number = Date.now, mode?: symbol) {
-    if (config.contractProfile !== undefined && !["external-v1", "onchain-v1", "generative-experimental-v1", "generative-v1-rc1"].includes(config.contractProfile)) fail("Unknown contract profile.");
+    if (config.contractProfile !== undefined && !["external-v1", "onchain-v1", "generative-experimental-v1", "generative-v1-rc1", "generative-pulse-v1-rc1"].includes(config.contractProfile)) fail("Unknown contract profile.");
     const generative = isGenerativeProfile(config.contractProfile);
     const staging = mode === stagingReadOnly && config.chainId === 11155111n && config.contractProfile === "generative-v1-rc1";
     if (generative !== !!config.generativeRenderer || (generative && config.chainId !== 31337n && !staging)) fail("Experimental generative chain and renderer pins are required.");
     const rendererPin = config.generativeRenderer ? validateGenerativeRendererPin(config.generativeRenderer) : undefined;
     if (rendererPin && profileForRenderer(rendererPin).contractProfile !== config.contractProfile) fail("Generative profile/pin mismatch.");
     const domain = openMintDomain({ chainId: config.chainId, verifyingContract: config.contract });
+    if ((config.contractProfile === "generative-pulse-v1-rc1") !== !!config.pulse) fail("Explicit Pulse deployment pins required.");
+    const pulse = config.pulse ? validatePulseDeployment(config.pulse, config.chainId, config.contract, rendererPin!.identity) : undefined;
     for (const [value, maximum] of [[config.maxBlockAgeMs, 3_600_000], [config.maxFutureSkewMs, 300_000],
       [config.evidenceTtlMs, 60_000], [config.observationTimeoutMs, 30_000]]) {
       if (!Number.isSafeInteger(value) || value < 0 || value > maximum) fail("Invalid bounded observation policy.");
@@ -128,12 +133,12 @@ export class PublicChainGate {
     if (!config.maxBlockAgeMs || !config.evidenceTtlMs || !config.observationTimeoutMs) fail("Observation bounds must be positive.");
     this.#config = Object.freeze({ ...config, namespaceId: label(config.namespaceId), deploymentId: label(config.deploymentId), chainId: domain.chainId,
       contract: domain.verifyingContract, authorizer: address(config.authorizer), genesisHash: hash(config.genesisHash),
-      runtimeCodeHash: hash(config.runtimeCodeHash), deploymentBlock: blockPin(config.deploymentBlock), generativeRenderer: rendererPin });
+      runtimeCodeHash: hash(config.runtimeCodeHash), deploymentBlock: blockPin(config.deploymentBlock), generativeRenderer: rendererPin, pulse });
     if (rpcs.length !== 2 || rpcs[0] === rpcs[1] || rpcs[0].id === rpcs[1].id) fail("Two distinct RPC sources are required.");
     this.#rpcs = Object.freeze(rpcs.map(rpc => Object.freeze({ id: label(rpc.id), request: rpc.request.bind(rpc) }))) as unknown as readonly [PublicChainRpc, PublicChainRpc];
     this.#now = now;
   }
-  async preflight(input: { block: PublicChainBlock; handle: string; recipient: string; nonce: Hex; signal?: AbortSignal }): Promise<PublicChainEligibility> {
+  async preflight(input: { block: PublicChainBlock; handle: string; recipient: string; nonce: Hex; signal?: AbortSignal; pulseSlots?: readonly string[] }): Promise<PublicChainEligibility> {
     return (await this.#observe(input)).witness;
   }
   /** Verify an already supplied signature and its exact commitments. Does not
@@ -170,9 +175,10 @@ export class PublicChainGate {
     if (isGenerativeProfile(this.#config.contractProfile)) return generativeMintDigest(domain, authorization as GenerativeAuthorizationInput, profileForRenderer(this.#config.generativeRenderer!).inputProfile);
     return this.#config.contractProfile === "onchain-v1" ? onchainMintDigest(domain, authorization as OpenMintAuthorizationInput) : openMintDigest(domain, authorization as OpenMintAuthorizationInput);
   }
-  async #observe(input: { block: PublicChainBlock; handle: string; recipient: string; nonce: Hex; signal?: AbortSignal }, authorization?: ReturnType<typeof normalizeOpenMintAuthorization> | ReturnType<typeof normalizeGenerativeAuthorization>) {
+  async #observe(input: { block: PublicChainBlock; handle: string; recipient: string; nonce: Hex; signal?: AbortSignal; pulseSlots?: readonly string[] }, authorization?: ReturnType<typeof normalizeOpenMintAuthorization> | ReturnType<typeof normalizeGenerativeAuthorization>) {
     const deadlineAt = performance.now() + this.#config.observationTimeoutMs;
     const c = this.#config, block = blockPin(input.block), handle = input.handle, handleKey = openMintHandleKey(handle), recipient = address(input.recipient), nonce = hash(input.nonce);
+    const slots = Object.freeze([...(input.pulseSlots ?? [])]);
     if (block.number < c.deploymentBlock.number) fail("Observation precedes deployment.");
     const startedAt = clock(this.#now()), controller = new AbortController(), parent = input.signal;
     if (parent?.aborted) fail("Chain observation cancelled.");
@@ -234,14 +240,18 @@ export class PublicChainGate {
           || domain[3] !== c.chainId || address(domain[4]) !== c.contract || domain[5] !== `0x${"00".repeat(32)}` || !Array.isArray(domain[6]) || domain[6].length !== 0) fail("EIP-712 domain disagrees.");
         if (paused !== false || minted !== false || used !== false || revoked !== false) fail("Mint is paused, claimed, or nonce unavailable.");
         if (authorization && contractDigest !== this.#digest({ chainId: c.chainId, verifyingContract: c.contract }, authorization)) fail("Contract authorization digest disagrees.");
+        const pulse = c.pulse ? await observePulse(c.pulse, slots,
+          async data => code(await request("eth_call", [{ to: c.contract, data }, pinned])),
+          async () => code(await request("eth_getCode", [c.pulse!.core, pinned])), c.chainId) : undefined;
         const [endChain, endBlock] = await Promise.all([request("eth_chainId", []).then(quantity), getHeader(block)]);
         check();
         if (endChain !== c.chainId || endBlock.timestamp !== observed.timestamp) fail("Chain changed during observation.");
-        return observed;
+        return { ...observed, ...(pulse ? { pulse } : {}) };
       })), deadline]);
       check();
       const [first, second] = observations;
       if (first.timestamp !== second.timestamp) fail("RPC sources disagree on block timestamp.");
+      if (JSON.stringify(first.pulse) !== JSON.stringify(second.pulse)) fail("RPC sources disagree on Pulse sale state.");
       const observedAt = clock(this.#now()), blockTime = Number(first.timestamp) * 1000;
       if (observedAt < startedAt || observedAt - blockTime >= c.maxBlockAgeMs || blockTime - observedAt > c.maxFutureSkewMs) fail("Chain observation is stale or clock disagrees.");
       let validUntil = Math.min(observedAt + c.evidenceTtlMs, blockTime + c.maxBlockAgeMs);
@@ -253,8 +263,9 @@ export class PublicChainGate {
       const evidence: PublicChainEvidence = Object.freeze({ namespaceId: c.namespaceId, deploymentId: c.deploymentId, chainId: c.chainId,
         ...(c.contractProfile ? { contractProfile: c.contractProfile } : {}),
         ...(c.generativeRenderer ? { generativeRenderer: c.generativeRenderer } : {}),
+        ...(first.pulse ? { pulse: first.pulse } : {}),
         genesisHash: c.genesisHash, deploymentBlock: c.deploymentBlock, contract: c.contract, runtimeCodeHash: c.runtimeCodeHash, authorizer: c.authorizer,
-        handle, handleKey, recipient, nonce, block: Object.freeze(first), observedAt, validUntil,
+        handle, handleKey, recipient, nonce, block: Object.freeze({ number: first.number, hash: first.hash, timestamp: first.timestamp }), observedAt, validUntil,
         sources: Object.freeze([this.#rpcs[0].id, this.#rpcs[1].id]) as readonly [string, string] });
       check();
       const witness = Object.freeze({}) as PublicChainEligibility;

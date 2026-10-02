@@ -31,14 +31,14 @@ function fixture() {
 }
 
 describe("explicit read-only generative gallery pages", () => {
-  it.each(["/", "/INTJ/", "/?after=cursor"])("renders finalized-only gallery %s with case-preserved caption and input-bound media", async path => {
+  it.each(["/", "/INTJ/", "/?after=cursor"])("renders an inclusion-aware gallery %s with case-preserved caption and input-bound media", async path => {
     const f = fixture(), r = await f.call(path);
     expect(r.status).toBe(200); expect(r.body).toContain("@Alice_Bob_Key"); expect(r.body).toContain("INTJ");
     expect(r.body).toContain(`/api/signatures/${f.item.handle}/artwork/${f.item.inputDigest}/svg`);
     expect(r.body).toContain('href="/p/Alice_Bob_Key/variations"'); expect(r.body).toContain('href="/INTJ/"');
     expect(r.body).not.toContain("data-mint-entry"); expect(f.detail).not.toHaveBeenCalled();
     expect(r.body).not.toMatch(/rel="canonical"|property="og:|name="twitter:/);
-    expect(f.projection.gallery).toHaveBeenCalledWith({ filter: path.includes("INTJ") ? { kind: "mbti", value: "INTJ" } : { kind: "home" }, limit: 24,
+    expect(f.projection.gallery).toHaveBeenCalledWith({ filter: path.includes("INTJ") ? { kind: "mbti", value: "INTJ" } : { kind: "home" }, limit: 24, includeConfirming: true,
       ...(path.includes("after") ? { cursor: "cursor" } : {}) });
     expect(r.response.setHeader).toHaveBeenCalledWith("Cache-Control", "no-store");
     expect(r.response.setHeader).toHaveBeenCalledWith("Content-Security-Policy", expect.stringContaining("form-action 'none'"));
@@ -64,6 +64,8 @@ describe("explicit read-only generative gallery pages", () => {
   it.each(["unknown", "safety-halted"] as const)("withdraws %s galleries instead of showing stale cards", async state => {
     const f = fixture(); f.projection.gallery.mockResolvedValue({ state, items: [f.item] });
     const r = await f.call(); expect(r.status).toBe(503); expect(r.body).not.toContain("Alice_Bob_Key");
+    expect(r.body).toContain("This page could not be loaded right now.");
+    expect(r.body).not.toContain("Mint status cannot be verified");
   });
   it.each([{ availability: "quarantined" }, { handle: undefined }, { renderHandle: undefined }, { inputDigest: undefined },
     { rendererIdentity: undefined }, { artifactDigest: hash("e") }, { mbti: "BOGUS" }])("refuses mixed or incomplete gallery identity %#", async patch => {
@@ -91,7 +93,8 @@ describe("explicit read-only generative gallery pages", () => {
   it("redacts internal failures and does not write to a closed response", async () => {
     const f = fixture(); f.detail.mockRejectedValue(new Error("https://rpc/SECRET"));
     const r = await f.call("/signatures/alice_bob_key"); expect(r.status).toBe(503); expect(r.body).not.toContain("SECRET");
-    expect(r.body).toContain("No new assessment or mint was requested");
+    expect(r.body).toContain("This page could not be loaded right now.");
+    expect(r.body).not.toContain("No new assessment or mint was requested");
     expect((await f.call("/", "GET", {}, true)).response.end).not.toHaveBeenCalled();
   });
   it("serves pinned fonts and refuses query parameters on them", async () => {

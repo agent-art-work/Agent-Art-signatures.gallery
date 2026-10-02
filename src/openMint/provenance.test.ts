@@ -29,13 +29,13 @@ describe("saved assessment provenance", () => {
 
   it("identifies fixture inputs only inside provenance without inventing a real assessment", () => {
     const html = assessmentPage({ ...model, assessmentProvenance: "development-fixture", assessmentModel: "development-fixture-v1" });
-    expect(html).toContain('<dt>Assessor</dt><dd>Development fixture</dd>');
+    expect(html).toContain('<dt>Assessor</dt><dd>Sample input</dd>');
     expect(html).toContain('Sample MBTI input; Grok was not called.');
     expect(html).toContain(`<dt>Created</dt><dd>${model.assessedAt}</dd>`);
     expect(html).not.toContain('Spelling verified at preparation');
     expect(html).not.toContain('data-assessment-sources');
     const chrome = html.replace(/<details class="signature-provenance">[\s\S]*?<\/details>/, "");
-    expect(chrome).not.toContain('Development fixture');
+    expect(chrome).not.toContain('Sample input');
     expect(chrome).not.toContain('Grok was not called');
   });
 

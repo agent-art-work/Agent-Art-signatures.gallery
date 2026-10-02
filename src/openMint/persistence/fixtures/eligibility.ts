@@ -5,6 +5,9 @@ import { PUBLIC_CHAIN_READ_ABI, PublicChainGate, type PublicChainGateConfig } fr
 import type { PublicChainRpc } from "../../publicChainRpc.js";
 import { GENERATIVE_MINT_ABI } from "../../generativeAuthorization.js";
 import { generativeRendererIdentity } from "../../generativeInputs.js";
+import { PULSE_MINT_ABI } from "../../pulseAuthorization.js";
+import { pulseFixtureCoreCode } from "../../fixtures/pulse.js";
+import type { PulseObservation } from "../../pulseEconomics.js";
 
 export const chainHash = (byte: string): Hex => `0x${byte.repeat(32)}`;
 export const fixtureRendererRuntime = "0x60016001" as Hex;
@@ -26,7 +29,7 @@ export function eligibilityFixture(namespaceId: string, deploymentId: string, no
   const profile = { deployment_id: deploymentId, chain_id: "31337", contract_address: config.contract.toLowerCase(), genesis_hash: config.genesisHash,
     runtime_code_hash: config.runtimeCodeHash, authorizer: config.authorizer.toLowerCase(), deployment_block: "2", deployment_block_hash: config.deploymentBlock.hash,
     origin, session_chain_id: "31337", max_evidence_age_ms: 10000, max_block_age_ms: 120000, max_future_skew_ms: 5000 };
-  const sources = (changes: Partial<PublicChainGateConfig> = {}, code: Hex = runtime, walletNonce: () => Hex = () => "0x0"): readonly [PublicChainRpc, PublicChainRpc] => {
+  const sources = (changes: Partial<PublicChainGateConfig> = {}, code: Hex = runtime, walletNonce: () => Hex = () => "0x0", pulseState?: Partial<PulseObservation>): readonly [PublicChainRpc, PublicChainRpc] => {
     const pinned = { ...config, ...changes }, block = { number: 10n, hash: chainHash("10") }, timestamp = BigInt(Math.floor(now() / 1000));
     const rpc = (id: string): PublicChainRpc => ({ id, async request(method, params) {
       if (method === "eth_chainId") return numberToHex(pinned.chainId);
@@ -34,10 +37,26 @@ export function eligibilityFixture(namespaceId: string, deploymentId: string, no
         const number = params[0] === "latest" ? block.number : BigInt(params[0] as string);
         return { number: numberToHex(number), hash: number === 0n ? pinned.genesisHash : number === pinned.deploymentBlock.number ? pinned.deploymentBlock.hash : block.hash, timestamp: numberToHex(timestamp) };
       }
-      if (method === "eth_getCode") return params[0] === pinned.contract ? code : params[0] === pinned.generativeRenderer?.address ? fixtureRendererRuntime : "0x";
+      if (method === "eth_getCode") return params[0] === pinned.contract ? code : params[0] === pinned.generativeRenderer?.address ? fixtureRendererRuntime : params[0] === pinned.pulse?.core ? pulseFixtureCoreCode : "0x";
       if (method === "eth_getTransactionCount") return walletNonce();
-      const abi = [...PUBLIC_CHAIN_READ_ABI, ...GENERATIVE_MINT_ABI];
-      const name = decodeFunctionData({ abi, data: (params[0] as { data: Hex }).data }).functionName;
+      const abi = [...PUBLIC_CHAIN_READ_ABI, ...GENERATIVE_MINT_ABI, ...PULSE_MINT_ABI];
+      const { functionName: name, args } = decodeFunctionData({ abi, data: (params[0] as { data: Hex }).data });
+      if (pinned.pulse) {
+        const p = pinned.pulse, phase = pulseState?.phase ?? 0;
+        if (phase === 0 && (name === "getPulseState" || name === "getCurrentPrice")) throw new Error("PaidMintNotOpen");
+        const pulseValues: Record<string, unknown> = {
+          pulseCore: p.core, coreRuntimeCodeHash: p.coreRuntimeCodeHash, treasury: p.treasury, freeMintRoot: p.root,
+          freeSlotCount: BigInt(p.slotCount), freeDeadline: BigInt(p.freeDeadline), deployedAt: BigInt(p.deployedAt),
+          saleConfigHash: p.saleConfigHash, boundChainId: pinned.chainId,
+          getPulseConfig: Object.fromEntries(Object.entries(p.config).map(([k,v]) => [k,BigInt(v)])),
+          getPulseState: { epochIndex: 1n, openTime: timestamp, curveStartTime: timestamp, anchorTime: timestamp, floorPrice: 500000000n },
+          getCurrentPrice: BigInt(pulseState?.price ?? "1000000000"),
+          saleStatus: { phase, paused: false, freeMinted: BigInt(pulseState?.freeMinted ?? "0"), freeSlotCount: BigInt(p.slotCount),
+            freeDeadline: BigInt(p.freeDeadline), paidStartTime: phase ? timestamp : 0n, endReason: phase ? 2 : 0, lastPaidMintBlock: 0n },
+          isFreeSlotClaimed: pulseState?.slots?.some(s => s.slotId === String(args?.[0]) && s.claimed) ?? false,
+        };
+        if (name in pulseValues) return encodeFunctionResult({ abi: PULSE_MINT_ABI, functionName: name, result: pulseValues[name] } as Parameters<typeof encodeFunctionResult>[0]);
+      }
       const result = name === "renderer" ? pinned.generativeRenderer!.address : name === "rendererIdentity" ? pinned.generativeRenderer!.identity
         : name === "INPUT_PROFILE" ? profileForRenderer(pinned.generativeRenderer!).inputProfile : name === "eip712Domain" ? ["0x0f", isGenerativeProfile(pinned.contractProfile) ? generativeProfile(pinned.contractProfile).domainName : pinned.contractProfile === "onchain-v1" ? "SignaturesOnchainMint" : "SignaturesOpenMint", "1", pinned.chainId, pinned.contract, chainHash("00"), []]
         : name === "trustedAuthorizer" ? pinned.authorizer : false;
@@ -45,7 +64,7 @@ export function eligibilityFixture(namespaceId: string, deploymentId: string, no
     } });
     return [rpc("mock-rpc-one"), rpc("mock-rpc-two")];
   };
-  return { config, profile, sources, async witness(handle: string, recipient: Address, changes: Partial<PublicChainGateConfig> = {}, code: Hex = runtime, nonce: Hex = chainHash("33")) {
-    return new PublicChainGate({ ...config, ...changes }, sources(changes, code), now).preflight({ block: { number: 10n, hash: chainHash("10") }, handle, recipient, nonce });
+  return { config, profile, sources, async witness(handle: string, recipient: Address, changes: Partial<PublicChainGateConfig> = {}, code: Hex = runtime, nonce: Hex = chainHash("33"), pulseState?: Partial<PulseObservation>, pulseSlots: readonly string[] = []) {
+    return new PublicChainGate({ ...config, ...changes }, sources(changes, code, undefined, pulseState), now).preflight({ block: { number: 10n, hash: chainHash("10") }, handle, recipient, nonce, pulseSlots });
   } };
 }

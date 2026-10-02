@@ -23,7 +23,7 @@ describe("read-only projection HTTP contract", () => {
   it("allowlists finalized gallery fields and exposes no private evidence or raw rows", async () => {
     const f = fixture(), r = await f.call(); expect(r.status).toBe(200); expect(r.value.items).toHaveLength(1);
     expect(r.body).not.toContain("SECRET"); expect(r.headers["Cache-Control"]).toBe("no-store"); expect(r.headers["X-Robots-Tag"]).toContain("noindex");
-    expect(f.reads.gallery).toHaveBeenCalledWith({ filter: { kind: "home" }, limit: 24 }); expect(f.reads.lookup).not.toHaveBeenCalled();
+    expect(f.reads.gallery).toHaveBeenCalledWith({ filter: { kind: "home" }, limit: 24, includeConfirming: true }); expect(f.reads.lookup).not.toHaveBeenCalled();
   });
   it.each(["confirming", "confirmed"] as const)("projects %s confidence without private session or authority payload", async state => {
     const f = fixture(); f.reads.lookup.mockResolvedValue({ state, item: f.item }); const r = await f.call("/api/signatures/alice/status");

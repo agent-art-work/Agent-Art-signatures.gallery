@@ -5,7 +5,7 @@ import { GenerativeRecoveryBlockedError, GenerativeRecoveryChain, readGenerative
   type GenerativeRecoveryWitness } from "../generativeRecoveryChain.js";
 import type { AuthorizationReservation, PostgresGenerativeAuthorizationIssuer } from "./generativeAuthorizations.js";
 import type { PreparedGenerativeInputs } from "./generativeInputs.js";
-import { auditGenerativeRecoveryRole } from "./roleAudit.js";
+import { auditGenerativeRecoveryRole, auditPulseRecoveryRole } from "./roleAudit.js";
 import type { OwnershipConnection } from "./writer.js";
 
 type Tx = Pick<OwnershipConnection, "query">;
@@ -37,7 +37,7 @@ export class PostgresGenerativeRecovery {
   static async open(issuer: PostgresGenerativeAuthorizationIssuer, chain: GenerativeRecoveryChain) {
     const recovery = new PostgresGenerativeRecovery(issuer, chain);
     await issuer.writer.transaction(async tx => {
-      if (!(await auditGenerativeRecoveryRole(tx)).ok) fail("A dedicated restricted recovery role is required.");
+      if (!(await (issuer.requests.pulse ? auditPulseRecoveryRole : auditGenerativeRecoveryRole)(tx)).ok) fail("A dedicated restricted recovery role is required.");
       await recovery.#disabled(tx);
     });
     return recovery;
@@ -69,7 +69,8 @@ export class PostgresGenerativeRecovery {
       FROM open_mint.wallet_mint_dispatches d LEFT JOIN open_mint.wallet_mint_reports r USING(namespace_id,request_id,attempt)
       WHERE d.namespace_id=$1 AND d.request_id=$2 ORDER BY d.attempt`, [this.namespaceId, r.requestId])).rows;
     const last = dispatches.at(-1);
-    return { fingerprint: hash({ authorization, inputs, assessment, plans, signatures, dispatches }), planCount: plans.length,
+    const pulse = this.issuer.requests.pulse ? await this.issuer.requests.pulse.load(tx, r.requestId) : undefined;
+    return { fingerprint: hash({ authorization, inputs, assessment, plans, signatures, dispatches, ...(pulse ? {pulse} : {}) }), planCount: plans.length,
       walletNonce: plans[0]?.wallet_nonce ?? null, submission: last ? last.outcome ?? "unknown" as const : "not-started" as const,
       transactionHash: last?.transaction_hash ?? null };
   }
@@ -81,6 +82,7 @@ export class PostgresGenerativeRecovery {
       || c.deploymentBlock.number.toString() !== p.deployment_block || c.deploymentBlock.hash !== p.deployment_block_hash
       || getAddress(c.generativeRenderer!.address) !== getAddress(this.issuer.journal.rendererPin.address)
       || c.generativeRenderer!.runtimeCodeHash !== this.issuer.journal.rendererPin.runtimeCodeHash) fail("Recovery chain does not match the durable deployment.");
+    if (this.issuer.requests.pulse && !json(c.pulse).equals(json(this.issuer.requests.pulse.binding.deployment))) fail("Recovery Pulse economics binding changed.");
     for (const bounds of [policy, p]) {
       if (now - e.observedAt >= bounds.max_evidence_age_ms) fail("Recovery evidence expired; obtain a new observation.");
       for (const block of [e.finalized, e.latest]) if (now - Number(block.timestamp) * 1000 >= bounds.max_block_age_ms
@@ -124,6 +126,13 @@ export class PostgresGenerativeRecovery {
     if (!json(data).equals(row.evidence) || data.version !== "generative-expired-unminted-v1" || !plan || plan.recoveryId !== recoveryId
       || plan.authorizationId !== row.authorization_id || plan.snapshotHash !== row.snapshot_hash || plan.action !== "retire-expired-unminted"
       || row.head_active || row.nonce_active) fail("Recovery record is incomplete or inconsistent. Keep issuance disabled for review.");
+    if (this.issuer.requests.pulse) {
+      const release = await tx.query(`SELECT x.reason,
+        EXISTS(SELECT 1 FROM open_mint.pulse_slot_heads h WHERE h.namespace_id=e.namespace_id AND h.request_id=e.request_id) AS slot_active
+        FROM open_mint.generative_recoveries e LEFT JOIN open_mint.pulse_intent_releases x USING(namespace_id,request_id)
+        WHERE e.namespace_id=$1 AND e.deployment_id=$2 AND e.recovery_id=$3`, [this.namespaceId,this.deploymentId,recoveryId]);
+      if (release.rows.length !== 1 || release.rows[0].reason !== "finalized-authority-retired" || release.rows[0].slot_active) fail("Pulse recovery is incomplete. Keep issuance disabled for review.");
+    }
     return plan;
   }
   async apply(value: GenerativeRecoveryPlan): Promise<GenerativeRecoveryPlan> {
@@ -149,6 +158,7 @@ export class PostgresGenerativeRecovery {
       const plans = await tx.query("UPDATE open_mint.wallet_mint_plans SET nonce_active=false WHERE namespace_id=$1 AND authorization_id=$2 AND nonce_active RETURNING request_id", [this.namespaceId, r.id]);
       const heads = await tx.query("DELETE FROM open_mint.generative_authorization_heads WHERE namespace_id=$1 AND deployment_id=$2 AND authorization_id=$3 RETURNING handle", [this.namespaceId, this.deploymentId, r.id]);
       if (plans.rows.length !== current.planCount || heads.rows.length !== 1) fail("Retirement conflict; all changes rolled back.");
+      await this.issuer.requests.pulse?.retireAfterRecovery(tx, r.requestId);
       await this.#evidence(tx, r, witness);
       return plan;
     });

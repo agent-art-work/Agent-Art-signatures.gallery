@@ -1,6 +1,17 @@
 # Release readiness — current execution order
 
-Audited September 23, 2026; updated for the September 25 pre-Pulse checkpoint. This is the cross-cutting view of
+**September 27:** the separately approved [disposable Sepolia test](pulse-sepolia-test.md)
+has deployed/byte-verified renderer and Pulse collection contracts and successful
+free/free/paid mint receipts. The loopback website is now running at port 3004:
+four browser pages, actual SIWE, HTTP preparation and two-source `eth_call` mint
+simulation pass. The user's installed-wallet confirmation remains untested.
+This is fixture MBTI, not real Grok or a hosted staging/R5 acceptance. The user approved
+public source publication: both contracts now have Sourcify exact matches for
+creation and runtime, and public sources were read back against the local build.
+Historical no-deployment
+statements below remain records of their dates, not current chain status.
+
+Audited September 23, 2026; updated for the September 26 Pulse C8 checkpoint. This is the cross-cutting view of
 [E00–E24](development-plan.md), not a replacement architecture, deployment
 approval or another operating-policy validator.
 
@@ -9,6 +20,32 @@ rehearsed. It is **not yet a deployable, operationally accepted staging release*
 The next work should close the concrete gaps below, not keep adding generic
 admission layers. Real Grok acceptance is still missing; Sepolia is not needed
 to establish it.
+
+September 25 alignment update: [Pulse contract refactor C1–C8](pulse-contract-plan.md)
+is the current development sequence, with manual Astra/Sol checkpoints and
+concrete local acceptance criteria. The fixed wallet-slot Merkle allowlist and
+free-to-paid rules are agreed. Completed checkpoints are
+[C1 specification and interface checks](pulse-contract-spec.md),
+[C2 dependency/allowlist tooling](pulse-contract-c2.md),
+[C3 contract implementation](pulse-contract-c3.md) with focused verification,
+[C4 adversarial/invariant/gas evidence](pulse-contract-c4.md), and
+[C5 contract review/interface freeze](pulse-contract-c5.md). C5 has no blocking
+contract finding; 230 Foundry tests, all 67 released-core EVM vectors and actual
+transaction receipt checks pass. This is not an independent audit.
+C6's [versioned pipeline integration](pulse-contract-c6.md) is complete with
+targeted offline/database tests and exact runtime bindings. C7's [complete isolated
+mint/reveal rehearsal](pulse-contract-c7.md) passed four browser paths and the
+deadline/price/same-block/restricted-recovery matrix, with regression fixes and
+unchanged contract bytes. **C8's [final review and handoff](pulse-contract-c8.md)
+is complete for local development**, after wallet/quote fixes and strengthened
+race/reorg tests. The new four-browser/eight-scenario rehearsal, 496 focused
+application tests and 120 database/HTTP/projection tests pass (7 existing skips).
+Next is website/UI/flow discussion, not deployment. C8 explicitly records that
+Pulse has not inherited R1's hosted reviewed-policy admission, R3's full restore
+acceptance or R4's exact staging certificates merely by reusing their mechanisms.
+Preview-link MBTI collection is deferred. R5–R10 remain paused and retain their
+recorded status. The new consumer has isolated adapters; it has not been
+activated in the site or publicly deployed.
 
 ## Evidence and its limits
 

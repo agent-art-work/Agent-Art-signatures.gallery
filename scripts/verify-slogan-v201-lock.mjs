@@ -23,7 +23,7 @@ const UPSTREAM = {
   commit: "d00c018d1a740a5807480126d1f1bd0c620fb96d",
 };
 const EXPECTED_SOURCE = {
-  displayText: "The_First_Agent_Artwork",
+  displayText: "Anyone_Can_Sign_Anyone",
   rendererVersion: "sg-renderer-2.0.1",
   upstreamCommit: UPSTREAM.commit,
   pythonSha256: UPSTREAM_HASHES[PYTHON_PATH],

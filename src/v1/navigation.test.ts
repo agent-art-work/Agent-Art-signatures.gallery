@@ -34,14 +34,14 @@ describe("balanced public and personal navigation", () => {
   });
 
   it("balances an 11px grid and 10px dot inside identical centered 44px targets", () => {
-    const rule = SITE_CSS.match(/\.gallery-return\{([^}]*)\}/)![1];
+    const rule = SITE_CSS.match(/(?:^|\})\s*\.gallery-return\{([^}]*)\}/)![1];
     expect(rule).toContain("place-items:center;width:44px;height:44px");
     expect(rule).toContain("color:var(--collection-dot)");
     expect(rule).toContain("inset-block-start:max(.75rem,env(safe-area-inset-top))");
     expect(rule).toContain("inset-inline-start:max(.75rem,env(safe-area-inset-left))");
     expect(SITE_CSS).toContain(".home-icon{display:block;width:11px;height:11px;flex:none}");
     expect(SITE_CSS).toContain(".collection-shortcut-dot{display:block;width:10px;height:10px;border-radius:50%;background:currentColor}");
-    const personal = SITE_CSS.match(/\.collection-shortcut\{([^}]*)\}/)![1];
+    const personal = SITE_CSS.match(/(?:^|\})\s*\.collection-shortcut\{([^}]*)\}/)![1];
     expect(personal).toContain("place-items:center;width:44px;height:44px");
     expect(personal).toContain("color:var(--collection-dot)");
     expect(personal).toContain("inset-block-start:max(.75rem,env(safe-area-inset-top))");

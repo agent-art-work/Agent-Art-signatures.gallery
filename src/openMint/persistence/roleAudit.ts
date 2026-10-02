@@ -1,4 +1,5 @@
 import { FOUNDATION_RUNTIME_PRIVILEGES, PREPARATION_RUNTIME_PRIVILEGES, PROJECTION_RUNTIME_PRIVILEGES, GENERATIVE_RUNTIME_PRIVILEGES, GENERATIVE_BROWSER_RUNTIME_PRIVILEGES, GENERATIVE_RECOVERY_PRIVILEGES, STAGING_RECOVERY_PRIVILEGES, type RuntimeTablePrivileges } from "./runtimeRole.js";
+import { PULSE_BROWSER_PRIVILEGES, PULSE_RECOVERY_PRIVILEGES } from "./runtimeRole.js";
 
 /** Connected, bounded catalog-read interface. The caller owns connection/auth
  * and statement timeout. This module never connects, SETs, grants, or writes. */
@@ -105,6 +106,12 @@ export async function auditGenerativeBrowserRole(connection: RoleAuditConnection
 }
 export async function auditGenerativeRecoveryRole(connection: RoleAuditConnection) {
   return Object.freeze({ scope: "open-mint-generative-recovery-role-v1" as const, ...await auditPrivileges(connection, GENERATIVE_RECOVERY_PRIVILEGES) });
+}
+export async function auditPulseBrowserRole(connection: RoleAuditConnection) {
+  return Object.freeze({ scope: "open-mint-pulse-browser-role-v1" as const, ...await auditPrivileges(connection, PULSE_BROWSER_PRIVILEGES) });
+}
+export async function auditPulseRecoveryRole(connection: RoleAuditConnection) {
+  return Object.freeze({ scope: "open-mint-pulse-recovery-role-v1" as const, ...await auditPrivileges(connection, PULSE_RECOVERY_PRIVILEGES) });
 }
 export async function requireStagingRecoveryRole(connection: RoleAuditConnection) {
   const report = await auditPrivileges(connection, STAGING_RECOVERY_PRIVILEGES);

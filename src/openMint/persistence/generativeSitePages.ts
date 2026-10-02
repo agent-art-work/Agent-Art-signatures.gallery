@@ -24,7 +24,7 @@ export function createGenerativeSitePages(input: {
   const { runtime } = input, detail = input.artwork.detail.bind(input.artwork), gallery = input.projection.gallery.bind(input.projection);
   const options: OpenMintPageOptions = { stylesheetUrl: "/assets/generative-gallery.css", clientScriptUrl: "/assets/generative-wallet.js",
     publicOrigin: runtime.sessions.origin, chainId: "31337", chainName: "Local Anvil", contract: runtime.requests.profile.contract_address,
-    durableWalletSubmission: true, generativeArtwork: true, ...input.pageOptions };
+    durableWalletSubmission: true, generativeArtwork: true, pulseMint: !!runtime.requests.pulse, ...input.pageOptions };
   const publicPages = createGenerativeGalleryPages({ ...input, pageOptions: options });
   async function previewState(spelling: string, signal: AbortSignal): Promise<{ state: PublicPreviewState; model?: AssessmentPageModel }> {
     try {
@@ -68,7 +68,7 @@ export function createGenerativeSitePages(input: {
         if (found.created) res.setHeader("Set-Cookie", runtime.sessions.cookie(found.session));
         const view = runtime.sessionView(found.session);
         if (!view.walletVerified || !view.wallet) { send(200, collectionPage([], options)); return true; }
-        const result = await gallery({ filter: { kind: "owner", value: view.wallet.toLowerCase() }, limit: 24, ...(cursor ? { cursor } : {}) });
+        const result = await gallery({ filter: { kind: "owner", value: view.wallet.toLowerCase() }, limit: 24, includeConfirming: true, ...(cursor ? { cursor } : {}) });
         // Recheck after the read: logout, changed wallet, generation or expiry
         // while awaiting the database cannot retain the prior wallet's page.
         const current = await runtime.sessions.requireSession(runtime.sessions.cookie(found.session)), checked = runtime.sessionView(current);
@@ -91,7 +91,9 @@ export function createGenerativeSitePages(input: {
       send(200, input.sharing ? input.sharing.decorate(html, raw, model) : html);
     } catch (error) {
       const status = error instanceof PublicError ? error.status : error instanceof ProjectionCursorError ? 400 : 503;
-      const message = error instanceof PublicError ? error.message : error instanceof ProjectionCursorError ? "Restart collection pagination." : "Mint status cannot be verified right now. No new assessment or mint was requested.";
+      const message = error instanceof PublicError ? error.message : error instanceof ProjectionCursorError ? "Restart collection pagination."
+        : path === "/me" ? "Your collection could not be loaded right now. Please try again shortly."
+        : "This page could not be loaded right now. Please try again shortly.";
       send(status, errorPage(message, options));
     } finally { controller.abort(); res.removeListener("close", cancel); }
     return true;

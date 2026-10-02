@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { errorPage, localOAuthAuthorizePage, previewPage, reviewPage, signInRequiredPage } from "./pages.js";
 import { SITE_CSS } from "./siteCss.js";
+import { SITE_ACTION_SELECTOR, SITE_CONTROLS_CSS } from "./controlsCss.js";
 
 const preview = {
   handle: "alice",
@@ -207,18 +208,16 @@ describe("minimal authentication pages", () => {
     expect(formFor(htmlPages[3], "/dev/oauth/x/authorize")).toContain(`name="request" value="${escaped}"`);
   });
 
-  it("uses regular text with compact hairline action labels and accessible hit targets", () => {
-    expect(SITE_CSS).toContain("body,body :not(svg,svg *){font-size:var(--ui-font-size);font-weight:400}");
-    const action = SITE_CSS.match(/(?:^|})\s*\.auth-action\{([^}]*)\}/)?.[1];
-    expect(action).toMatch(/min-height:44px/);
-    expect(action).toMatch(/min-width:44px/);
-    const highlight = SITE_CSS.match(/\.auth-action>span:first-child\{([^}]*)\}/)?.[1];
-    expect(highlight).toContain('padding:var(--control-padding)');
-    expect(highlight).toContain('border:1px solid var(--ink)');
-    expect(highlight).toContain('color:var(--ink)');
-    expect(highlight).not.toContain('min-height:44px');
-    expect(highlight).toContain('background:transparent');
-    expect(SITE_CSS).toContain(".auth-action:focus-visible");
+  it("uses the shared pill controls with accessible labels and hit targets", () => {
+    expect(SITE_CSS).toContain("body,body :not(svg,svg *){font-size:var(--ui-font-size);font-weight:var(--ui-font-weight)}");
+    const action = SITE_CONTROLS_CSS.split(SITE_ACTION_SELECTOR + "{")[1]?.split("}")[0];
+    expect(action).toContain("min-height:48px");
+    expect(action).toContain("min-width:44px");
+    expect(action).toContain("font-size:16px;font-weight:var(--ui-font-weight)");
+    expect(action).toContain("border-radius:999px");
+    expect(SITE_CONTROLS_CSS).toContain("body .auth-action>span:first-child");
+    expect(SITE_CONTROLS_CSS).toContain("padding:0;border:0");
+    expect(SITE_CONTROLS_CSS).toContain(":focus-visible{outline:2px solid var(--ink);outline-offset:4px}");
     expect(SITE_CSS).toContain(".auth-disclosure>summary:focus-visible");
   });
 });

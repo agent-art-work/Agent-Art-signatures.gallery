@@ -1,7 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import canonicalize from "canonicalize";
-import { encodeFunctionData, getAddress, type Hex } from "viem";
-import { GENERATIVE_MINT_ABI, normalizeGenerativeAuthorization } from "../generativeAuthorization.js";
+import { getAddress, type Hex } from "viem";
 import { isCode, opaqueCode, PublicError } from "../security.js";
 import type { WalletChainContext } from "../walletChain.js";
 import type { AuthorizationReservation, PostgresGenerativeAuthorizationIssuer, IssuanceIntent } from "./generativeAuthorizations.js";
@@ -12,9 +11,11 @@ import type { RuntimeIntent } from "./runtimeService.js";
 import { capabilityHash } from "./sessions.js";
 import type { OwnershipConnection } from "./writer.js";
 import type { GenerativeTransactionGuard } from "./generativeInputs.js";
+import { normalizeReservedAuthorization, verifyReservedSignature } from "./generativeAuthorizations.js";
+import { reservedWalletTransaction } from "./reservedTransaction.js";
 
 type Tx = Pick<OwnershipConnection, "query">;
-export interface WalletMintPlan { expiresAt: string; transaction: { from: string; to: string; chainId: string; data: Hex; value: string; nonce: Hex } }
+export interface WalletMintPlan { version?: "sg-pulse-wallet-plan-v1-rc1"; expiresAt: string; transaction: { from: string; to: string; chainId: string; data: Hex; value: string; nonce: Hex } }
 interface Row { request_id: string; wallet: string; handle: string; generation: string; request_generation: string; csrf: string; expires_at: Date; request_expiry: Date;
   revoked: boolean; proof_wallet: string | null; proof_code_hash: string | null; proof_expires_at: Date | null; active_challenge_hash: string | null }
 interface Dispatch { attempt: number; permit_hash: string; outcome: "submitted" | "rejected" | null; transaction_hash: Hex | null }
@@ -78,14 +79,23 @@ export class PostgresWalletSubmissions {
         WHERE a.namespace_id=$1 AND a.deployment_id=$2 AND a.request_id=$3 AND a.session_hash=$4 AND a.state='signed'`,
       [this.namespaceId, this.requests.profile.deployment_id, row.request_id, sessionHash])).rows[0];
       if (!signed) blocked("NOT_READY", "A saved mint authorization is required.");
-      const r = JSON.parse(signed.payload.toString("utf8")) as AuthorizationReservation, a = normalizeGenerativeAuthorization(r.authorization);
-      const exact = { from: getAddress(row.wallet), to: getAddress(this.requests.profile.contract_address), chainId: `0x${BigInt(this.requests.profile.chain_id).toString(16)}`, value: "0x0",
-        data: encodeFunctionData({ abi: GENERATIVE_MINT_ABI, functionName: "mint", args: [r.renderHandle, r.mbti, a, signed.signature] }) };
-      if (r.requestId !== row.request_id || r.generation !== row.generation || r.sessionHash !== sessionHash || a.recipient !== exact.from
-        || r.domain.chainId !== this.requests.profile.chain_id || getAddress(r.domain.verifyingContract) !== exact.to || !json(input.transaction).equals(json(exact))
+      const r = JSON.parse(signed.payload.toString("utf8")) as AuthorizationReservation, a = normalizeReservedAuthorization(r.version, r.authorization);
+      const pulse = r.version === "sg-generative-pulse-authorization-v1-rc1";
+      if (pulse !== !!this.requests.pulse || !await verifyReservedSignature(r, signed.signature)) blocked("NOT_READY", "Exact signed deployment authority required.");
+      if (pulse) {
+        const saved = await this.requests.pulse!.load(tx, row.request_id);
+        if (r.authorization.mintMode !== saved.mintMode || r.authorization.slotId !== saved.slotId || r.authorization.maxPrice !== saved.maxPrice
+          || !json(r.proof).equals(json(saved.proof))) blocked("NOT_READY", "Saved mint economics changed.");
+      }
+      const exact = reservedWalletTransaction(r, signed.signature);
+      if (r.requestId !== row.request_id || r.generation !== row.generation || r.sessionHash !== sessionHash || a.recipient !== getAddress(row.wallet)
+        || r.namespaceId !== this.namespaceId || r.deploymentId !== this.requests.profile.deployment_id
+        || getAddress(r.authorizer) !== getAddress(this.requests.profile.authorizer)
+        || r.domain.chainId !== this.requests.profile.chain_id || exact.to !== getAddress(this.requests.profile.contract_address) || !json(input.transaction).equals(json(exact))
+        || input.version !== (pulse ? "sg-pulse-wallet-plan-v1-rc1" : undefined)
         || chain.chainId !== exact.chainId || getAddress(chain.contract) !== exact.to || input.expiresAt !== new Date(Number(a.deadline) * 1000).toISOString()
         || Number(a.deadline) * 1000 <= now) blocked("AUTHORIZATION_EXPIRED", "The saved mint authorization cannot be used. Operator review is required.");
-      const plan: WalletMintPlan = { expiresAt: input.expiresAt, transaction: { ...exact, nonce: chain.nonce } }, payload = json(plan);
+      const plan: WalletMintPlan = { ...(pulse ? { version: "sg-pulse-wallet-plan-v1-rc1" as const } : {}), expiresAt: input.expiresAt, transaction: { ...exact, nonce: chain.nonce } }, payload = json(plan);
       const saved = (await tx.query<{ payload: Buffer; nonce_active: boolean }>("SELECT payload,nonce_active FROM open_mint.wallet_mint_plans WHERE namespace_id=$1 AND request_id=$2", [this.namespaceId, row.request_id])).rows[0];
       if (saved) {
         if (!saved.nonce_active) blocked("REQUEST_RETIRED", "This request was retired by an operator. Start a new request; the accepted assessment is preserved.");
@@ -103,9 +113,22 @@ export class PostgresWalletSubmissions {
     });
   }
   async begin(code: string, intent: RuntimeIntent, expected: WalletMintPlan) {
+    if (this.requests.pulse) blocked("SUBMISSION_UNRESOLVED", "Pulse submission requires fresh exact authority inspection.");
     if (this.guard) blocked("SUBMISSION_UNRESOLVED", "Staging submission requires admission.");
     const bytes = json(expected), expiresAt = Date.parse(expected.expiresAt);
     return this.writer.transaction(tx => this.#begin(tx, code, intent, bytes, expiresAt));
+  }
+  async beginPulse(issuer: PostgresGenerativeAuthorizationIssuer, value: IssuanceIntent, intent: RuntimeIntent, expected: WalletMintPlan) {
+    if (!this.requests.pulse || issuer.requests !== this.requests || expected.version !== "sg-pulse-wallet-plan-v1-rc1"
+      || value.sessionToken !== intent.session.id || value.sessionGeneration !== intent.session.generation || value.origin !== intent.origin || value.csrf !== intent.csrf) blocked();
+    const plan = structuredClone(expected), bytes = json(plan), saved = await issuer.prepareSignedInspection(value);
+    return this.writer.transaction(async tx => {
+      const current = await saved.inspect(tx);
+      const exact = { ...reservedWalletTransaction(saved.reservation, current.signature), nonce: plan.transaction.nonce };
+      if (!json(exact).equals(json(plan.transaction)) || plan.expiresAt !== new Date(Number(saved.reservation.authorization.deadline) * 1000).toISOString()) blocked();
+      const permit = await this.#begin(tx, value.code, intent, bytes, Date.parse(plan.expiresAt));
+      await saved.inspect(tx); return permit;
+    });
   }
   async #ready(tx: Tx, code: string, intent: RuntimeIntent, bytes: Buffer, expiresAt: number) {
       const { row, now } = await this.#context(tx, code, intent, true), last = await this.#dispatch(tx, row.request_id);
@@ -132,9 +155,7 @@ export class PostgresWalletSubmissions {
     const signed = await issuer.prepareSignedInspection(value), r = signed.reservation;
     const readiness = async (tx: Tx) => {
       const current = await signed.inspect(tx), ready = await this.#ready(tx, code, input, bytes, expiresAt);
-      const exact = { from: r.authorization.recipient, to: r.domain.verifyingContract, chainId: `0x${BigInt(this.requests.profile.chain_id).toString(16)}`, value: "0x0",
-        data: encodeFunctionData({ abi: GENERATIVE_MINT_ABI, functionName: "mint", args: [r.renderHandle, r.mbti, normalizeGenerativeAuthorization(r.authorization), current.signature] }),
-        nonce: plan.transaction.nonce };
+      const exact = { ...reservedWalletTransaction(r, current.signature), nonce: plan.transaction.nonce };
       if (ready.row.request_id !== r.requestId || expiresAt !== Number(r.authorization.deadline) * 1000 || !json(plan.transaction).equals(json(exact))) blocked();
       return { observedAt: current.observedAt, validUntil: Math.min(current.validUntil, expiresAt), attempt: ready.attempt };
     };

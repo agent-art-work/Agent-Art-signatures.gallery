@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SITE_CSS } from "../v1/siteCss.js";
+import { SITE_ACTION_SELECTOR } from "../v1/controlsCss.js";
 import { collectionPage, homePage, mbtiGalleryPage, OPEN_MINT_CSS, type GalleryEntry } from "./pages.js";
 
 const entry: GalleryEntry = {
@@ -30,7 +31,7 @@ describe("home gallery width", () => {
     expect(rules(OPEN_MINT_CSS).filter(rule => rule.selector.includes(".home-guidance")))
       .toEqual([{
         selector: ".open-mint .home-grid .home-guidance",
-        declarations: "font-size:min(16px,3.1cqi);line-height:1.5;text-align:center;white-space:nowrap;margin:0 0 .75rem",
+        declarations: "font-size:min(16px,2.4cqi);line-height:1.5;text-align:center;white-space:nowrap;margin:0 0 .75rem",
       }, {
         selector: ".open-mint .home-grid .home-guidance>span",
         declarations: "display:inline-block;max-width:100%;font:inherit",
@@ -38,7 +39,7 @@ describe("home gallery width", () => {
     expect(SITE_CSS).not.toContain(".home-guidance");
     const home = homePage({}, [entry]);
     expect(home.match(/class="home-guidance"/g)).toHaveLength(1);
-    expect(home).toContain('<p class="home-guidance"><span>Choose any X handle.</span>&nbsp; <span>Grok interprets it.</span>&nbsp; <span>Mint to reveal the signature.</span></p>');
+    expect(home).toContain('<p class="home-guidance"><span>Choose any X handle.</span> <span>One signature per handle—mint to reveal it.</span></p>');
     expect(home).not.toMatch(/<(?:form|button|input)[^>]*class="[^"]*home-guidance/);
     for (const html of [mbtiGalleryPage("INTJ", [entry]), collectionPage([entry])]) {
       expect(html).not.toContain('class="home-guidance"');
@@ -54,7 +55,7 @@ describe("home gallery width", () => {
     expect(phrases?.declarations).not.toMatch(/font-size:\s*(?:14px|var\(--ui-font-size\))/);
   });
 
-  it("sets both the homepage Mint CTA and its label to 16px while retaining the shared 14px UI and 44px target", () => {
+  it("sets both the homepage Mint CTA and its label to 16px while retaining the shared 14px UI and adopting the shared 48px pill", () => {
     expect(rules(OPEN_MINT_CSS).filter(rule => rule.selector.includes(".home-mint-cta")))
       .toEqual([{
         selector: ".open-mint .home-grid .home-mint-cta,.open-mint .home-grid .home-mint-cta>span",
@@ -62,8 +63,9 @@ describe("home gallery width", () => {
       }]);
     expect(rules(SITE_CSS).find(rule => rule.selector === ":root")?.declarations)
       .toContain("--ui-font-size:14px");
-    const target = rules(SITE_CSS).find(rule => rule.selector === ".auth-action")?.declarations;
-    expect(target).toContain("min-height:44px;min-width:44px");
+    const target = rules(SITE_CSS).find(rule => rule.selector === SITE_ACTION_SELECTOR)?.declarations;
+    expect(target).toContain("min-width:44px;min-height:48px");
+    expect(target).toContain("border-radius:999px");
     expect(SITE_CSS).not.toContain("home-mint-cta");
     const home = homePage({}, [entry]);
     expect(home.match(/class="auth-action home-mint-cta"/g)).toHaveLength(1);
@@ -146,6 +148,7 @@ describe("home gallery width", () => {
     expect(home).toContain('<section class="home-grid"><div class="intro-panel">');
     expect(home).toContain('<div class="gallery-shell"><section class="open-intro"');
     expect(home).toContain('</section><div class="public-gallery-grid">');
+    expect(home).not.toContain('data-mint-observation-warning');
     for (const html of [mbtiGalleryPage("INTJ", [entry]), collectionPage([entry])]) {
       expect(html).toContain('<section class="collection-page"');
       expect(html).toContain('<div class="public-gallery-grid">');
@@ -153,25 +156,17 @@ describe("home gallery width", () => {
     }
   });
 
-  it("scopes both navigation insets to the home gallery with viewport and safe-area bounds", () => {
+  it("uses shared navigation alignment without homepage-specific position overrides", () => {
     const navigationRules = rules(OPEN_MINT_CSS).filter(rule =>
-      rule.declarations.includes("--home-nav-inset")
+      /--(?:home-)?nav-inset/.test(rule.declarations)
       || /\.(?:gallery-return|home-return|home-icon|collection-shortcut(?:-dot)?)\b/.test(rule.selector));
-
-    expect(navigationRules).toEqual([
-      {
-        selector: ".open-mint:has(.home-grid)",
-        declarations: "--home-nav-inset:clamp(-22px,calc((1024px - 100vw)/2 + 20px),12px)",
-      },
-      {
-        selector: ".open-mint:has(.home-grid) .home-return",
-        declarations: "inset-inline-start:max(var(--home-nav-inset),calc(env(safe-area-inset-left) - 22px))",
-      },
-      {
-        selector: ".open-mint:has(.home-grid) .collection-shortcut",
-        declarations: "inset-inline-end:max(var(--home-nav-inset),calc(env(safe-area-inset-right) - 22px))",
-      },
-    ]);
+    expect(navigationRules).toEqual([]);
+    expect(rules(SITE_CSS).find(rule => rule.selector === ".book-page")?.declarations)
+      .toContain("--nav-inset:clamp(-22px,calc((1024px - 100vw)/2 + 20px),12px)");
+    expect(rules(SITE_CSS).find(rule => rule.selector === ".book-page .gallery-return")?.declarations)
+      .toBe("inset-inline-start:max(var(--nav-inset),calc(env(safe-area-inset-left) - 22px))");
+    expect(rules(SITE_CSS).find(rule => rule.selector === ".book-page>main>.collection-shortcut,.book-page .account-menu")?.declarations)
+      .toBe("inset-inline-end:max(var(--nav-inset),calc(env(safe-area-inset-right) - 22px))");
   });
 
   it("preserves centered 44px navigation targets and the existing 11px grid and 10px dot", () => {

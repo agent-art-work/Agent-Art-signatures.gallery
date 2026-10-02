@@ -28,7 +28,7 @@ const text = (value: string | undefined): string | undefined => value === undefi
 export function provenanceBody(model: AssessmentPageModel, handle: string): string {
   const grok = model.assessmentProvenance === "grok";
   const fixture = model.assessmentProvenance === "development-fixture";
-  const assessor = grok ? "Grok" : fixture ? "Development fixture" : "Not recorded";
+  const assessor = grok ? "Grok" : fixture ? "Sample input" : "Not recorded";
   const explanation = grok
     ? "Grok selected this MBTI from public X research. The first accepted assessment is fixed for this handle. This is the site’s assessment record, not a cryptographic signature from Grok."
     : fixture ? "Sample MBTI input; Grok was not called."

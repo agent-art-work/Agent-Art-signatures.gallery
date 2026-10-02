@@ -75,6 +75,9 @@ class AssessmentWorkerCore {
     if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1 || input.timeoutMs > 180000) blocked("INVALID_EXECUTION_DEADLINE");
     this.#timeoutMs = input.timeoutMs;
     if (input.admission && input.admission.requests !== requests) blocked("ADMISSION_PROFILE_MISMATCH");
+    // RC1 admission controllers do not implement Pulse sponsorship fences.
+    // Refuse composition rather than let their dispatch path bypass those gates.
+    if (requests.pulse && input.admission) blocked("PULSE_ADMISSION_NOT_SUPPORTED");
     // Local runtime uses this object's identity to reject crossed admission
     // instances. The separate staging composition supplies a frozen controller.
     this.admission = input.admission;
@@ -110,6 +113,7 @@ class AssessmentWorkerCore {
       || evidence.genesisHash !== p.genesis_hash || evidence.runtimeCodeHash !== p.runtime_code_hash
       || evidence.authorizer.toLowerCase() !== p.authorizer || evidence.deploymentBlock.number.toString() !== p.deployment_block
       || evidence.deploymentBlock.hash !== p.deployment_block_hash) blocked("CHAIN_PROFILE_MISMATCH");
+    if ((evidence.contractProfile === "generative-pulse-v1-rc1") !== !!this.requests.pulse) blocked("CHAIN_PROFILE_MISMATCH");
     const blockTime = Number(evidence.block.timestamp) * 1000;
     if (now - evidence.observedAt >= p.max_evidence_age_ms || now - blockTime >= p.max_block_age_ms
       || blockTime - now > p.max_future_skew_ms) blocked("CHAIN_UNAVAILABLE");
@@ -150,7 +154,9 @@ class AssessmentWorkerCore {
     const work = async (): Promise<AssessmentWorkerResult> => {
     pendingClaim = repository.executionTransaction(async (tx, execution) => {
       assertActive();
-      const { request, now } = await this.#context(tx, input); this.#chain(input.eligibility, request, now);
+      const { request, now } = await this.#context(tx, input);
+      const initialEvidence = this.#chain(input.eligibility, request, now);
+      await this.requests.pulse?.check(tx, request.request_id, initialEvidence, now);
       const accepted = await execution.getAssessment(request.handle);
       if (accepted) {
         if ((request.assessment_id !== null && request.assessment_id !== accepted.id)
@@ -196,10 +202,12 @@ class AssessmentWorkerCore {
         }
         await repository.executionTransaction(async (tx, operations) => {
           assertActive();
-          const context = await this.#context(tx, input); this.#chain(witness, context.request, context.now);
+          const context = await this.#context(tx, input), evidence = this.#chain(witness, context.request, context.now);
           if (context.request.request_id !== request.request_id || context.request.attempt_id !== id) throw new PersistenceConflictError("Worker request binding changed.");
+          await this.requests.pulse?.check(tx, request.request_id, evidence, context.now, next, id);
           await operations.beforeDispatch(id, next, this.#provider!.model);
-          const end = await this.#context(tx, input); this.#chain(witness, end.request, end.now);
+          const end = await this.#context(tx, input), finalEvidence = this.#chain(witness, end.request, end.now);
+          await this.requests.pulse?.check(tx, request.request_id, finalEvidence, end.now);
           assertActive();
         });
         leg = next;

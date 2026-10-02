@@ -1,0 +1,48 @@
+{
+  "schema": "sg-pulse-sepolia-sourcify-evidence/v1",
+  "date": "2026-09-27",
+  "chainId": 11155111,
+  "testOnly": true,
+  "productionApproved": false,
+  "provider": "Sourcify",
+  "publicationApprovedByUser": true,
+  "candidateLockSha256": "029851c5130f685b54abaf7f9b45ae03e56d31a42cfd72bb7de2756e63fed4a8",
+  "compilerVersion": "0.8.30+commit.73712a01",
+  "evmVersion": "prague",
+  "optimizerRuns": 200,
+  "onchainTransactionsSentForPublication": 0,
+  "privateKeyUsedForPublication": false,
+  "secretFilesUploaded": false,
+  "contracts": [
+    {
+      "name": "SignaturesPulseMintV1RC1",
+      "address": "0x88c435146A017338E48Abe3BEE2F11BcEab79cC2",
+      "creationMatch": "exact_match",
+      "runtimeMatch": "exact_match",
+      "verifiedAt": "2026-09-27T02:58:19Z",
+      "matchId": "53250178",
+      "verificationId": "48aaeb43-e357-4a87-a4cd-05b92e4e5875",
+      "jobUrl": "https://sourcify.dev/server/v2/verify/48aaeb43-e357-4a87-a4cd-05b92e4e5875",
+      "sourceBrowser": "https://repo.sourcify.dev/11155111/0x88c435146A017338E48Abe3BEE2F11BcEab79cC2",
+      "readbackUrl": "https://sourcify.dev/server/v2/contract/11155111/0x88c435146A017338E48Abe3BEE2F11BcEab79cC2?fields=metadata,sources",
+      "sourceEntries": 35,
+      "allPublishedSourceBytesMatchLocal": true,
+      "metadataMatchesOriginalRawCompilerMetadata": true
+    },
+    {
+      "name": "SignatureRendererV1RC1",
+      "address": "0x954b4Ee81F46a04435792A6deeA5126F058b13C1",
+      "creationMatch": "exact_match",
+      "runtimeMatch": "exact_match",
+      "verifiedAt": "2026-09-27T02:57:39Z",
+      "matchId": "53250106",
+      "verificationId": "07cc38c6-15e0-4e44-820c-420a8a96f9a5",
+      "jobUrl": "https://sourcify.dev/server/v2/verify/07cc38c6-15e0-4e44-820c-420a8a96f9a5",
+      "sourceBrowser": "https://repo.sourcify.dev/11155111/0x954b4Ee81F46a04435792A6deeA5126F058b13C1",
+      "readbackUrl": "https://sourcify.dev/server/v2/contract/11155111/0x954b4Ee81F46a04435792A6deeA5126F058b13C1?fields=metadata,sources",
+      "sourceEntries": 7,
+      "allPublishedSourceBytesMatchLocal": true,
+      "metadataMatchesOriginalRawCompilerMetadata": true
+    }
+  ]
+}

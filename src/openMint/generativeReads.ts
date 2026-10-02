@@ -8,6 +8,7 @@ import type { PublicChainBlock, PublicChainGateConfig } from "./publicChain.js";
 import { PublicChainGate, createStagingEligibilityReader, PUBLIC_CHAIN_READ_ABI } from "./publicChain.js";
 import type { PublicChainRpc } from "./publicChainRpc.js";
 import { decodeArtworkDataUri, decodeBoundedRead, GENERATIVE_READ_LIMITS as LIMITS } from "./generativeReadLimits.js";
+import { verifyPulseImmutables } from "./pulseEconomics.js";
 
 export interface GenerativeMintEvidence {
   readonly kind: GenerativeContractProfile;
@@ -77,6 +78,9 @@ function artworkReader(options: ArtworkReaderOptions, staging: boolean) {
           if (typeof runtime !== "string" || runtime.length > 131074 || !/^0x(?:[0-9a-f]{2})+$/.test(runtime) || keccak256(runtime as Hex) !== expected) fail();
         }
         const domainData = encodeFunctionData({ abi: PUBLIC_CHAIN_READ_ABI, functionName: "eip712Domain" });
+        if (config.pulse) await verifyPulseImmutables(config.pulse, config.chainId,
+          async data => await request("eth_call", [{ to: config.contract, data, gas: numberToHex(LIMITS.scalarGas) }, pinned]) as Hex,
+          async () => await request("eth_getCode", [config.pulse!.core, pinned]) as Hex);
         const raw = await request("eth_call", [{ to: config.contract, data: domainData, gas: numberToHex(LIMITS.scalarGas) }, pinned]);
         decodeBoundedRead(PUBLIC_CHAIN_READ_ABI, "eip712Domain", raw, LIMITS.scalarAbiBytes);
         const d = decodeFunctionResult({ abi: PUBLIC_CHAIN_READ_ABI, functionName: "eip712Domain", data: raw as Hex });

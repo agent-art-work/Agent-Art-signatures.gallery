@@ -2,7 +2,7 @@ import { profileForReservation, type GenerativeReservationVersion } from "../gen
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import canonicalize from "canonicalize";
-import { getAddress, hashTypedData, type Address, type Hex } from "viem";
+import { getAddress, hashTypedData, type Address, type Hex, type TypedDataDefinition } from "viem";
 import { generativeInputDigest } from "../generativeInputs.js";
 import type { MBTI } from "../identity.js";
 import { validateAssessment } from "../assessment.js";
@@ -19,6 +19,8 @@ import { capabilityHash } from "./sessions.js";
 import { PersistenceConflictError, type OwnershipConnection } from "./writer.js";
 import { admissionDigest } from "../staging/admission.js";
 import type { LocalMintOperation } from "./mintAdmission.js";
+import { normalizePulseAuthorization, pulseMintTypedData, type PulseAuthorizationInput } from "../pulseAuthorization.js";
+import type { SavedPulseIntent } from "./pulseEconomics.js";
 
 type Transaction = Pick<OwnershipConnection, "query">;
 export interface IssuanceIntent {
@@ -29,15 +31,16 @@ export interface IssuanceIntent {
 }
 export interface ReservedAuthorizationSigner {
   readonly address: Address;
-  signTypedData(input: ReturnType<typeof generativeMintTypedData>, signal: AbortSignal): Promise<string>;
+  signTypedData(input: TypedDataDefinition, signal: AbortSignal): Promise<string>;
 }
-interface AuthorizationFields extends Omit<GenerativeAuthorizationInput, "issuedAt" | "deadline"> { issuedAt: string; deadline: string }
+interface AuthorizationFields extends Omit<GenerativeAuthorizationInput, "issuedAt" | "deadline"> { issuedAt: string; deadline: string; mintMode?: 0 | 1; slotId?: string; maxPrice?: string }
 export interface AuthorizationReservation {
   readonly version: GenerativeReservationVersion; readonly id: string; readonly namespaceId: string; readonly deploymentId: string;
   readonly requestId: string; readonly sessionHash: string; readonly generation: string; readonly handle: string; readonly assessmentId: string;
   readonly renderHandle: string; readonly mbti: string; readonly rendererIdentity: Hex; readonly authorizer: Address;
   readonly domain: { readonly chainId: string; readonly verifyingContract: Address };
   readonly authorization: AuthorizationFields; readonly digest: Hex; readonly typedData: unknown;
+  readonly proof?: readonly Hex[];
 }
 interface Policy {
   enabled: boolean; lifetime_seconds: number; signer_timeout_ms: number;
@@ -55,10 +58,17 @@ interface Stored {
 }
 interface CapturedIntent extends IssuanceIntent { sessionHash: string; codeHash: string }
 const json = (value: unknown): Buffer => Buffer.from(canonicalize(value)!);
-const plainTypedData = (value: ReturnType<typeof generativeMintTypedData>): unknown => JSON.parse(JSON.stringify(value, (_key, item) => typeof item === "bigint" ? item.toString() : item));
+const plainTypedData = (value: ReturnType<typeof generativeMintTypedData> | ReturnType<typeof pulseMintTypedData>): unknown => JSON.parse(JSON.stringify(value, (_key, item) => typeof item === "bigint" ? item.toString() : item));
 const reservedTypedData = (domain: OpenMintDomainInput, authorization: GenerativeAuthorizationInput, profile: GenerativeInputProfile) =>
-  String(domain.chainId) === "11155111" ? stagingGenerativeMintTypedData(domain, authorization, profile) : generativeMintTypedData(domain, authorization, profile);
-const reservedDigest = (domain: OpenMintDomainInput, authorization: GenerativeAuthorizationInput, profile: GenerativeInputProfile) => hashTypedData(reservedTypedData(domain, authorization, profile));
+  profile === "sg-generative-pulse-inputs-v1-rc1" ? pulseMintTypedData(domain, authorization as PulseAuthorizationInput)
+    : String(domain.chainId) === "11155111" ? stagingGenerativeMintTypedData(domain, authorization, profile) : generativeMintTypedData(domain, authorization, profile);
+const reservedDigest = (domain: OpenMintDomainInput, authorization: GenerativeAuthorizationInput, profile: GenerativeInputProfile) => {
+  const data = reservedTypedData(domain, authorization, profile);
+  return data.primaryType === "PulseMintAuthorization" ? hashTypedData(data) : hashTypedData(data);
+};
+export function normalizeReservedAuthorization(version: GenerativeReservationVersion, a: GenerativeAuthorizationInput) {
+  return version === "sg-generative-pulse-authorization-v1-rc1" ? normalizePulseAuthorization(a as PulseAuthorizationInput) : normalizeGenerativeAuthorization(a);
+}
 export class IssuanceBlockedError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = "IssuanceBlockedError"; }
 }
@@ -90,6 +100,7 @@ export class PostgresGenerativeAuthorizationIssuer {
     private readonly guard?: GenerativeTransactionGuard) {}
   get writer() { return this.requests.repository.writer; }
   static async open(requests: PostgresMintRequests, journal: PostgresGenerativeInputJournal): Promise<PostgresGenerativeAuthorizationIssuer> {
+    if ((journal.profile.contractProfile === "generative-pulse-v1-rc1") !== !!requests.pulse) blocked("ISSUANCE_DISABLED", "Explicit Pulse economics composition required.");
     if (requests.repository.writer !== journal.writer || requests.repository.namespace.id !== journal.namespaceId || requests.profile.deployment_id !== journal.deploymentId || requests.repository.namespace.profile !== "local-real"
       || requests.repository.namespace.provenance !== "grok" || requests.profile.chain_id !== "31337") blocked("ISSUANCE_DISABLED", "Only the isolated local issuance foundation is implemented.");
     const issuer = new PostgresGenerativeAuthorizationIssuer(requests, journal);
@@ -114,7 +125,7 @@ export class PostgresGenerativeAuthorizationIssuer {
     return row;
   }
   async #now(tx: Transaction): Promise<number> { return (await tx.query<{ now: Date }>("SELECT clock_timestamp() AS now")).rows[0].now.getTime(); }
-  async #context(tx: Transaction, input: CapturedIntent): Promise<{ request: Request; session: Session; now: number; policy: Policy }> {
+  async #context(tx: Transaction, input: CapturedIntent): Promise<{ request: Request; session: Session; now: number; policy: Policy; pulseIntent?: SavedPulseIntent }> {
     const namespace = this.requests.repository.namespace.id, now = await this.#now(tx), policy = await this.#policy(tx);
     const session = (await tx.query<Session>("SELECT *,generation::text FROM open_mint.sessions WHERE namespace_id=$1 AND session_hash=$2 FOR UPDATE", [namespace, input.sessionHash])).rows[0];
     if (!session || session.revoked || session.expires_at.getTime() <= now || input.origin !== this.requests.profile.origin
@@ -129,7 +140,18 @@ export class PostgresGenerativeAuthorizationIssuer {
     if (session.generation !== input.sessionGeneration || session.wallet !== request.wallet) blocked("WALLET_CHANGED", "The current wallet or generation changed.");
     if (session.proof_wallet !== request.wallet || !session.proof_expires_at || session.proof_expires_at.getTime() <= now || session.active_challenge_hash
       || (session.proof_code_hash !== null && session.proof_code_hash !== input.codeHash)) blocked("WALLET_PROOF_REQUIRED", "A current general or matching request proof is required.");
-    return { request, session, now, policy };
+    const pulseIntent = this.requests.pulse ? await this.requests.pulse.load(tx, request.request_id) : undefined;
+    if (pulseIntent && input.eligibility !== undefined) {
+      const evidence = this.#chain(input, request, policy, now);
+      await this.requests.pulse!.check(tx, request.request_id, evidence, now);
+      const saved = (await tx.query<{ payload: Buffer }>("SELECT payload FROM open_mint.generative_authorizations WHERE namespace_id=$1 AND request_id=$2", [namespace, request.request_id])).rows;
+      for (const row of saved) {
+        const r = JSON.parse(row.payload.toString("utf8")) as AuthorizationReservation;
+        if (r.authorization.mintMode !== pulseIntent.mintMode || r.authorization.slotId !== pulseIntent.slotId || r.authorization.maxPrice !== pulseIntent.maxPrice
+          || !json(r.proof).equals(json(pulseIntent.proof))) throw new PersistenceConflictError("Saved authorization economics changed.");
+      }
+    }
+    return { request, session, now, policy, pulseIntent };
   }
   #chain(input: CapturedIntent, request: Request, policy: Policy, now: number, nonce?: string): PublicChainEvidence {
     let evidence: PublicChainEvidence;
@@ -163,10 +185,11 @@ export class PostgresGenerativeAuthorizationIssuer {
 
   #decode(row: Stored): AuthorizationReservation {
     const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(row.payload)) as AuthorizationReservation;
-    exactKeys(value, ["version", "id", "namespaceId", "deploymentId", "requestId", "sessionHash", "generation", "handle", "assessmentId", "renderHandle", "mbti", "rendererIdentity", "authorizer", "domain", "authorization", "digest", "typedData"]);
+    const pulse = this.journal.profile.contractProfile === "generative-pulse-v1-rc1";
+    exactKeys(value, ["version", "id", "namespaceId", "deploymentId", "requestId", "sessionHash", "generation", "handle", "assessmentId", "renderHandle", "mbti", "rendererIdentity", "authorizer", "domain", "authorization", "digest", "typedData", ...(pulse ? ["proof"] : [])]);
     exactKeys(value.domain, ["chainId", "verifyingContract"]);
-    exactKeys(value.authorization, ["handleKey", "assessmentDigest", "inputDigest", "recipient", "nonce", "issuedAt", "deadline"]);
-    const p = this.requests.profile, a = normalizeGenerativeAuthorization(value.authorization);
+    exactKeys(value.authorization, ["handleKey", "assessmentDigest", "inputDigest", "recipient", "nonce", "issuedAt", "deadline", ...(pulse ? ["mintMode", "slotId", "maxPrice"] : [])]);
+    const p = this.requests.profile, a = normalizeReservedAuthorization(this.journal.profile.reservationVersion, value.authorization);
     if (!json(value).equals(row.payload) || value.version !== this.journal.profile.reservationVersion || value.namespaceId !== this.requests.repository.namespace.id
       || value.id !== row.authorization_id || value.deploymentId !== row.deployment_id || value.deploymentId !== p.deployment_id
       || value.requestId !== row.request_id || value.sessionHash !== row.session_hash || value.generation !== row.session_generation
@@ -208,7 +231,7 @@ export class PostgresGenerativeAuthorizationIssuer {
   }
   async #reserve(input: CapturedIntent, artifact: PreparedGenerativeInputs): Promise<AuthorizationReservation> {
     return this.writer.transaction(async tx => {
-      const { request, session, now, policy } = await this.#context(tx, input);
+      const { request, session, now, policy, pulseIntent } = await this.#context(tx, input);
       await tx.query("SELECT handle FROM open_mint.handle_guards WHERE namespace_id=$1 AND handle=$2 FOR UPDATE", [this.requests.repository.namespace.id, request.handle]);
       await this.#frozenInputs(tx, artifact, request);
       const existing = await this.#head(tx, request.handle);
@@ -222,15 +245,18 @@ export class PostgresGenerativeAuthorizationIssuer {
       }
       const evidence = this.#chain(input, request, policy, now), wall = Math.floor(now / 1000), chain = Number(evidence.block.timestamp), issuedAt = Math.min(wall, chain);
       const deadline = Math.min(issuedAt + policy.lifetime_seconds, Math.floor(request.expires_at.getTime() / 1000),
-        Math.floor(session.expires_at.getTime() / 1000), Math.floor(session.proof_expires_at!.getTime() / 1000));
+        Math.floor(session.expires_at.getTime() / 1000), Math.floor(session.proof_expires_at!.getTime() / 1000),
+        pulseIntent?.mintMode === 0 ? Number(this.requests.pulse!.binding.deployment.freeDeadline) : Infinity);
       if (deadline <= Math.max(wall, chain) + 15) blocked("REQUEST_EXPIRED", "Too little safe time remains for a mint authorization.");
       const domain = { chainId: this.requests.profile.chain_id, verifyingContract: getAddress(this.requests.profile.contract_address) };
       const authorization: AuthorizationFields = { handleKey: openMintHandleKey(request.handle), assessmentDigest: artifact.assessment.digest, inputDigest: artifact.digest,
-        recipient: getAddress(request.wallet), nonce: evidence.nonce, issuedAt: String(issuedAt), deadline: String(deadline) };
+        recipient: getAddress(request.wallet), nonce: evidence.nonce, issuedAt: String(issuedAt), deadline: String(deadline),
+        ...(pulseIntent ? { mintMode: pulseIntent.mintMode, slotId: pulseIntent.slotId, maxPrice: pulseIntent.maxPrice } : {}) };
       const value: AuthorizationReservation = { version: this.journal.profile.reservationVersion, id: randomUUID(), namespaceId: this.requests.repository.namespace.id,
         deploymentId: this.requests.profile.deployment_id, requestId: request.request_id, sessionHash: input.sessionHash, generation: input.sessionGeneration,
         handle: request.handle, assessmentId: artifact.assessment.id, renderHandle: artifact.renderHandle, mbti: artifact.mbti, rendererIdentity: artifact.rendererIdentity, authorizer: getAddress(this.requests.profile.authorizer), domain,
-        authorization, digest: reservedDigest(domain, authorization, this.journal.profile.inputProfile), typedData: plainTypedData(reservedTypedData(domain, authorization, this.journal.profile.inputProfile)) };
+        authorization, digest: reservedDigest(domain, authorization, this.journal.profile.inputProfile), typedData: plainTypedData(reservedTypedData(domain, authorization, this.journal.profile.inputProfile)),
+        ...(pulseIntent ? { proof: pulseIntent.proof } : {}) };
       await tx.query(`INSERT INTO open_mint.generative_authorizations(namespace_id,authorization_id,deployment_id,handle,request_id,session_hash,session_generation,recipient,assessment_id,input_digest,nonce,authorization_digest,issued_at,deadline,payload)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, [value.namespaceId, value.id, value.deploymentId, value.handle, value.requestId, value.sessionHash, value.generation,
         authorization.recipient, value.assessmentId, authorization.inputDigest, authorization.nonce, value.digest, authorization.issuedAt, authorization.deadline, json(value)]);

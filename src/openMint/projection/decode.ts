@@ -30,11 +30,11 @@ function rpcQuantity(value: unknown, bits = 256): bigint {
   if (typeof value !== "string" || !/^0x(?:0|[1-9a-f][0-9a-f]*)$/.test(value) || value.length > 66 || BigInt(value) >= 1n << BigInt(bits)) return fail();
   return BigInt(value);
 }
-export function normalizeProjectionLog(value: unknown, deployment: ProjectionDeployment, block: { number: string; hash: string }, topics: readonly Hex[] = OPEN_PROJECTION_TOPICS): Log {
+export function normalizeProjectionLog(value: unknown, deployment: ProjectionDeployment, block: { number: string; hash: string }, topics: readonly Hex[] = OPEN_PROJECTION_TOPICS, topicCounts: Readonly<Record<string, number>> = {}): Log {
   if (!value || typeof value !== "object" || Array.isArray(value)) return fail();
   const log = value as Log;
   if (log.address !== deployment.contractAddress || log.removed !== false || log.blockHash !== block.hash
-    || rpcQuantity(log.blockNumber, 63).toString() !== block.number || !Array.isArray(log.topics) || log.topics.length !== 4
+    || rpcQuantity(log.blockNumber, 63).toString() !== block.number || !Array.isArray(log.topics) || log.topics.length !== (topicCounts[log.topics[0]] ?? 4)
     || log.topics.some(topic => typeof topic !== "string" || !/^0x[0-9a-f]{64}$/.test(topic))
     || !topics.includes(log.topics[0]) || typeof log.data !== "string" || !/^0x(?:[0-9a-f]{2})*$/.test(log.data)
     || log.data.length > 2050) return fail();

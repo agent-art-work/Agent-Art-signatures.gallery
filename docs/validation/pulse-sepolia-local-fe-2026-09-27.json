@@ -1,0 +1,54 @@
+{
+  "schema": "sg-pulse-sepolia-local-fe-acceptance/v1",
+  "checkedAt": "2026-09-27T04:23:09.779Z",
+  "origin": "http://127.0.0.1:3004",
+  "chainId": 11155111,
+  "collection": "0x88c435146A017338E48Abe3BEE2F11BcEab79cC2",
+  "candidateLockSha256": "029851c5130f685b54abaf7f9b45ae03e56d31a42cfd72bb7de2756e63fed4a8",
+  "testOnly": true,
+  "provider": "fixture-not-grok",
+  "paidProviderCalls": 0,
+  "newChainTransactions": 0,
+  "deployerKeyLoadedBySite": false,
+  "deploymentFinalized": true,
+  "historicalStorageRequired": false,
+  "browser": {
+    "tool": "visual-dom-cdp",
+    "pages": [
+      { "path": "/", "viewport": "1024x1200", "theme": "light", "loadedImages": 3, "overflow": false, "failedRequests": 0 },
+      { "path": "/mint?handle=SepoliaUI01", "viewport": "390x1100", "theme": "dark", "loadedImages": 0, "overflow": false, "failedRequests": 0 },
+      { "path": "/signatures/sgsepoliafree01", "viewport": "1024x1200", "theme": "dark", "loadedImages": 1, "overflow": false, "failedRequests": 0 },
+      { "path": "/p/SGSepoliaFree01/variations", "viewport": "390x1100", "theme": "light", "loadedImages": 16, "overflow": false, "failedRequests": 0 }
+    ],
+    "screenshotsInspected": true,
+    "finalizedGalleryWorks": 3,
+    "variationLabels": { "Minted": 1, "Preview": 15 },
+    "installedWalletAcceptance": false
+  },
+  "http": {
+    "walletProof": "actual SIWE signature; approved test wallet",
+    "rejected": ["missing proof", "wrong CSRF", "proof replay", "user MBTI"],
+    "paidQuote": true,
+    "authorizerSignatureVerified": true,
+    "exactPreparedReuse": true,
+    "currentOwnerCollection": 3,
+    "logoutRevokesProof": true
+  },
+  "simulation": {
+    "handle": "SGWebQA0927",
+    "sources": 2,
+    "block": "11790910",
+    "gasLimit": "338690",
+    "method": "eth_call",
+    "submissionStarted": false,
+    "broadcast": false,
+    "savedReservation": "prepared; retained for traceability"
+  },
+  "regression": { "focusedTests": 17, "pageAuthorizationEventTests": 159, "typecheck": "pass", "frozenCandidate": "pass" },
+  "limits": [
+    "Not real Grok assessment acceptance",
+    "Not an installed-wallet mint or rejection test",
+    "Not hosted staging or R5 acceptance",
+    "RPC operator independence is not certified"
+  ]
+}

@@ -1,0 +1,1088 @@
+{
+  "semantics": "pulse-core/1.0.0",
+  "numberEncoding": "Unsigned integers are decimal strings; object references name entries in configs or states.",
+  "configs": {
+    "base": {
+      "k": "600",
+      "genesisPrice": "1000",
+      "genesisFloor": "900",
+      "pts": "1"
+    },
+    "roundedInitial": {
+      "k": "10",
+      "genesisPrice": "106",
+      "genesisFloor": "100",
+      "pts": "1"
+    },
+    "roundedTransition": {
+      "k": "10",
+      "genesisPrice": "105",
+      "genesisFloor": "100",
+      "pts": "6"
+    },
+    "zeroFloor": {
+      "k": "1",
+      "genesisPrice": "1",
+      "genesisFloor": "0",
+      "pts": "1"
+    },
+    "ptsAboveK": {
+      "k": "1",
+      "genesisPrice": "1",
+      "genesisFloor": "0",
+      "pts": "2"
+    },
+    "maxPts": {
+      "k": "1",
+      "genesisPrice": "1",
+      "genesisFloor": "0",
+      "pts": "340282366920938463463374607431768211455"
+    },
+    "maxTime": {
+      "k": "18446744073709551614",
+      "genesisPrice": "1",
+      "genesisFloor": "0",
+      "pts": "1"
+    },
+    "noLaunchTime": {
+      "k": "18446744073709551615",
+      "genesisPrice": "1",
+      "genesisFloor": "0",
+      "pts": "1"
+    },
+    "maxInitialOffset": {
+      "k": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+      "genesisPrice": "1",
+      "genesisFloor": "0",
+      "pts": "340282366920938463463374607431768211455"
+    },
+    "largeInitialOffset": {
+      "k": "18446744073709551616",
+      "genesisPrice": "1",
+      "genesisFloor": "0",
+      "pts": "2"
+    },
+    "targetOverflow": {
+      "k": "1",
+      "genesisPrice": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+      "genesisFloor": "115792089237316195423570985008687907853269984665640564039457584007913129639934",
+      "pts": "2"
+    },
+    "initialOverflow": {
+      "k": "10",
+      "genesisPrice": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+      "genesisFloor": "115792089237316195423570985008687907853269984665640564039457584007913129639929",
+      "pts": "1"
+    },
+    "nextOverflow": {
+      "k": "10",
+      "genesisPrice": "6",
+      "genesisFloor": "0",
+      "pts": "6"
+    }
+  },
+  "states": {
+    "initial": {
+      "epochIndex": "0",
+      "openTime": "1000",
+      "curveStartTime": "1000",
+      "anchorTime": "994",
+      "floorPrice": "900"
+    },
+    "afterZero": {
+      "epochIndex": "1",
+      "openTime": "1000",
+      "curveStartTime": "1000",
+      "anchorTime": "400",
+      "floorPrice": "1000"
+    },
+    "afterTen": {
+      "epochIndex": "1",
+      "openTime": "1000",
+      "curveStartTime": "1010",
+      "anchorTime": "950",
+      "floorPrice": "937"
+    },
+    "afterEqual": {
+      "epochIndex": "1",
+      "openTime": "1000",
+      "curveStartTime": "1600",
+      "anchorTime": "1599",
+      "floorPrice": "900"
+    },
+    "afterAbove": {
+      "epochIndex": "1",
+      "openTime": "1000",
+      "curveStartTime": "1601",
+      "anchorTime": "1601",
+      "floorPrice": "900"
+    },
+    "roundedInitial": {
+      "epochIndex": "0",
+      "openTime": "100",
+      "curveStartTime": "100",
+      "anchorTime": "99",
+      "floorPrice": "100"
+    },
+    "roundedTransition": {
+      "epochIndex": "0",
+      "openTime": "100",
+      "curveStartTime": "100",
+      "anchorTime": "98",
+      "floorPrice": "100"
+    },
+    "zeroFloor": {
+      "epochIndex": "0",
+      "openTime": "2",
+      "curveStartTime": "2",
+      "anchorTime": "1",
+      "floorPrice": "0"
+    },
+    "targetOverflow": {
+      "epochIndex": "0",
+      "openTime": "100",
+      "curveStartTime": "100",
+      "anchorTime": "99",
+      "floorPrice": "115792089237316195423570985008687907853269984665640564039457584007913129639934"
+    },
+    "nextOverflow": {
+      "epochIndex": "1",
+      "openTime": "100",
+      "curveStartTime": "110",
+      "anchorTime": "109",
+      "floorPrice": "115792089237316195423570985008687907853269984665640564039457584007913129639917"
+    },
+    "currentOverflow": {
+      "epochIndex": "1",
+      "openTime": "100",
+      "curveStartTime": "110",
+      "anchorTime": "110",
+      "floorPrice": "115792089237316195423570985008687907853269984665640564039457584007913129639929"
+    },
+    "terminal": {
+      "epochIndex": "18446744073709551615",
+      "openTime": "1000",
+      "curveStartTime": "1010",
+      "anchorTime": "950",
+      "floorPrice": "937"
+    }
+  },
+  "cases": [
+    {
+      "id": "initialize-exact",
+      "method": "initialize",
+      "config": "base",
+      "startTime": "1000",
+      "expected": {
+        "epochIndex": "0",
+        "openTime": "1000",
+        "curveStartTime": "1000",
+        "anchorTime": "994",
+        "floorPrice": "900"
+      }
+    },
+    {
+      "id": "quote-before-open",
+      "method": "quote",
+      "config": "base",
+      "state": "initial",
+      "timestamp": "0",
+      "expected": "1000"
+    },
+    {
+      "id": "quote-at-open",
+      "method": "quote",
+      "config": "base",
+      "state": "initial",
+      "timestamp": "1000",
+      "expected": "1000"
+    },
+    {
+      "id": "quote-after-open",
+      "method": "quote",
+      "config": "base",
+      "state": "initial",
+      "timestamp": "1001",
+      "expected": "985"
+    },
+    {
+      "id": "quote-decayed-to-floor",
+      "method": "quote",
+      "config": "base",
+      "state": "initial",
+      "timestamp": "1600",
+      "expected": "900"
+    },
+    {
+      "id": "advance-zero-elapsed",
+      "method": "advance",
+      "config": "base",
+      "state": "initial",
+      "timestamp": "1000",
+      "expected": {
+        "ask": "1000",
+        "nextState": {
+          "epochIndex": "1",
+          "openTime": "1000",
+          "curveStartTime": "1000",
+          "anchorTime": "400",
+          "floorPrice": "1000"
+        }
+      }
+    },
+    {
+      "id": "advance-ten-seconds",
+      "method": "advance",
+      "config": "base",
+      "state": "initial",
+      "timestamp": "1010",
+      "expected": {
+        "ask": "937",
+        "nextState": {
+          "epochIndex": "1",
+          "openTime": "1000",
+          "curveStartTime": "1010",
+          "anchorTime": "950",
+          "floorPrice": "937"
+        }
+      }
+    },
+    {
+      "id": "advance-premium-equals-k",
+      "method": "advance",
+      "config": "base",
+      "state": "initial",
+      "timestamp": "1600",
+      "expected": {
+        "ask": "900",
+        "nextState": {
+          "epochIndex": "1",
+          "openTime": "1000",
+          "curveStartTime": "1600",
+          "anchorTime": "1599",
+          "floorPrice": "900"
+        }
+      }
+    },
+    {
+      "id": "advance-premium-exceeds-k",
+      "method": "advance",
+      "config": "base",
+      "state": "initial",
+      "timestamp": "1601",
+      "expected": {
+        "ask": "900",
+        "nextState": {
+          "epochIndex": "1",
+          "openTime": "1000",
+          "curveStartTime": "1601",
+          "anchorTime": "1601",
+          "floorPrice": "900"
+        }
+      }
+    },
+    {
+      "id": "quote-next-zero-elapsed",
+      "method": "quote",
+      "config": "base",
+      "state": "afterZero",
+      "timestamp": "1000",
+      "expected": "1001"
+    },
+    {
+      "id": "advance-repeat-timestamp",
+      "method": "advance",
+      "config": "base",
+      "state": "afterZero",
+      "timestamp": "1000",
+      "expected": {
+        "ask": "1001",
+        "nextState": {
+          "epochIndex": "2",
+          "openTime": "1000",
+          "curveStartTime": "1000",
+          "anchorTime": "400",
+          "floorPrice": "1001"
+        }
+      }
+    },
+    {
+      "id": "quote-at-anchor-clamp",
+      "method": "quote",
+      "config": "base",
+      "state": "afterAbove",
+      "timestamp": "1601",
+      "expected": "1500"
+    },
+    {
+      "id": "quote-one-second-after-clamp",
+      "method": "quote",
+      "config": "base",
+      "state": "afterAbove",
+      "timestamp": "1602",
+      "expected": "1500"
+    },
+    {
+      "id": "quote-two-seconds-after-clamp",
+      "method": "quote",
+      "config": "base",
+      "state": "afterAbove",
+      "timestamp": "1603",
+      "expected": "1200"
+    },
+    {
+      "id": "initialize-uneven-division",
+      "method": "initialize",
+      "config": "roundedInitial",
+      "startTime": "100",
+      "expected": {
+        "epochIndex": "0",
+        "openTime": "100",
+        "curveStartTime": "100",
+        "anchorTime": "99",
+        "floorPrice": "100"
+      }
+    },
+    {
+      "id": "quote-uneven-opening",
+      "method": "quote",
+      "config": "roundedInitial",
+      "state": "roundedInitial",
+      "timestamp": "100",
+      "expected": "110"
+    },
+    {
+      "id": "quote-uneven-later",
+      "method": "quote",
+      "config": "roundedInitial",
+      "state": "roundedInitial",
+      "timestamp": "102",
+      "expected": "103"
+    },
+    {
+      "id": "advance-uneven-reset",
+      "method": "advance",
+      "config": "roundedTransition",
+      "state": "roundedTransition",
+      "timestamp": "100",
+      "expected": {
+        "ask": "105",
+        "nextState": {
+          "epochIndex": "1",
+          "openTime": "100",
+          "curveStartTime": "100",
+          "anchorTime": "99",
+          "floorPrice": "105"
+        }
+      }
+    },
+    {
+      "id": "quote-uneven-reset",
+      "method": "quote",
+      "config": "roundedTransition",
+      "state": {
+        "epochIndex": "1",
+        "openTime": "100",
+        "curveStartTime": "100",
+        "anchorTime": "99",
+        "floorPrice": "105"
+      },
+      "timestamp": "100",
+      "expected": "115"
+    },
+    {
+      "id": "quote-zero-ask",
+      "method": "quote",
+      "config": "zeroFloor",
+      "state": "zeroFloor",
+      "timestamp": "3",
+      "expected": "0"
+    },
+    {
+      "id": "advance-zero-ask",
+      "method": "advance",
+      "config": "zeroFloor",
+      "state": "zeroFloor",
+      "timestamp": "3",
+      "expected": {
+        "ask": "0",
+        "nextState": {
+          "epochIndex": "1",
+          "openTime": "2",
+          "curveStartTime": "3",
+          "anchorTime": "2",
+          "floorPrice": "0"
+        }
+      }
+    },
+    {
+      "id": "advance-pts-above-k",
+      "method": "advance",
+      "config": "ptsAboveK",
+      "state": "zeroFloor",
+      "timestamp": "2",
+      "expected": {
+        "ask": "1",
+        "nextState": {
+          "epochIndex": "1",
+          "openTime": "2",
+          "curveStartTime": "2",
+          "anchorTime": "2",
+          "floorPrice": "1"
+        }
+      }
+    },
+    {
+      "id": "advance-max-pts",
+      "method": "advance",
+      "config": "maxPts",
+      "state": "zeroFloor",
+      "timestamp": "2",
+      "expected": {
+        "ask": "1",
+        "nextState": {
+          "epochIndex": "1",
+          "openTime": "2",
+          "curveStartTime": "2",
+          "anchorTime": "2",
+          "floorPrice": "1"
+        }
+      }
+    },
+    {
+      "id": "advance-largest-elapsed-max-pts",
+      "method": "advance",
+      "config": "maxPts",
+      "state": "zeroFloor",
+      "timestamp": "18446744073709551615",
+      "expected": {
+        "ask": "0",
+        "nextState": {
+          "epochIndex": "1",
+          "openTime": "2",
+          "curveStartTime": "18446744073709551615",
+          "anchorTime": "18446744073709551615",
+          "floorPrice": "0"
+        }
+      }
+    },
+    {
+      "id": "initialize-max-time",
+      "method": "initialize",
+      "config": "maxTime",
+      "startTime": "18446744073709551615",
+      "expected": {
+        "epochIndex": "0",
+        "openTime": "18446744073709551615",
+        "curveStartTime": "18446744073709551615",
+        "anchorTime": "1",
+        "floorPrice": "0"
+      }
+    },
+    {
+      "id": "advance-max-time",
+      "method": "advance",
+      "config": "maxTime",
+      "state": {
+        "epochIndex": "0",
+        "openTime": "18446744073709551615",
+        "curveStartTime": "18446744073709551615",
+        "anchorTime": "1",
+        "floorPrice": "0"
+      },
+      "timestamp": "18446744073709551615",
+      "expected": {
+        "ask": "1",
+        "nextState": {
+          "epochIndex": "1",
+          "openTime": "18446744073709551615",
+          "curveStartTime": "18446744073709551615",
+          "anchorTime": "1",
+          "floorPrice": "1"
+        }
+      }
+    },
+    {
+      "id": "quote-terminal-epoch",
+      "method": "quote",
+      "config": "base",
+      "state": "terminal",
+      "timestamp": "1010",
+      "expected": "947"
+    },
+    {
+      "id": "initialize-no-transition-headroom",
+      "method": "initialize",
+      "config": "targetOverflow",
+      "startTime": "100",
+      "expected": {
+        "epochIndex": "0",
+        "openTime": "100",
+        "curveStartTime": "100",
+        "anchorTime": "99",
+        "floorPrice": "115792089237316195423570985008687907853269984665640564039457584007913129639934"
+      }
+    },
+    {
+      "id": "quote-max-price",
+      "method": "quote",
+      "config": "targetOverflow",
+      "state": "targetOverflow",
+      "timestamp": "100",
+      "expected": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+    },
+    {
+      "id": "initialize-strict-start-successor",
+      "method": "initialize",
+      "config": "base",
+      "startTime": "601",
+      "expected": {
+        "epochIndex": "0",
+        "openTime": "601",
+        "curveStartTime": "601",
+        "anchorTime": "595",
+        "floorPrice": "900"
+      }
+    },
+    {
+      "id": "quote-unproven-history",
+      "method": "quote",
+      "config": "base",
+      "state": {
+        "epochIndex": "7",
+        "openTime": "1000",
+        "curveStartTime": "1000",
+        "anchorTime": "1",
+        "floorPrice": "901"
+      },
+      "timestamp": "1000",
+      "expected": "901"
+    },
+    {
+      "id": "config-k-zero-first",
+      "method": "initialize",
+      "config": {
+        "k": "0",
+        "genesisPrice": "0",
+        "genesisFloor": "0",
+        "pts": "0"
+      },
+      "startTime": "0",
+      "error": {
+        "name": "InvalidCurveK",
+        "args": []
+      }
+    },
+    {
+      "id": "config-prices-equal",
+      "method": "initialize",
+      "config": {
+        "k": "600",
+        "genesisPrice": "900",
+        "genesisFloor": "900",
+        "pts": "0"
+      },
+      "startTime": "0",
+      "error": {
+        "name": "InvalidGenesisPrices",
+        "args": []
+      }
+    },
+    {
+      "id": "config-prices-reversed",
+      "method": "initialize",
+      "config": {
+        "k": "600",
+        "genesisPrice": "899",
+        "genesisFloor": "900",
+        "pts": "1"
+      },
+      "startTime": "1000",
+      "error": {
+        "name": "InvalidGenesisPrices",
+        "args": []
+      }
+    },
+    {
+      "id": "config-gap-exceeds-k",
+      "method": "initialize",
+      "config": {
+        "k": "600",
+        "genesisPrice": "1501",
+        "genesisFloor": "900",
+        "pts": "0"
+      },
+      "startTime": "0",
+      "error": {
+        "name": "GenesisGapExceedsK",
+        "args": []
+      }
+    },
+    {
+      "id": "config-pts-zero",
+      "method": "initialize",
+      "config": {
+        "k": "600",
+        "genesisPrice": "1000",
+        "genesisFloor": "900",
+        "pts": "0"
+      },
+      "startTime": "0",
+      "error": {
+        "name": "InvalidPts",
+        "args": []
+      }
+    },
+    {
+      "id": "config-pts-too-large",
+      "method": "initialize",
+      "config": {
+        "k": "600",
+        "genesisPrice": "1000",
+        "genesisFloor": "900",
+        "pts": "340282366920938463463374607431768211456"
+      },
+      "startTime": "1000",
+      "error": {
+        "name": "InvalidPts",
+        "args": []
+      }
+    },
+    {
+      "id": "config-time-scale-too-large",
+      "method": "initialize",
+      "config": {
+        "k": "18446744073709551616",
+        "genesisPrice": "1",
+        "genesisFloor": "0",
+        "pts": "1"
+      },
+      "startTime": "0",
+      "error": {
+        "name": "TimeScaleOutOfRange",
+        "args": []
+      }
+    },
+    {
+      "id": "no-representable-start",
+      "method": "initialize",
+      "config": "noLaunchTime",
+      "startTime": "18446744073709551615",
+      "error": {
+        "name": "StartTimeTooEarly",
+        "args": [
+          "18446744073709551615",
+          "18446744073709551615"
+        ]
+      }
+    },
+    {
+      "id": "initial-distance-not-narrowed",
+      "method": "initialize",
+      "config": "largeInitialOffset",
+      "startTime": "18446744073709551615",
+      "error": {
+        "name": "StartTimeTooEarly",
+        "args": [
+          "18446744073709551615",
+          "18446744073709551616"
+        ]
+      }
+    },
+    {
+      "id": "max-k-rejected-time-scale",
+      "method": "initialize",
+      "config": "maxInitialOffset",
+      "startTime": "18446744073709551615",
+      "error": {
+        "name": "TimeScaleOutOfRange",
+        "args": []
+      }
+    },
+    {
+      "id": "launch-zero",
+      "method": "initialize",
+      "config": "base",
+      "startTime": "0",
+      "error": {
+        "name": "StartTimeTooEarly",
+        "args": [
+          "0",
+          "600"
+        ]
+      }
+    },
+    {
+      "id": "launch-equals-transition-distance",
+      "method": "initialize",
+      "config": "base",
+      "startTime": "600",
+      "error": {
+        "name": "StartTimeTooEarly",
+        "args": [
+          "600",
+          "600"
+        ]
+      }
+    },
+    {
+      "id": "legacy-valid-initial-unsafe-transition",
+      "method": "initialize",
+      "config": "base",
+      "startTime": "100",
+      "error": {
+        "name": "StartTimeTooEarly",
+        "args": [
+          "100",
+          "600"
+        ]
+      }
+    },
+    {
+      "id": "launch-equals-initial-distance",
+      "method": "initialize",
+      "config": "ptsAboveK",
+      "startTime": "1",
+      "error": {
+        "name": "StartTimeTooEarly",
+        "args": [
+          "1",
+          "1"
+        ]
+      }
+    },
+    {
+      "id": "launch-rounded-price-overflows",
+      "method": "initialize",
+      "config": "initialOverflow",
+      "startTime": "100",
+      "error": {
+        "name": "PriceOverflow",
+        "args": []
+      }
+    },
+    {
+      "id": "advance-target-overflows",
+      "method": "advance",
+      "config": "targetOverflow",
+      "state": "targetOverflow",
+      "timestamp": "100",
+      "error": {
+        "name": "TargetPriceOverflow",
+        "args": []
+      }
+    },
+    {
+      "id": "advance-next-rounded-price-overflows",
+      "method": "advance",
+      "config": "nextOverflow",
+      "state": "nextOverflow",
+      "timestamp": "110",
+      "error": {
+        "name": "PriceOverflow",
+        "args": []
+      }
+    },
+    {
+      "id": "quote-current-opening-overflows-even-if-later-fits",
+      "method": "quote",
+      "config": "nextOverflow",
+      "state": "currentOverflow",
+      "timestamp": "1000",
+      "error": {
+        "name": "PriceOverflow",
+        "args": []
+      }
+    },
+    {
+      "id": "quote-current-overflow-before-timestamp",
+      "method": "quote",
+      "config": "nextOverflow",
+      "state": "currentOverflow",
+      "timestamp": "0",
+      "error": {
+        "name": "PriceOverflow",
+        "args": []
+      }
+    },
+    {
+      "id": "advance-before-open",
+      "method": "advance",
+      "config": "base",
+      "state": "initial",
+      "timestamp": "999",
+      "error": {
+        "name": "TimestampBeforeEpoch",
+        "args": [
+          "999",
+          "1000"
+        ]
+      }
+    },
+    {
+      "id": "quote-before-later-epoch",
+      "method": "quote",
+      "config": "base",
+      "state": "afterTen",
+      "timestamp": "1009",
+      "error": {
+        "name": "TimestampBeforeEpoch",
+        "args": [
+          "1009",
+          "1010"
+        ]
+      }
+    },
+    {
+      "id": "advance-before-later-epoch",
+      "method": "advance",
+      "config": "base",
+      "state": "afterTen",
+      "timestamp": "1009",
+      "error": {
+        "name": "TimestampBeforeEpoch",
+        "args": [
+          "1009",
+          "1010"
+        ]
+      }
+    },
+    {
+      "id": "advance-epoch-overflow",
+      "method": "advance",
+      "config": "base",
+      "state": "terminal",
+      "timestamp": "1010",
+      "error": {
+        "name": "EpochOverflow",
+        "args": []
+      }
+    },
+    {
+      "id": "timestamp-before-epoch-overflow",
+      "method": "advance",
+      "config": "base",
+      "state": "terminal",
+      "timestamp": "1009",
+      "error": {
+        "name": "TimestampBeforeEpoch",
+        "args": [
+          "1009",
+          "1010"
+        ]
+      }
+    },
+    {
+      "id": "state-start-before-open",
+      "method": "quote",
+      "config": "base",
+      "state": {
+        "epochIndex": "1",
+        "openTime": "1000",
+        "curveStartTime": "999",
+        "anchorTime": "994",
+        "floorPrice": "900"
+      },
+      "timestamp": "1000",
+      "error": {
+        "name": "InvalidState",
+        "args": []
+      }
+    },
+    {
+      "id": "state-anchor-zero",
+      "method": "quote",
+      "config": "base",
+      "state": {
+        "epochIndex": "0",
+        "openTime": "1000",
+        "curveStartTime": "1000",
+        "anchorTime": "0",
+        "floorPrice": "900"
+      },
+      "timestamp": "1000",
+      "error": {
+        "name": "InvalidState",
+        "args": []
+      }
+    },
+    {
+      "id": "state-anchor-after-start",
+      "method": "quote",
+      "config": "base",
+      "state": {
+        "epochIndex": "0",
+        "openTime": "1000",
+        "curveStartTime": "1000",
+        "anchorTime": "1001",
+        "floorPrice": "900"
+      },
+      "timestamp": "1000",
+      "error": {
+        "name": "InvalidState",
+        "args": []
+      }
+    },
+    {
+      "id": "state-floor-below-genesis",
+      "method": "quote",
+      "config": "base",
+      "state": {
+        "epochIndex": "0",
+        "openTime": "1000",
+        "curveStartTime": "1000",
+        "anchorTime": "994",
+        "floorPrice": "899"
+      },
+      "timestamp": "1000",
+      "error": {
+        "name": "InvalidState",
+        "args": []
+      }
+    },
+    {
+      "id": "state-epoch-zero-wrong-start",
+      "method": "quote",
+      "config": "base",
+      "state": {
+        "epochIndex": "0",
+        "openTime": "1000",
+        "curveStartTime": "1001",
+        "anchorTime": "994",
+        "floorPrice": "900"
+      },
+      "timestamp": "1000",
+      "error": {
+        "name": "InvalidState",
+        "args": []
+      }
+    },
+    {
+      "id": "state-epoch-zero-wrong-anchor",
+      "method": "quote",
+      "config": "base",
+      "state": {
+        "epochIndex": "0",
+        "openTime": "1000",
+        "curveStartTime": "1000",
+        "anchorTime": "993",
+        "floorPrice": "900"
+      },
+      "timestamp": "1000",
+      "error": {
+        "name": "InvalidState",
+        "args": []
+      }
+    },
+    {
+      "id": "state-epoch-zero-wrong-floor",
+      "method": "quote",
+      "config": "base",
+      "state": {
+        "epochIndex": "0",
+        "openTime": "1000",
+        "curveStartTime": "1000",
+        "anchorTime": "994",
+        "floorPrice": "901"
+      },
+      "timestamp": "1000",
+      "error": {
+        "name": "InvalidState",
+        "args": []
+      }
+    },
+    {
+      "id": "launch-before-state-validation",
+      "method": "quote",
+      "config": "base",
+      "state": {
+        "epochIndex": "0",
+        "openTime": "0",
+        "curveStartTime": "0",
+        "anchorTime": "0",
+        "floorPrice": "0"
+      },
+      "timestamp": "0",
+      "error": {
+        "name": "StartTimeTooEarly",
+        "args": [
+          "0",
+          "600"
+        ]
+      }
+    },
+    {
+      "id": "initial-overflow-before-state-validation",
+      "method": "quote",
+      "config": "initialOverflow",
+      "state": {
+        "epochIndex": "1",
+        "openTime": "100",
+        "curveStartTime": "100",
+        "anchorTime": "0",
+        "floorPrice": "0"
+      },
+      "timestamp": "100",
+      "error": {
+        "name": "PriceOverflow",
+        "args": []
+      }
+    },
+    {
+      "id": "config-before-state-validation",
+      "method": "advance",
+      "config": {
+        "k": "0",
+        "genesisPrice": "1000",
+        "genesisFloor": "900",
+        "pts": "1"
+      },
+      "state": {
+        "epochIndex": "0",
+        "openTime": "0",
+        "curveStartTime": "0",
+        "anchorTime": "0",
+        "floorPrice": "0"
+      },
+      "timestamp": "0",
+      "error": {
+        "name": "InvalidCurveK",
+        "args": []
+      }
+    },
+    {
+      "id": "shape-before-current-overflow",
+      "method": "quote",
+      "config": "nextOverflow",
+      "state": {
+        "epochIndex": "1",
+        "openTime": "100",
+        "curveStartTime": "110",
+        "anchorTime": "111",
+        "floorPrice": "115792089237316195423570985008687907853269984665640564039457584007913129639929"
+      },
+      "timestamp": "0",
+      "error": {
+        "name": "InvalidState",
+        "args": []
+      }
+    },
+    {
+      "id": "epoch-before-target-overflow",
+      "method": "advance",
+      "config": "targetOverflow",
+      "state": {
+        "epochIndex": "18446744073709551615",
+        "openTime": "100",
+        "curveStartTime": "100",
+        "anchorTime": "99",
+        "floorPrice": "115792089237316195423570985008687907853269984665640564039457584007913129639934"
+      },
+      "timestamp": "100",
+      "error": {
+        "name": "EpochOverflow",
+        "args": []
+      }
+    }
+  ]
+}

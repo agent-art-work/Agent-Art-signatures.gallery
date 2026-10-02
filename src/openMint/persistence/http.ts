@@ -88,10 +88,11 @@ export function createDurableMintApiServer(runtime: DurableMintRuntime, publicRe
       const path = req.url ?? "/";
       const status = statusPath.exec(path), method = req.method;
       const mintStatus = browser && /^\/api\/mints\/status\/([A-Za-z0-9_-]{43})$/.exec(path);
+      const pulseOptions=runtime.requests.pulse && /^\/api\/mints\/options\?handle=[A-Za-z0-9_]{1,15}$/.test(path);
       const walletContext = browser && (path === "/api/wallet/context" || /^\/api\/wallet\/context\?address=0x[0-9a-fA-F]{40}$/.test(path));
       const walletPost = browser && ["/api/mints/begin", "/api/mints/report", "/api/mints/reject"].includes(path);
       if (method !== "GET" && method !== "POST") throw new PublicError(405, "METHOD_NOT_ALLOWED", "Method not allowed.");
-      if (!(method === "GET" ? path === "/api/session" || !!status || mintStatus || walletContext : posts.has(path) || walletPost)) throw new PublicError(404, "NOT_FOUND", "Endpoint not found.");
+      if (!(method === "GET" ? path === "/api/session" || !!status || mintStatus || walletContext || pulseOptions : posts.has(path) || walletPost)) throw new PublicError(404, "NOT_FOUND", "Endpoint not found.");
       if (method === "GET" && (req.headers["transfer-encoding"] || (req.headers["content-length"] !== undefined && req.headers["content-length"] !== "0"))) throw new PublicError(400, "INVALID_INPUT", "GET requests must not include a body.");
       if (method === "GET") {
         clearTimeout(bodyTimer);
@@ -101,6 +102,7 @@ export function createDurableMintApiServer(runtime: DurableMintRuntime, publicRe
           return json(res, 200, runtime.sessionView(found.session));
         }
         const session = await runtime.sessions.requireSession(req.headers.cookie);
+        if(pulseOptions) return json(res,200,await runtime.mintOptions(new URL(path,origin).searchParams.get("handle"),session));
         if (walletContext) return json(res, 200, await browser!.chain.read(new URL(path, origin).searchParams.get("address") ?? undefined, controller.signal));
         if (mintStatus) return json(res, 200, await browser!.mintStatus(mintStatus[1], session));
         return json(res, 200, await (browser ? browser.status(status![1], session) : runtime.status(status![1], session)));
@@ -128,7 +130,7 @@ export function createDurableMintApiServer(runtime: DurableMintRuntime, publicRe
         res.setHeader("Set-Cookie", runtime.sessions.clearCookie());
         return json(res, 200, { ok: true });
       }
-      if (path === "/api/assessments") { const payload = fields(input, ["handle"]); return json(res, 202, await runtime.create(payload.handle, intent)); }
+      if (path === "/api/assessments") { const payload = fields(input, runtime.requests.pulse ? ["handle","mintIntent"] : ["handle"]); return json(res, 202, await runtime.create(payload.handle, intent, payload.mintIntent)); }
       if (walletPost && path !== "/api/mints/begin") {
         const submitted = path === "/api/mints/report", payload = fields(input, submitted ? ["code", "permit", "transactionHash"] : ["code", "permit"]);
         return json(res, 200, await browser!.submissions.report(payload.code as string, intent, payload.permit, submitted ? "submitted" : "rejected", payload.transactionHash));

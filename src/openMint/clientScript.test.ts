@@ -17,18 +17,35 @@ class Element {
   listeners: Record<string, Listener> = {};
   children: Record<string, Element> = {};
   disabled = false;
+  checked = false;
   hidden = false;
   value = "";
-  textContent = "";
+  private text = "";
+  private classes = new Set<string>();
+  get textContent(): string { return this.text + this.nodes.map(node => node.textContent).join(""); }
+  set textContent(value: string) { this.text = value; this.nodes = []; }
+  get className(): string { return [...this.classes].join(" "); }
+  set className(value: string) { this.classes = new Set(value.split(/\s+/).filter(Boolean)); }
+  classList = {
+    add: (...names: string[]) => names.forEach(name => this.classes.add(name)),
+    remove: (...names: string[]) => names.forEach(name => this.classes.delete(name)),
+    contains: (name: string) => this.classes.has(name),
+  };
+  ownerDocument = {
+    createElement: () => new Element(),
+    createTextNode: (text: string) => { const node = new Element(); node.textContent = text; return node; },
+  };
   type = "";
   nodes: Element[] = [];
   attributes: Record<string, string> = {};
   open = false;
   removed = false;
   addEventListener(type: string, listener: Listener) { this.listeners[type] = listener; }
-  querySelector(selector: string) { return this.children[selector] ?? null; }
+  querySelector(selector: string) { return selector === 'input[name=pulse-mode]:checked' ? Object.values(this.children).find(e => e.checked) ?? null : this.children[selector] ?? null; }
+  querySelectorAll(selector: string) { return selector === 'input[name=pulse-mode]' ? Object.entries(this.children).filter(([k]) => k.startsWith('input[name=pulse-mode][value=')).map(([,v]) => v) : []; }
   setAttribute(name: string, value: string) { this.attributes[name] = value; }
-  append(node: Element) { this.nodes.push(node); }
+  append(...nodes: Element[]) { this.nodes.push(...nodes); }
+  replaceChildren(...nodes: Element[]) { this.text = ""; this.nodes = nodes; }
   showModal() { this.open = true; }
   close() { this.open = false; }
   remove() { this.removed = true; }
@@ -44,7 +61,10 @@ class Element {
 }
 type SetupOptions = {
   durable?: boolean;
+  pulseMaxPriceWei?: string;
+  pulseEntry?: boolean;
   entry?: boolean;
+  initialHandle?: string;
   preview?: boolean;
   pending?: boolean;
   support?: boolean;
@@ -75,10 +95,17 @@ function setup(options: SetupOptions = {}) {
   elements['[data-open-mint]'].dataset = { chainId: "31337", contract: CONTRACT, localChain: String(Boolean(options.local)), durableWalletSubmission: String(Boolean(options.durable)) };
   if (elements['[data-assessment-code]']) elements['[data-assessment-code]'].dataset = { assessmentCode: "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr", assessmentHandle: "agent_art", tokenId: "123", assessmentState: options.pending ? "pending" : "ready", canMint: "true", mintState: options.mintState ?? "unminted", walletProved: String(Boolean(options.walletProved)), requestExpired: String(Boolean(options.expired)), requestExpiresAt: String(options.expiresAt ?? ''), walletProofExpiresAt: String(options.proofExpiresAt ?? ''), serverNow: String(options.serverNow ?? '') };
   if (elements['[data-assessment-code]']) elements['[data-assessment-code]'].dataset.mintTransactionHash = options.mintHash ?? '';
+  if (elements['[data-assessment-code]'] && options.pulseMaxPriceWei !== undefined) elements['[data-assessment-code]'].dataset.pulseMaxPriceWei = options.pulseMaxPriceWei;
   if (elements['[data-mint-network]']) elements['[data-mint-network]'].hidden = true;
   if (options.entry) {
     elements['[data-assessment-request]'].children = { 'button[type=submit]': new Element(), 'input[name=handle]': new Element() };
-    elements['[data-assessment-request]'].children['input[name=handle]'].value = " @Agent_Art ";
+    elements['[data-assessment-request]'].children['input[name=handle]'].value = options.initialHandle ?? " @Agent_Art ";
+    if (options.pulseEntry) {
+      const form=elements['[data-assessment-request]']; form.dataset.pulseMint='true';
+      for (const mode of ['free','paid']) { const e=new Element(); e.value=mode; e.disabled=true; form.children[`input[name=pulse-mode][value=${mode}]`]=e; }
+      form.children['input[name=pulse-max-eth]']=new Element(); form.children['input[name=pulse-max-eth]'].disabled=true;
+      form.children['[data-pulse-check]']=new Element(); elements['[data-pulse-feedback]']=new Element();
+    }
   }
   const requests: Array<{ path: string; body: any; init: any }> = [];
   const walletCalls: Array<{ method: string; params: unknown }> = [];
@@ -173,7 +200,119 @@ const tick = (test: ReturnType<typeof setup>, delay: number) => {
   return timer!();
 };
 
+describe('shared inline warning feedback', () => {
+  it('styles wallet failures and restores plain successful feedback without changing transaction behavior', async () => {
+    let fail = true;
+    const test = setup({ entry: true, walletRequest: method => {
+      if (method === 'eth_requestAccounts' && fail) throw new Error('Wallet access could not be completed.');
+    } });
+    await flush();
+    const feedback = test.elements['[data-mint-feedback]'];
+    feedback.className = 'open-feedback retained-class';
+    await test.elements['[data-connect-wallet]'].emit('click');
+    expect(feedback.classList.contains('open-preview-warning')).toBe(true);
+    expect(feedback.classList.contains('open-preview-notice')).toBe(true);
+    expect(feedback.nodes[0].className).toBe('open-preview-notice-label');
+    expect(feedback.nodes[0].textContent).toBe('Warning');
+    expect(feedback.nodes[2].textContent).toBe('Wallet access could not be completed.');
+    expect(feedback.nodes[2].className).toBe('');
+    fail = false;
+    await test.elements['[data-connect-wallet]'].emit('click');
+    expect(feedback.textContent).toBe('Wallet connected. Choose Mint & reveal when ready.');
+    expect(feedback.className).toBe('open-feedback retained-class');
+    expect(sends(test)).toEqual([]);
+    expect(test.requests.some(request => request.path === '/api/assessments')).toBe(false);
+  });
+
+  it('keeps a deliberate wallet cancellation plain, not a warning', async () => {
+    const test = setup({ entry: true, walletRequest: method => {
+      if (method === 'eth_requestAccounts') throw Object.assign(new Error('Rejected'), { code: 4001 });
+    } });
+    await flush();
+    await test.elements['[data-connect-wallet]'].emit('click');
+    expect(test.elements['[data-mint-feedback]'].textContent).toContain('Cancelled in your wallet');
+    expect(test.elements['[data-mint-feedback]'].classList.contains('open-preview-warning')).toBe(false);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it('styles missing wallet and invalid Pulse consent while keeping generation progress plain', async () => {
+    const test = setup({ entry: true, pulseEntry: true, api: path => path.startsWith('/api/mints/options?')
+      ? { version: 'sg-pulse-mint-options-v1', wallet: WALLET, handle: 'agent_art', phase: 'paid', priceWei: '1000000000000000', availableSlots: [], validUntil: Date.now() + 10000 }
+      : undefined });
+    await flush();
+    const form = test.elements['[data-assessment-request]'];
+    const feedback = test.elements['[data-request-feedback]'];
+    await form.emit('submit');
+    expect(feedback.textContent).toBe('Warning Connect and verify your wallet first.');
+    expect(feedback.classList.contains('open-preview-warning')).toBe(true);
+    await test.elements['[data-connect-wallet]'].emit('click');
+    await form.children['[data-pulse-check]'].emit('click');
+    expect(test.elements['[data-pulse-feedback]'].classList.contains('open-preview-warning')).toBe(false);
+    form.children['input[name=pulse-mode][value=paid]'].checked = true;
+    form.children['input[name=pulse-max-eth]'].value = 'invalid';
+    await form.emit('submit');
+    expect(feedback.textContent).toBe('Warning Enter your maximum mint price in ETH.');
+    expect(test.requests.some(request => request.path === '/api/assessments')).toBe(false);
+    form.children['input[name=pulse-max-eth]'].value = '0.002';
+    await form.emit('submit');
+    expect(feedback.textContent).toBe('Grok is preparing your signature. Your wallet will ask you to mint when it is ready.');
+    expect(feedback.classList.contains('open-preview-warning')).toBe(false);
+    expect(test.requests.filter(request => request.path === '/api/assessments')).toHaveLength(1);
+    expect(sends(test)).toEqual([]);
+  });
+});
+
 describe('durable generative wallet submission protocol', () => {
+  it.each(['free','paid'])('requires a read-only quote and explicit %s consent before preparation', async phase => {
+    const test=setup({entry:true,pulseEntry:true,walletProved:true,api:path => path.startsWith('/api/mints/options?') ? {version:'sg-pulse-mint-options-v1',wallet:WALLET,handle:'agent_art',phase,priceWei:phase==='paid' ? '1000000000000000' : '0',availableSlots:phase==='free' ? ['0','1'] : [],validUntil:Date.now()+10000} : undefined});
+    await flush();
+    const form=test.elements['[data-assessment-request]'];
+    expect(test.requests.some(r=>r.path.startsWith('/api/mints/options?'))).toBe(false);
+    await form.emit('submit'); await flush();
+    expect(test.requests.some(r=>r.path==='/api/assessments')).toBe(false);
+    await form.children['[data-pulse-check]'].emit('click'); await flush();
+    expect(test.requests.some(r=>r.path==='/api/assessments')).toBe(false);
+    expect(Object.values(form.children).some(e=>e.checked)).toBe(false);
+    await form.emit('submit'); await flush();
+    expect(test.requests.some(r=>r.path==='/api/assessments')).toBe(false);
+    form.children[`input[name=pulse-mode][value=${phase}]`].checked=true;
+    form.children['input[name=pulse-max-eth]'].value='0.002';
+    await form.emit('submit'); await flush();
+    expect(test.requests.find(r=>r.path==='/api/assessments')?.body.mintIntent).toEqual({mode:phase,maxPriceWei:phase==='paid' ? '2000000000000000' : '0'});
+  });
+  it('invalidates a checked Pulse quote when the handle changes', async () => {
+    const test=setup({entry:true,pulseEntry:true,walletProved:true,api:path => path.startsWith('/api/mints/options?') ? {version:'sg-pulse-mint-options-v1',wallet:WALLET,handle:'agent_art',phase:'free',priceWei:'0',availableSlots:['0'],validUntil:Date.now()+10000} : undefined});
+    await flush(); const form=test.elements['[data-assessment-request]'];
+    await form.children['[data-pulse-check]'].emit('click');
+    form.children['input[name=pulse-mode][value=free]'].checked=true;
+    form.children['input[name=handle]'].value='Bob'; await form.children['input[name=handle]'].emit('input');
+    await form.emit('submit'); await flush();
+    expect(test.requests.some(r=>r.path==='/api/assessments')).toBe(false);
+    expect(form.dataset.pulseQuote).toBeUndefined();
+  });
+  it('sends the exact saved Pulse ceiling, not zero or a response-selected amount', async () => {
+    const transaction = { from: WALLET, to: CONTRACT, chainId: '0x7a69', data: '0x1234', value: '0x64', nonce: '0x1' };
+    const test = setup({ durable: true, walletProved: true, pulseMaxPriceWei: '100', storage: intent(),
+      authorize: { version: 'sg-pulse-wallet-plan-v1-rc1', transaction },
+      api: path => path.startsWith('/api/mints/status/') ? { state: 'unminted' } : path === '/api/mints/begin' ? { permit: 'p'.repeat(43), transaction } : undefined });
+    await flush();
+    expect(sends(test)).toHaveLength(1);
+    expect((sends(test)[0].params as any[])[0].value).toBe('0x64');
+  });
+  it.each([
+    ['100', '0x0', 'sg-pulse-wallet-plan-v1-rc1'],
+    ['100', '0x65', 'sg-pulse-wallet-plan-v1-rc1'],
+    ['100', '0x064', 'sg-pulse-wallet-plan-v1-rc1'],
+    ['100', '0x64', undefined],
+    [undefined, '0x64', 'sg-pulse-wallet-plan-v1-rc1'],
+    ['01', '0x1', 'sg-pulse-wallet-plan-v1-rc1'],
+  ])('refuses a crossed Pulse payment binding (%s, %s, %s)', async (cap, value, version) => {
+    const test = setup({ durable: true, walletProved: true, pulseMaxPriceWei: cap, storage: intent(),
+      authorize: { version, transaction: { from: WALLET, to: CONTRACT, chainId: '31337', data: '0x1234', value, nonce: '0x1' } } });
+    await flush();
+    expect(sends(test)).toHaveLength(0);
+    expect(test.requests.some(r => r.path === '/api/mints/begin')).toBe(false);
+  });
   const permit = 'p'.repeat(43), transaction = { from: WALLET, to: CONTRACT, chainId: '0x7a69', data: '0x1234', value: '0x0', nonce: '0x1' };
   const api = (path: string) => path.startsWith('/api/mints/status/') ? { state: 'unminted' }
     : path === '/api/mints/begin' ? { permit, transaction } : undefined;
@@ -431,7 +570,7 @@ describe('actionable mint recovery', () => {
   it.each(['assessment-blocked', 'assessment-abstained', 'preparation-interrupted'])('projects %s with only its safe operator reference and no retry', async errorCategory => {
     const status = errorCategory === 'assessment-abstained' ? 'abstained' : 'failed';
     const test = setup({ pending: true, walletProved: true, storage: intent(), api: path => path === ASSESSMENT_PATH ? { ...readyStatus, status, error: 'private-provider-payload', errorCategory, diagnosticReference: reference } : undefined }); await flush(); await tick(test, 1500);
-    expect(test.elements['[data-mint-feedback]'].textContent).toBe(assessmentFailureText({ errorCategory, diagnosticReference: reference }));
+    expect(test.elements['[data-mint-feedback]'].textContent).toBe('Warning ' + assessmentFailureText({ errorCategory, diagnosticReference: reference }));
     expect(test.elements['[data-mint-feedback]'].textContent).not.toContain('private-provider-payload');
     expect(test.elements['[data-mint-feedback]'].textContent).toContain(reference);
     expect(sends(test)).toEqual([]);
@@ -657,11 +796,13 @@ describe('request expiry and bounded read recovery', () => {
     expect(test.elements['[data-assessment-code]'].dataset.mintUiPhase).toBe('read-unavailable');
     expect(test.elements['[data-poll-feedback]'].textContent).toContain('choose Check progress to check now');
     expect(test.elements['[data-poll-feedback]'].textContent).not.toContain('reload this page to check now');
+    expect(test.elements['[data-poll-feedback]'].classList.contains('open-preview-warning')).toBe(true);
     expect(test.requests[0].init.signal.aborted).toBe(true);
     expect(test.storage.has(INTENT_KEY)).toBe(false);
     failed = false; await tick(test, 5000); await flush();
     expect(test.elements['[data-assessment-code]'].dataset.mintUiPhase).toBe('ready');
     expect(test.elements['[data-poll-feedback]'].textContent).toBe('');
+    expect(test.elements['[data-poll-feedback]'].classList.contains('open-preview-warning')).toBe(false);
     release({ ...test.state, wallet: OTHER }); await flush();
     expect(test.elements['[data-wallet-label]'].textContent).toBe(WALLET);
     expect(test.requests.filter(request => request.init.method === 'POST')).toEqual([]);
@@ -995,6 +1136,19 @@ describe('submitted mint diagnostics', () => {
 });
 
 describe('preview and mint browser lifecycle', () => {
+  it('restores the handle draft on entry reload without restoring wallet or mint consent', async () => {
+    const storage = new Map<string, string>();
+    const first = setup({ entry: true, initialHandle: '', storage });
+    await flush();
+    const input = first.elements['[data-assessment-request]'].children['input[name=handle]'];
+    input.value = '@Alice_Bob_Key'; await input.emit('input');
+    const refreshed = setup({ entry: true, initialHandle: '', storage });
+    await flush();
+    expect(refreshed.elements['[data-assessment-request]'].children['input[name=handle]'].value).toBe('@Alice_Bob_Key');
+    expect(refreshed.elements['[data-assessment-request]'].children['button[type=submit]'].disabled).toBe(true);
+    expect(refreshed.requests.some(r => r.path === '/api/assessments')).toBe(false);
+    expect(refreshed.walletCalls.some(r => ['personal_sign', 'eth_sendTransaction'].includes(r.method))).toBe(false);
+  });
   it('performs no requests on preview and never assesses on a plain mint page load', async () => {
     const preview = setup({ preview: true }); preview.rerun(); await flush();
     expect(preview.requests).toEqual([]); expect(preview.walletCalls).toEqual([]);
@@ -1182,7 +1336,7 @@ describe('preview and mint browser lifecycle', () => {
   it('never broadcasts if the exact transaction simulation fails', async () => {
     const test = setup({ walletProved: true, walletRequest: method => { if (method === 'eth_call') throw new Error('Execution reverted'); } }); await flush();
     await test.elements['[data-mint-form]'].emit('submit'); expect(sends(test)).toEqual([]);
-    expect(test.elements['[data-mint-feedback]'].textContent).toBe('Execution reverted');
+    expect(test.elements['[data-mint-feedback]'].textContent).toBe('Warning Execution reverted');
     expect(test.storage.has('sg-open:submission:rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr')).toBe(false);
   });
   it('detects a same-chain RPC swap during the simulation before submitting', async () => {
@@ -1377,9 +1531,19 @@ describe('preview and mint browser lifecycle', () => {
     expect(test.elements['[data-dev-mint]'].disabled).toBe(code === 'WALLET_PROOF_REQUIRED');
     expect(test.walletCalls).toEqual([]);
   });
+  it('blocks an invalid handle before wallet or assessment work even on programmatic submit', async () => {
+    const test = setup({ entry: true, walletProved: true }); await flush();
+    const field = test.elements['[data-assessment-request]'].children['input[name=handle]'];
+    Object.assign(field, { value: '', checkValidity: () => false });
+    const requests = test.requests.length, walletCalls = test.walletCalls.length;
+    await test.elements['[data-assessment-request]'].emit('submit');
+    expect(test.requests).toHaveLength(requests);
+    expect(test.walletCalls).toHaveLength(walletCalls);
+    expect(test.navigations).toEqual([]);
+  });
   it('keeps raw server errors meaningful and disposes polling/listeners on navigation', async () => {
     const test = setup({ entry: true, walletProved: true, api: path => path === '/api/assessments' ? { error: 'Generation is not configured.', code: 'GROK_NOT_CONFIGURED' } : undefined }); await flush();
-    await test.elements['[data-assessment-request]'].emit('submit'); expect(test.elements['[data-request-feedback]'].textContent).toBe('Generation is not configured.');
+    await test.elements['[data-assessment-request]'].emit('submit'); expect(test.elements['[data-request-feedback]'].textContent).toBe('Warning Generation is not configured.');
     const pending = setup({ pending: true }); await flush(); const poll = pending.scheduled[0]; pending.globalEvents.pagehide({});
     expect(pending.scheduled).toEqual([]);
     await poll(); expect(pending.walletEvents).toEqual({}); expect(pending.requests).toHaveLength(1);

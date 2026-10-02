@@ -1,0 +1,117 @@
+{
+  "schema": "sg-pulse-sepolia-availability-validation/v1",
+  "date": "2026-09-29",
+  "scope": "Dedicated disposable local Pulse Sepolia site; not hosted staging activation or production release",
+  "origin": "http://127.0.0.1:3004",
+  "chainId": 11155111,
+  "collection": "0x88c435146A017338E48Abe3BEE2F11BcEab79cC2",
+  "readPolicy": "validated-primary-fallback/v1",
+  "tests": {
+    "sepoliaNode": { "passed": 127, "failed": 0 },
+    "focusedUiVitest": { "files": 7, "passed": 497, "failed": 0 },
+    "typecheck": "passed",
+    "build": "passed",
+    "rendererAndSloganLocks": "passed",
+    "pulseCandidateLock": "unchanged; passed",
+    "whitespace": "passed"
+  },
+  "mockFailureCampaign": [
+    "Startup read outage with cached gallery, images, details and previews available",
+    "Independent history outage versus sale readiness",
+    "Sale outage preserving known artwork and automatic recovery",
+    "Process restart preserving presentation but not mint authority",
+    "Persistent integrity halt across restart, including before the first mint",
+    "Deadline abort and late completion without overlapping recovery passes",
+    "Finalized disk cursor requires revalidated receipt/input/anchor/prefix completeness",
+    "Wallet slots, claimed slots, pause, authorizer and canonical head rechecked independently",
+    "UI renderer replacement retains backend session CSRF, checkpoint and readiness",
+    "GET-only browser recovery preserves inputs/consent and rejects wrong-chain capabilities",
+    "BFCache lifecycle discards late read results"
+  ],
+  "liveReadOnlyChecks": {
+    "initialRecovery": {
+      "primaryFailedOverToValidatedSecondary": true,
+      "mintReady": true,
+      "observerHealthy": true,
+      "observedMintCount": 4,
+      "expectedMintCount": 4,
+      "safetyHalted": false
+    },
+    "uiEdit": { "sameBackendProcess": true, "uiRevisionAdvanced": true },
+    "coldRestartBeforeFreshCertification": {
+      "galleryAvailable": true,
+      "loadedImages": 4,
+      "mintReady": false,
+      "observerHealthy": false,
+      "honestObservationNoticeVisible": true
+    },
+    "coldRestartRecovery": {
+      "mintReady": true,
+      "observerHealthy": true,
+      "observedMintCount": 4,
+      "expectedMintCount": 4,
+      "safetyHalted": false,
+      "scanFrom": "0xb428ab",
+      "revalidatedFinalizedCursorUsed": true
+    }
+  },
+  "browserChecks": [
+    {
+      "page": "/",
+      "viewport": "1440x1200",
+      "theme": "dark",
+      "cards": 4,
+      "loadedImages": 4,
+      "healthyNoticeHidden": true,
+      "horizontalOverflow": false,
+      "allRecordedRequests200": true,
+      "screenshotInspected": true
+    },
+    {
+      "page": "/mint",
+      "viewport": "390x844",
+      "theme": "light",
+      "network": "Ethereum Sepolia",
+      "connectButtonStyledAndEnabled": true,
+      "healthyNoticeHidden": true,
+      "horizontalOverflow": false,
+      "allRecordedRequests200": true,
+      "screenshotInspected": true
+    },
+    {
+      "page": "/mint",
+      "viewport": "1440x1000",
+      "theme": "dark",
+      "failureSource": "Simulated capability response in isolated browser; not a real RPC outage",
+      "warningVisibleDuringFailure": true,
+      "warningClearedAutomaticallyAfterRecovery": true,
+      "typedHandleRetained": true,
+      "monitorUsedGetOnly": true,
+      "noPrepareBeginReportOrWalletProofCalls": true,
+      "horizontalOverflow": false,
+      "screenshotInspected": true
+    },
+    {
+      "page": "/",
+      "viewport": "390x1100",
+      "theme": "light",
+      "scenario": "Real cold restart before fresh RPC certification",
+      "cards": 4,
+      "loadedImages": 4,
+      "observationNoticeVisible": true,
+      "mintReady": false,
+      "horizontalOverflow": false,
+      "allRecordedRequests200": true,
+      "screenshotInspected": true
+    }
+  ],
+  "effects": {
+    "paidXOrGrokRequests": 0,
+    "walletSignatures": 0,
+    "preparedMintRequests": 0,
+    "chainTransactions": 0,
+    "deployerKeyUnlocked": false,
+    "activeLocalRehearsalChanged": false,
+    "hostedStagingOrProductionActivated": false
+  }
+}

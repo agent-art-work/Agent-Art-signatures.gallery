@@ -76,7 +76,7 @@ describe("eight-shape MBTI slogan hero", () => {
     expect(SLOGAN_MBTI_HERO_MANIFEST).toMatchObject({
       version: "sg-slogan-mbti-1.3.0",
       sourceRendererVersion: "sg-renderer-2.0.1",
-      displayText: "The_First_Agent_Artwork",
+      displayText: "Anyone_Can_Sign_Anyone",
       frameCount: 8,
       durationMs: 16_000,
       transitionMs: 1_000,
@@ -151,7 +151,7 @@ describe("eight-shape MBTI slogan hero", () => {
     expect(svg).not.toMatch(/matrix\(|scale\([^)]*[, ]+[^)]*\)/);
     expect(svg).not.toContain("NaN");
     expect(svg).not.toContain("Infinity");
-    expect(svg).not.toContain("The_First_Agent_Artwork");
+    expect(svg).not.toContain("Anyone_Can_Sign_Anyone");
   });
 
   it("has a renderer-free runtime boundary rather than generating artwork in the browser", () => {

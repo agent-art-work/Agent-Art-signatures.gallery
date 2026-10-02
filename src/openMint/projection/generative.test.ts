@@ -167,6 +167,10 @@ describe.skipIf(process.env.OPEN_MINT_TEST_POSTGRES !== "1").each(["generative-e
   it("reveals inclusion as Confirming, galleries after finality, exact current ownership and restart withdrawal", async () => {
     f.transfer(); expect(await service.sync(signal())).toBe("observed");
     expect((await service.lookup(f.inputs.canonicalHandle)).state).toBe("confirming");
+    const live = { includeConfirming: true, limit: 10 };
+    expect((await service.gallery({ ...live, filter: { kind: "home" } })).items[0]).toMatchObject({ mintState: "confirming", currentOwner: a(3) });
+    expect((await service.gallery({ ...live, filter: { kind: "owner", value: a(3) } })).items).toHaveLength(1);
+    expect((await service.gallery({ ...live, filter: { kind: "owner", value: a(1) } })).items).toHaveLength(0);
     expect((await service.gallery({ filter: { kind: "home" }, limit: 10 })).items).toHaveLength(0);
     f.setFinalized(11); expect(await service.sync(signal())).toBe("observed");
     const mint = (await service.gallery({ filter: { kind: "mbti", value: "INTJ" }, limit: 10 })).items[0];

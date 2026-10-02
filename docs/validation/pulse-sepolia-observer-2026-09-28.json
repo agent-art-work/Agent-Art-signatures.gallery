@@ -1,0 +1,95 @@
+{
+  "scope": "pulse-sepolia-incremental-observer-and-finalized-status",
+  "date": "2026-09-28",
+  "candidateOrDeploymentChanged": false,
+  "automatedTests": {
+    "sharedUiServiceAndPageTests": 628,
+    "sepoliaNodeTests": 78,
+    "passed": 706,
+    "failed": 0,
+    "typecheck": "passed",
+    "diffWhitespaceCheck": "passed",
+    "disposablePostgresTestsRerunForThisChange": false
+  },
+  "isolatedBrowserChecks": {
+    "passed": 111,
+    "failed": 0,
+    "scenarios": [
+      "inline mint result and finalized outage: desktop light, 1024x1250",
+      "inline mint result and finalized outage: mobile dark, 390x1250",
+      "home Confirming gallery: desktop dark",
+      "MBTI Confirming gallery: desktop light",
+      "wallet Confirming gallery: mobile dark",
+      "finalized home outage: desktop light, Minted and one page-level warning",
+      "finalized MBTI outage: mobile dark, Minted and one page-level warning",
+      "finalized wallet outage: mobile light, Minted and one page-level warning",
+      "signature detail, warning persistence and recovery: desktop light",
+      "signature detail, warning persistence and recovery: mobile dark"
+    ],
+    "screenshotsInspected": true,
+    "realSharedMarkupStylesFontsAndSepoliaClient": true,
+    "mockedStatusResponsesAndSession": true,
+    "pollingIntervalAcceleratedForScenarioQa": true,
+    "newWalletSignaturesOrTransactions": 0,
+    "failedAssetRequests": 0,
+    "horizontalOverflow": false,
+    "warningClearsNavigationAndPrecedesGallery": true
+  },
+  "liveReadOnlyBrowserChecks": {
+    "origin": "http://127.0.0.1:3004",
+    "status": "blocked by public RPC failures; no new live mint/gallery acceptance claimed",
+    "passed": 0,
+    "mockedApiResponses": false,
+    "newWalletSignaturesOrTransactions": 0
+  },
+  "liveReadOnlyFrontendChecks": {
+    "origin": "http://127.0.0.1:3004",
+    "passed": 21,
+    "failed": 0,
+    "scenarios": ["home desktop light", "INFP gallery mobile dark", "mint entry mobile dark"],
+    "screenshotsInspected": true,
+    "frontendOnly": true,
+    "observerHealthy": false,
+    "mintingEnabled": false,
+    "signingKeysLoaded": false,
+    "walletOrMintPostRequests": 0,
+    "expectedApi503": true,
+    "failedAssetRequests": 0,
+    "horizontalOverflow": false,
+    "singleWarningClearsNavigation": true,
+    "noFabricatedGalleryOrEmptyChainClaim": true
+  },
+  "behavior": {
+    "ordinaryRpcOutage": "Previously finalized works remain Minted with one page-level Warning; immutable revealed artwork is retained.",
+    "unfinalizedOutage": "Previously revealed artwork is retained with an unavailable/rechecking status; no unsupported finalization.",
+    "incrementalObserver": "Bootstrap the deployment history once per process, privately checkpoint the verified finalized prefix, and rebuild the entire unfinalized suffix on each subsequent pass.",
+    "checkpointGuards": "Both endpoints recheck the old finalized anchor and shared heads; source disagreement, regressed finality, forged checkpoints and out-of-range logs cannot publish partial snapshots.",
+    "finalityConflict": "A contradicted finalized anchor or covered finalized receipt invalidates the qualified status and blocks mint admission; ordinary later transport failures cannot clear that dispute.",
+    "reorg": "A newer canonical scan can withdraw unfinalized receipt hints; it cannot silently erase or replace finalized evidence.",
+    "mintAdmission": "Still requires a healthy snapshot no older than 90 seconds, current wallet proof, explicit spending consent and the durable begin fence.",
+    "rpcScheduling": "At most two physical requests in flight per endpoint, one-second start spacing, and one safe-read retry with three-second backoff on rate limits; broadcasts are never retried.",
+    "health": "Safe scan bounds, refresh duration, source/method identifiers and numeric failure codes only; no RPC credential or signed data."
+  },
+  "localRuntime": {
+    "fullMintBackendRestarted": false,
+    "readOnlyFrontendRestored": true,
+    "dedicatedSepoliaRpcUrlRequested": true,
+    "privateEnvironmentOrAuthorityChanged": false,
+    "activeRehearsalDatabaseOrBackupChanged": false,
+    "rpcProbes": [
+      "Configured PublicNode returned null for the known deployment receipt while the secondary returned it.",
+      "OnFinality returned HTTP 429 during full startup despite successful isolated receipt/code reads.",
+      "BlockReq passed recent receipt/code probes but refused genesis reads because its public endpoint serves only recent blocks.",
+      "1RPC passed genesis/latest/finalized, deployment receipt and code probes, but full guarded startup failed on intermittent RPC errors and a block-read timeout (curl exit 28, HTTP 200).",
+      "Final bounded recheck: dRPC returned HTTP 400 and PublicNode still returned no deployment receipt."
+    ]
+  },
+  "limitations": [
+    "Isolated browser scenarios do not certify an installed-wallet mint.",
+    "No new mint, X lookup or Grok request was made for this change.",
+    "Historical presentation is not fresh sale, mint-admission or current ownership authority.",
+    "Verified checkpoints and artwork caches remain process-local; restarts still require full deployment verification and a new bootstrap.",
+    "Two endpoint checks do not certify RPC operator independence or provider reliability.",
+    "Production PostgreSQL/provider/release gates and hosted staging are unchanged."
+  ]
+}

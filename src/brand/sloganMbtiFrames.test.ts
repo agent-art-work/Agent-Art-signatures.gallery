@@ -19,27 +19,27 @@ const python = (args: string[]): string => execFileSync("python3", ["-B", ...arg
 describe("pinned v2 brand-only slogan frames", () => {
   it("preserves the exact slogan, case, underscores, and no punctuation without inventing a handle", () => {
     expect(SLOGAN_MBTI_SOURCE).toEqual({
-      displayText: "The_First_Agent_Artwork",
+      displayText: "Anyone_Can_Sign_Anyone",
       rendererVersion: "sg-renderer-2.0.1",
       upstreamCommit: "d00c018d1a740a5807480126d1f1bd0c620fb96d",
       pythonSha256: "bfa7ebdfb6e5ced7ddc0b92c3facb3709863ee6c6d10cf9a2f1596c018ecb896",
       adapter: "brand-only-whole-phrase-v2",
     });
-    expect(SLOGAN_MBTI_SOURCE.displayText).toHaveLength(23);
+    expect(SLOGAN_MBTI_SOURCE.displayText).toHaveLength(22);
     expect(SLOGAN_MBTI_SOURCE.displayText.match(/_/g)).toHaveLength(3);
     expect(Object.isFrozen(SLOGAN_MBTI_SOURCE)).toBe(true);
     expect(hash(readFileSync(new URL(`../../${oraclePath}`, import.meta.url))))
       .toBe(SLOGAN_MBTI_SOURCE.pythonSha256);
   });
 
-  it("expands the 23-character phrase at the 15-character reference spacing and keeps its height", () => {
+  it("expands the 22-character phrase at the 15-character reference spacing and keeps its height", () => {
     const segmentWidth = 300 / 14;
-    const curveSpan = segmentWidth * 22;
+    const curveSpan = segmentWidth * 21;
     const canonicalWidth = curveSpan + 120;
     expect(Object.isFrozen(SLOGAN_MBTI_LAYOUT)).toBe(true);
     expect(SLOGAN_MBTI_LAYOUT).toEqual({
       extended: true,
-      character_count: 23,
+      character_count: 22,
       reference_character_limit: 15,
       segment_width: segmentWidth,
       curve_span: curveSpan,
@@ -53,7 +53,7 @@ describe("pinned v2 brand-only slogan frames", () => {
   });
 
   it("uses the upstream policy whose canvas expansion starts after 15 characters", () => {
-    const counts = [1, 3, 14, 15, 16, 22, 23];
+    const counts = [1, 3, 14, 15, 16, 21, 22];
     const layouts = JSON.parse(python(["-c", `
 import importlib.util, json
 spec = importlib.util.spec_from_file_location("oracle", ${JSON.stringify(oraclePath)})
@@ -91,16 +91,16 @@ print(json.dumps([renderer.reusable_text_curve_layout(count) for count in ${JSON
     }
   });
 
-  it("pins every approved Signature phrase frame to its independently computed upstream path", () => {
+  it("pins every approved Anyone phrase frame to its independently computed upstream path", () => {
     expect(SLOGAN_MBTI_FRAMES.map(frame => ({ mbti: frame.mbti, sha256: hash(frame.d) }))).toEqual([
-      { mbti: "ISTJ", sha256: "7c1a268bb2667b2be8c3494c89a86370fc275eddfeb0aed44a7a2a842fbc1626" },
-      { mbti: "ISFJ", sha256: "0459d310b30ab34b65854f98e5cda7d6de8c0dc9177c0a866ebc218c7c269623" },
-      { mbti: "INFJ", sha256: "92b5a310c694b4d1a5f064db765cc6ec21bb8ae9ab6611c624ca784fcf211c4a" },
-      { mbti: "INTJ", sha256: "ffe31feb3c325919cd78aadded10184c32f2a65fc822b2eee6bfe5d378b3038c" },
-      { mbti: "ISTP", sha256: "33a1049a5f149b4d62e5afe6227648e84d1d60adff16106fbd757464c2eb0a7c" },
-      { mbti: "ISFP", sha256: "b0029cec5dba26b986c0795bc8aa66f171ad1d7cf6a97a83ca4cfc1e7b38cbe9" },
-      { mbti: "INFP", sha256: "7032525eafe9c48392d31a43dee40e0d63f83c68b33cb609a004b497e7c775b4" },
-      { mbti: "INTP", sha256: "0f9195aeebfcf0c63db364efe14b87dbf14d61cfb8b2c14db06044f589f8d0f2" },
+      { mbti: "ISTJ", sha256: "aad982b5c28a7ceab375afc14e9da44764a521962d54bb096e1c4e630baf0cd4" },
+      { mbti: "ISFJ", sha256: "2c26515e008d27abd5cf790cd3482a77401c3507d02fa8ecfbbd8f10e08bbecc" },
+      { mbti: "INFJ", sha256: "db14d1413439fc94e0ba5e080f6aa07655d1331ca161811286728b580ef0b205" },
+      { mbti: "INTJ", sha256: "02af528901114e67c9426f8f7ef43a1a98166ca4e3e8d91003f53c46c000ef40" },
+      { mbti: "ISTP", sha256: "bea3bb697e7abcb7c461c31f3cf95302e7c3d62ddc4e5fef3d9e42a85af20fe0" },
+      { mbti: "ISFP", sha256: "8f022553bb05c709cdbed6c720c7f86585e309bd313bbd553b8aa4712bf730c9" },
+      { mbti: "INFP", sha256: "0fa85c2f9e92282a951a87eedf313926f2fdbf6ce789b08abeef94a9fd7bcaa1" },
+      { mbti: "INTP", sha256: "385a0573ef05f36977156a53b9ab2f0b855c0d03d247664264e81b04a0d4734b" },
     ]);
   });
 
@@ -177,8 +177,8 @@ print(json.dumps(results))
       const extrovert = results.find(result => result.mbti === frame.pairedMbti)!;
       expect(introvert.d).toBe(frame.d);
       expect(extrovert.d).toBe(frame.d);
-      expect(introvert.anchorSpan).toBeCloseTo(300 / 14 * 22, 10);
-      expect(extrovert.anchorSpan).toBeCloseTo(300 / 14 * 22, 10);
+      expect(introvert.anchorSpan).toBeCloseTo(300 / 14 * 21, 10);
+      expect(extrovert.anchorSpan).toBeCloseTo(300 / 14 * 21, 10);
       expect(introvert.ink).toBe(extrovert.background);
       expect(introvert.background).toBe(extrovert.ink);
       expect(introvert.ink).not.toBe(extrovert.ink);
@@ -193,7 +193,7 @@ capture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(capture)
 renderer = capture.load_renderer()
 results = []
-for text in ["whose_signature_will_you_reveal?", "Whose_signature_will_you_reveal?", "Whose_Signature_Will_You_Reveal", "Whose Signature Will You Reveal?", "A_different_long_phrase?", "Whose_Signature_Will_You_Reveal?\\n", "What_shape_do_you_go_by?", "Whose_Shape_Will_You_Reveal?", "Alice_Bob_Key"]:
+for text in ["whose_signature_will_you_reveal?", "Whose_signature_will_you_reveal?", "Whose_Signature_Will_You_Reveal", "Whose Signature Will You Reveal?", "A_different_long_phrase?", "Whose_Signature_Will_You_Reveal?\\n", "What_shape_do_you_go_by?", "Whose_Shape_Will_You_Reveal?", "The_First_Agent_Artwork", "Anyone_Can_Mint_Anyone", "Alice_Bob_Key"]:
     try:
         capture.brand_path(renderer, text, "INFP")
         results.append("accepted")
@@ -201,7 +201,7 @@ for text in ["whose_signature_will_you_reveal?", "Whose_signature_will_you_revea
         results.append(str(error))
 print(json.dumps(results))
 `])) as string[];
-    expect(results).toHaveLength(9);
+    expect(results).toHaveLength(11);
     expect(results.every(result => result === "Brand adapter accepts only the exact slogan literal")).toBe(true);
   });
 });

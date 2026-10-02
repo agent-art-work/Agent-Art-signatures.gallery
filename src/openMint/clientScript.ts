@@ -2,6 +2,9 @@ import { mintUiState } from "./mintUiState.js";
 import { createWalletProviders } from "./walletProviders.js";
 import { canRevealMint } from "./revealPolicy.js";
 import { REVEAL_MONITOR_SCRIPT } from "./revealMonitor.js";
+import { mintHandleDraft } from "./mintHandleDraft.js";
+import { bindHandleValidation } from "./fieldValidation.js";
+import { renderInlineFeedback } from "./inlineFeedback.js";
 
 /** Shared, bounded failure copy for the server-rendered page and live polling. */
 export function assessmentFailureText(input: { error?: unknown; errorCategory?: unknown; diagnosticReference?: unknown }): string {
@@ -20,6 +23,9 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
   const canRevealMint = ${canRevealMint.toString()};
   const assessmentFailureText = ${assessmentFailureText.toString()};
   const createWalletProviders = ${createWalletProviders.toString()};
+  const mintHandleDraft = ${mintHandleDraft.toString()};
+  const bindHandleValidation = ${bindHandleValidation.toString()};
+  const renderInlineFeedback = ${renderInlineFeedback.toString()};
   if (window.__openMintBound) return;
   window.__openMintBound = true;
   const one = (selector) => document.querySelector(selector);
@@ -38,8 +44,8 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
   const codePattern = /^[A-Za-z0-9_-]{43}$/;
   const sameAddress = (a, b) => typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
   const walletAddress = (value) => typeof value === 'string' ? value : value?.wallet?.address || value?.wallet || value?.address;
-  const message = (selector, text) => { if (stopped) return; const node = one(selector); if (node) node.textContent = text; };
-  const feedback = (text) => message('[data-mint-feedback]', text);
+  const message = (selector, text, warning = false) => { if (stopped) return; renderInlineFeedback(one(selector), text, warning); };
+  const feedback = (text, warning = false) => message('[data-mint-feedback]', text, warning);
   const storageGet = (key) => { try { return JSON.parse(sessionStorage.getItem('sg-open:' + key) || 'null'); } catch { return null; } };
   const storageSet = (key, value) => { try { sessionStorage.setItem('sg-open:' + key, JSON.stringify(value)); } catch {} };
   const storageRemove = (key) => { try { sessionStorage.removeItem('sg-open:' + key); } catch {} };
@@ -356,8 +362,8 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
       timeout = setTimeout(() => reject(new Error('Confirmation check timed out.')), readTimeoutMs);
     })]).finally(() => { clearTimeout(timeout); abort.signal.removeEventListener('abort', cancel); });
   };
-  const pendingFeedback = (text, status = 'Mint submitted. Waiting to reveal your signature…') => {
-    feedback(text); message('[data-assessment-status]', status);
+  const pendingFeedback = (text, status = 'Mint submitted. Waiting to reveal your signature…', warning = false) => {
+    feedback(text, warning); message('[data-assessment-status]', status);
     message('[data-poll-feedback]', durableSubmission && one('[data-mint-transaction]') ? '' : 'Transaction: ' + submittedHash);
   };
   const inspectSubmissionRead = async (mintState, inspection) => {
@@ -381,11 +387,11 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
       if (!isQuantity(latest) || !isQuantity(pending) || BigInt(pending) < BigInt(latest)) throw new Error('Invalid transaction counts');
       const delayed = Date.now() - submittedAt >= delayedConfirmationMs;
       if (tx === null) {
-        pendingFeedback(delayed ? 'The transaction is not currently visible on the verified mint network. It may still be propagating or may have been dropped. Check wallet activity; do not submit another mint until this transaction is resolved.' : 'Transaction submitted. Waiting for it to appear on the mint network.', delayed ? 'Transaction not found. Check wallet activity.' : undefined);
+        pendingFeedback(delayed ? 'The transaction is not currently visible on the verified mint network. It may still be propagating or may have been dropped. Check wallet activity; do not submit another mint until this transaction is resolved.' : 'Transaction submitted. Waiting for it to appear on the mint network.', delayed ? 'Transaction not found. Check wallet activity.' : undefined, delayed);
         return false;
       }
       if (!tx || !sameAddress(tx.hash, hash) || !sameAddress(tx.from, submittedWallet) || !sameAddress(tx.to, root.dataset.contract) || !isQuantity(tx.nonce) || !(tx.blockNumber === null || isQuantity(tx.blockNumber)) || (tx.chainId !== undefined && (!isQuantity(tx.chainId) || tx.chainId !== expectedChain(state)))) {
-        pendingFeedback('The wallet returned transaction details that do not match this mint. Check wallet activity; do not submit another mint until this transaction is resolved.', 'Transaction details could not be verified.');
+        pendingFeedback('The wallet returned transaction details that do not match this mint. Check wallet activity; do not submit another mint until this transaction is resolved.', 'Transaction details could not be verified.', true);
         return false;
       }
       if (mintState === 'unminted' && receipt?.status === '0x0' && sameAddress(receipt.transactionHash, hash) && sameAddress(receipt.from, submittedWallet) && sameAddress(receipt.to, root.dataset.contract) && isQuantity(receipt.blockNumber) && tx.blockNumber === receipt.blockNumber && hashPattern.test(receipt.blockHash || '')) {
@@ -397,26 +403,26 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
         page.dataset.mintState = 'unminted';
         message('[data-poll-feedback]', '');
         message('[data-assessment-status]', 'The mint transaction reverted. Your signature is ready to mint.');
-        feedback(requestExpired() ? 'The transaction reverted. Return to mint; your saved assessment and artwork will be reused.' : 'The transaction reverted. Your prepared signature is unchanged. You can Continue mint.');
+        feedback(requestExpired() ? 'The transaction reverted. Return to mint; your saved assessment and artwork will be reused.' : 'The transaction reverted. Your prepared signature is unchanged. You can Continue mint.', true);
         updateButtons(); return true;
       }
       if (tx.blockNumber === null && BigInt(tx.nonce) > BigInt(pending)) {
-        pendingFeedback('Transaction nonce ' + BigInt(tx.nonce) + '; chain expects ' + BigInt(pending) + '. This transaction is queued behind a nonce gap. Correct the ' + (local ? 'local ' : '') + 'wallet nonce, and do not submit another mint until this transaction is resolved.', 'Mint waiting for a wallet nonce gap to be resolved.');
+        pendingFeedback('Transaction nonce ' + BigInt(tx.nonce) + '; chain expects ' + BigInt(pending) + '. This transaction is queued behind a nonce gap. Correct the ' + (local ? 'local ' : '') + 'wallet nonce, and do not submit another mint until this transaction is resolved.', 'Mint waiting for a wallet nonce gap to be resolved.', true);
       } else if (expectedNonce !== null && tx.nonce !== expectedNonce) {
-        pendingFeedback('Your wallet broadcast transaction nonce ' + BigInt(tx.nonce) + '; the mint requested ' + BigInt(expectedNonce) + '. Check wallet activity; do not submit another mint until this transaction is resolved.', 'The wallet changed the mint transaction nonce.');
+        pendingFeedback('Your wallet broadcast transaction nonce ' + BigInt(tx.nonce) + '; the mint requested ' + BigInt(expectedNonce) + '. Check wallet activity; do not submit another mint until this transaction is resolved.', 'The wallet changed the mint transaction nonce.', true);
       } else if (tx.blockNumber !== null) {
         pendingFeedback('The transaction was mined. Waiting for the server to verify the mint before revealing your signature.');
       } else {
-        pendingFeedback(delayed ? 'The transaction is still pending on the mint network. Confirmation is taking longer than expected. Check wallet activity; do not submit another mint until this transaction is resolved.' : 'Transaction submitted. Waiting for confirmation to reveal your signature.', delayed ? 'Mint confirmation is taking longer than expected.' : undefined);
+        pendingFeedback(delayed ? 'The transaction is still pending on the mint network. Confirmation is taking longer than expected. Check wallet activity; do not submit another mint until this transaction is resolved.' : 'Transaction submitted. Waiting for confirmation to reveal your signature.', delayed ? 'Mint confirmation is taking longer than expected.' : undefined, delayed);
       }
     } catch (error) {
       if (stopped || submittedHash !== hash || inspection !== inspectionGeneration) return false;
       if (error?.code === 'WALLET_NETWORK_MISMATCH') {
-        pendingFeedback('Transaction checking is paused because your wallet is on a different mint network. Restore the correct wallet RPC/network; do not submit another mint while this transaction is unresolved.', 'Switch back to the mint network to check this transaction.');
+        pendingFeedback('Transaction checking is paused because your wallet is on a different mint network. Restore the correct wallet RPC/network; do not submit another mint while this transaction is unresolved.', 'Switch back to the mint network to check this transaction.', true);
       } else if (error?.code === 'MINT_NETWORK_UNAVAILABLE') {
-        pendingFeedback(errorText(error) + ' Do not submit another mint while this transaction is unresolved.', 'Cannot verify the wallet RPC. Transaction checking will retry.');
+        pendingFeedback(errorText(error) + ' Do not submit another mint while this transaction is unresolved.', 'Cannot verify the wallet RPC. Transaction checking will retry.', true);
       } else {
-        message('[data-poll-feedback]', 'Transaction checking is temporarily unavailable. This page will retry. Do not submit another mint. Transaction: ' + hash);
+        message('[data-poll-feedback]', 'Transaction checking is temporarily unavailable. This page will retry. Do not submit another mint. Transaction: ' + hash, true);
       }
     }
     return false;
@@ -428,7 +434,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
     catch {
       if (!stopped && inspection === inspectionGeneration) {
         inspectionGeneration++;
-        message('[data-poll-feedback]', 'Transaction checking is temporarily unavailable. This page will retry. Do not submit another mint. Transaction: ' + submittedHash);
+        message('[data-poll-feedback]', 'Transaction checking is temporarily unavailable. This page will retry. Do not submit another mint. Transaction: ' + submittedHash, true);
       }
       return false;
     }
@@ -445,7 +451,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
         readUnavailable = false;
         if (hashPattern.test(result?.transactionHash || '')) page.dataset.mintTransactionHash = result.transactionHash;
       } catch (error) {
-        if (!stopped && generation === mintGeneration) { recoverError(error); readUnavailable = true; updateButtons(); message('[data-poll-feedback]', 'Confirmation is temporarily unavailable. This page will retry.' + (submittedHash ? ' Transaction: ' + submittedHash : '') + (['SESSION_REQUIRED', 'SESSION_EXPIRED', 'REQUEST_SESSION_MISMATCH', 'REQUEST_WALLET_MISMATCH'].includes(error?.code) ? ' Restore the original browser session and wallet. Do not submit another mint.' : '')); }
+        if (!stopped && generation === mintGeneration) { recoverError(error); readUnavailable = true; updateButtons(); message('[data-poll-feedback]', 'Confirmation is temporarily unavailable. This page will retry.' + (submittedHash ? ' Transaction: ' + submittedHash : '') + (['SESSION_REQUIRED', 'SESSION_EXPIRED', 'REQUEST_SESSION_MISMATCH', 'REQUEST_WALLET_MISMATCH'].includes(error?.code) ? ' Restore the original browser session and wallet. Do not submit another mint.' : ''), true); }
       }
       if (stopped || generation !== mintGeneration) return;
       if (canRevealMint(result?.state)) { reveal(result.state); return; }
@@ -453,7 +459,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
         page.dataset.mintState = 'pending'; storageRemove(intentKey);
         if (!submittedHash && hashPattern.test(result.transactionHash || '')) setPending(result.transactionHash, submittedWallet || verified);
         uncertainSubmission = !submittedHash;
-        if (uncertainSubmission) feedback('A wallet submission was started, but its outcome is unknown. Check wallet activity. No new transaction will be sent automatically.');
+        if (uncertainSubmission) feedback('A wallet submission was started, but its outcome is unknown. Check wallet activity. No new transaction will be sent automatically.', true);
       }
       if (submittedHash && reportNeeded) {
         try { await boundedCheck(post('/api/mints/report', { code, transactionHash: submittedHash, ...(durableSubmission ? { permit: submissionPermit } : {}) })); reportNeeded = false; } catch {}
@@ -479,13 +485,17 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
   const validateAuthorization = (result, state, recipient) => {
     assertContext();
     const tx = result.transaction;
+    const savedCap = page.dataset.pulseMaxPriceWei;
+    const pulse = savedCap !== undefined;
+    if (pulse ? !/^(0|[1-9][0-9]*)$/.test(savedCap) || BigInt(savedCap) >= (1n << 256n) || result.version !== 'sg-pulse-wallet-plan-v1-rc1' : result.version === 'sg-pulse-wallet-plan-v1-rc1') throw new Error('The mint payment does not match your saved consent. Nothing was sent.');
+    const expectedValue = pulse ? '0x' + BigInt(savedCap).toString(16) : '0x0';
     const expires = expiryTime(result.expiresAt);
     if (!Number.isFinite(expires) || expires <= Date.now()) throw new Error('This mint authorization has expired. Continue mint for a fresh authorization.');
     if (result.code !== code || result.handle !== handle || String(result.tokenId) !== tokenId) throw new Error('The mint authorization is for a different work. Nothing was sent.');
-    if (!tx || !sameAddress(tx.from, recipient) || !addressPattern.test(tx.to || '') || !addressPattern.test(root.dataset.contract || '') || !sameAddress(tx.to, root.dataset.contract) || asChain(tx.chainId) !== expectedChain(state) || !/^0x(?:[0-9a-f]{2})+$/i.test(tx.data || '') || !/^0x[0-9a-f]+$/i.test(tx.value || '') || BigInt(tx.value) !== 0n) throw new Error('The mint transaction does not match the wallet, network, and work. Nothing was sent.');
+    if (!tx || !sameAddress(tx.from, recipient) || !addressPattern.test(tx.to || '') || !addressPattern.test(root.dataset.contract || '') || !sameAddress(tx.to, root.dataset.contract) || asChain(tx.chainId) !== expectedChain(state) || !/^0x(?:[0-9a-f]{2})+$/i.test(tx.data || '') || !/^0x[0-9a-f]+$/i.test(tx.value || '') || (pulse ? tx.value !== expectedValue : BigInt(tx.value) !== 0n)) throw new Error('The mint transaction does not match the wallet, network, and work. Nothing was sent.');
     const network = validateNetwork(result.network, state);
     if (quantity(tx.nonce) !== quantity(network.nonce)) throw new Error('The mint transaction nonce does not match its network proof. Nothing was sent. Continue mint for a fresh authorization.');
-    return { from: recipient, to: tx.to, data: tx.data, value: '0x0', chainId: expectedChain(state), nonce: tx.nonce };
+    return { from: recipient, to: tx.to, data: tx.data, value: expectedValue, chainId: expectedChain(state), nonce: tx.nonce };
   };
   const submitMint = async (mode) => {
     if (stopped || mintBusy || submittedHash || uncertainSubmission || !verified || walletMode !== mode || requestExpired() || readUnavailable || reservedUntil > Date.now()) { updateButtons(); return; }
@@ -545,7 +555,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
         if (!hashPattern.test(hash || '')) throw new Error('The wallet returned an invalid transaction hash.');
         setPending(hash, recipient, transaction.nonce);
         try { await boundedCheck(post('/api/mints/report', { code, transactionHash: hash, ...(durableSubmission ? { permit: submissionPermit } : {}) })); }
-        catch { reportNeeded = true; feedback('Transaction submitted. Saving its status will retry. Transaction: ' + hash); }
+        catch { reportNeeded = true; feedback('Transaction submitted. Saving its status will retry. Transaction: ' + hash, true); }
         await inspectSubmission();
       }
       schedule(pollMint);
@@ -560,12 +570,12 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
         uncertainSubmission = true;
         feedback(durableSubmission && !walletInvoked
           ? 'The mint submission could not be verified. This page has not sent a wallet transaction. Check progress before any retry.'
-          : 'The wallet response is uncertain. Check wallet activity before any retry. This page will check for a confirmed mint.'); schedule(pollMint);
+          : 'The wallet response is uncertain. Check wallet activity before any retry. This page will check for a confirmed mint.', true); schedule(pollMint);
       } else if (durableSubmission && error?.code === 'SUBMISSION_UNRESOLVED') {
-        uncertainSubmission = true; page.dataset.mintState = 'pending'; storageRemove(intentKey); feedback(errorText(error)); schedule(pollMint, 100);
+        uncertainSubmission = true; page.dataset.mintState = 'pending'; storageRemove(intentKey); feedback(errorText(error), true); schedule(pollMint, 100);
       } else {
         if (!submittedHash) storageRemove(submissionKey);
-        feedback(errorText(error));
+        feedback(errorText(error), error?.code !== 4001 && error?.code !== 'ACTION_REJECTED');
         if (['ALREADY_MINTED', 'HANDLE_ALREADY_MINTED', 'TOKEN_ALREADY_MINTED'].includes(error?.code)) {
           page.dataset.mintState = 'pending'; schedule(pollMint, 100);
         }
@@ -599,7 +609,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
         updateButtons(); schedule(pollMint); return;
       }
       if (requestExpired()) { updateButtons(); return; }
-      if (state.status === 'failed' || state.status === 'abstained') { storageRemove(intentKey); page.dataset.assessmentState = state.status; feedback(assessmentFailureText(state)); updateButtons(); return; }
+      if (state.status === 'failed' || state.status === 'abstained') { storageRemove(intentKey); page.dataset.assessmentState = state.status; feedback(assessmentFailureText(state), true); updateButtons(); return; }
       if (state.status === 'ready') {
         page.dataset.assessmentState = 'ready'; page.dataset.canMint = String(state.canMint === true); page.dataset.walletProved = String(state.walletProvedForCode === true);
         if (state.walletProvedForCode !== true || wallet !== walletGeneration) invalidateWallet();
@@ -610,17 +620,20 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
     } catch (error) {
       if (!stopped && generation === assessmentGeneration) {
         recoverError(error);
-        if (requestExpired()) { message('[data-poll-feedback]', errorText(error)); return; }
+        if (requestExpired()) { message('[data-poll-feedback]', errorText(error), true); return; }
         readUnavailable = true; storageRemove(intentKey); updateButtons();
-        message('[data-poll-feedback]', errorText(error) + ' Checking again automatically; you can also choose Check progress.');
+        message('[data-poll-feedback]', errorText(error) + ' Checking again automatically; you can also choose Check progress.', true);
         schedule(pollAssessment, retryDelay(++readFailures));
       }
     } finally { assessmentBusy = false; updateButtons(); }
   };
   all('[data-assessment-request]').forEach((form) => {
+    bindHandleValidation(form);
     const input = form.querySelector('input[name=handle]');
+    const saveHandleDraft = mintHandleDraft(input);
     const link = form.querySelector('[data-mint-preview]');
     const updatePreview = () => {
+      saveHandleDraft();
       if (!link) return;
       const handle = (input?.value || '').trim().replace(/^@/, '');
       if (/^[A-Za-z0-9_]{1,15}$/.test(handle)) link.setAttribute('href', '/p/' + encodeURIComponent(handle) + '/variations');
@@ -628,12 +641,50 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
     };
     input?.addEventListener('input', updatePreview);
     updatePreview();
+    if(form.dataset.pulseMint === 'true') {
+      const clear = () => { delete form.dataset.pulseQuote; form.querySelectorAll('input[name=pulse-mode]').forEach(r => {r.checked=false;r.disabled=true;}); const cap=form.querySelector('input[name=pulse-max-eth]'); if(cap) cap.disabled=true; };
+      input?.addEventListener('input',clear);
+      form.querySelector('[data-pulse-check]')?.addEventListener('click',async () => {
+        clear();
+        const handle=(input?.value || '').trim().replace(/^@/,'');
+        const generation=walletGeneration;
+        if(!verified || !/^[A-Za-z0-9_]{1,15}$/.test(handle)) { message('[data-pulse-feedback]','Enter a handle and connect your wallet first.', true); return; }
+        try {
+          const q=await readJson('/api/mints/options?handle='+encodeURIComponent(handle));
+          if(generation !== walletGeneration || (input?.value || '').trim().replace(/^@/,'') !== handle || q.version !== 'sg-pulse-mint-options-v1' || q.handle !== handle.toLowerCase() || !sameAddress(q.wallet,verified) || !['free','paid'].includes(q.phase) || typeof q.priceWei !== 'string' || q.priceWei.length > 78 || !/^(0|[1-9][0-9]*)$/.test(q.priceWei) || BigInt(q.priceWei) >= (1n << 256n) || !Array.isArray(q.availableSlots) || q.availableSlots.length > 2048 || q.availableSlots.some(s => typeof s !== 'string' || !/^(0|[1-9][0-9]*)$/.test(s)) || !Number.isFinite(q.validUntil) || q.validUntil <= Date.now()) throw new Error('Mint options could not be verified.');
+          const snapshot={handle:q.handle,wallet:q.wallet,validUntil:q.validUntil,phase:q.phase,priceWei:q.priceWei};
+          form.dataset.pulseQuote=JSON.stringify(snapshot);
+          form.querySelector('input[name=pulse-mode][value=free]').disabled=q.phase !== 'free' || !q.availableSlots.length;
+          form.querySelector('input[name=pulse-mode][value=paid]').disabled=q.phase !== 'paid';
+          form.querySelector('input[name=pulse-max-eth]').disabled=q.phase !== 'paid';
+          const wei=BigInt(q.priceWei), eth=(wei / 1000000000000000000n).toString()+'.'+(wei % 1000000000000000000n).toString().padStart(18,'0');
+          message('[data-pulse-feedback]',q.phase === 'free' ? q.availableSlots.length ? 'Free mint available. Choose a slot-funded mint below.' : 'No unused free slot is available for this wallet.' : 'Current Pulse price: '+eth+' ETH. Choose paid mint and set your ceiling.');
+        } catch(error) {clear();message('[data-pulse-feedback]',errorText(error), true);}
+      });
+    }
   });
   all('[data-assessment-request]').forEach((form) => form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    if (!verified || walletBusy || mintBusy || requestBusy) { message('[data-request-feedback]', 'Connect and verify your wallet first.'); return; }
+    const handleField = form.querySelector('input[name=handle]');
+    if (handleField?.checkValidity && !handleField.checkValidity()) return;
+    if (!verified || walletBusy || mintBusy || requestBusy) { message('[data-request-feedback]', 'Connect and verify your wallet first.', true); return; }
     const requestedHandle = (form.querySelector('input[name=handle]')?.value || '').trim().replace(/^@/, '');
-    if (!/^[A-Za-z0-9_]{1,15}$/.test(requestedHandle)) { message('[data-request-feedback]', 'Enter an X handle with 1–15 letters, numbers, or underscores.'); return; }
+    if (!/^[A-Za-z0-9_]{1,15}$/.test(requestedHandle)) { message('[data-request-feedback]', 'Enter an X handle with 1–15 letters, numbers, or underscores.', true); return; }
+    let mintIntent;
+    if(form.dataset.pulseMint === 'true') {
+      try {
+        const q=JSON.parse(form.dataset.pulseQuote || 'null'), chosen=form.querySelector('input[name=pulse-mode]:checked');
+        if(!q || q.validUntil <= Date.now() || q.handle !== requestedHandle.toLowerCase() || !sameAddress(q.wallet,verified) || !chosen || chosen.disabled || chosen.value !== q.phase) throw new Error('Check mint options and choose a mint mode first.');
+        let maxPriceWei='0';
+        if(chosen.value === 'paid') {
+          const value=(form.querySelector('input[name=pulse-max-eth]')?.value || '').trim();
+          if(!/^(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/.test(value)) throw new Error('Enter your maximum mint price in ETH.');
+          const parts=value.split('.'); maxPriceWei=(BigInt(parts[0])*1000000000000000000n+BigInt((parts[1] || '').padEnd(18,'0'))).toString();
+          if(BigInt(maxPriceWei) >= 2n**256n || BigInt(maxPriceWei) < BigInt(q.priceWei)) throw new Error('Your ceiling is below the quoted price or out of range.');
+        }
+        mintIntent={mode:chosen.value,maxPriceWei};
+      } catch(error) {message('[data-request-feedback]',errorText(error), true);return;}
+    }
     requestBusy = true; updateButtons();
     const recipient = verified, mode = walletMode, generation = walletGeneration;
     message('[data-request-feedback]', 'Grok is preparing your signature. Your wallet will ask you to mint when it is ready.');
@@ -644,7 +695,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
         await walletUnchanged(ethereum, state, recipient, generation);
         await supportedAccount(ethereum, recipient);
       }
-      const result = await post('/api/assessments', { handle: requestedHandle }, () => {
+      const result = await post('/api/assessments', { handle: requestedHandle, ...(mintIntent ? {mintIntent} : {}) }, () => {
         if (stopped || generation !== walletGeneration || !sameAddress(verified, recipient) || walletMode !== mode) throw new Error('The wallet changed. Connect it again before preparing a signature.');
       });
       const url = new URL(result.url, location.origin);
@@ -655,7 +706,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
     } catch (error) {
       recoverError(error);
       if (error?.code === 'ALREADY_MINTED' && typeof error.url === 'string' && error.url === '/signatures/' + requestedHandle.toLowerCase()) location.assign(error.url);
-      else message('[data-request-feedback]', errorText(error));
+      else message('[data-request-feedback]', errorText(error), error?.code !== 4001 && error?.code !== 'ACTION_REJECTED');
     } finally { requestBusy = false; updateButtons(); }
   }));
   all('[data-connect-wallet]').forEach((button) => button.addEventListener('click', async () => {
@@ -688,7 +739,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
       syncDeadlines(result);
       if (one('[data-collection-page]')) { location.reload(); return; }
       feedback('Wallet connected. Choose Mint & reveal when ready.');
-    } catch (error) { invalidateWallet(); recoverError(error); feedback(error?.code === 4001 || error?.code === 'ACTION_REJECTED' ? 'Cancelled in your wallet. Choose Connect wallet to connect and verify when ready.' : errorText(error)); }
+    } catch (error) { invalidateWallet(); recoverError(error); const cancelled = error?.code === 4001 || error?.code === 'ACTION_REJECTED'; feedback(cancelled ? 'Cancelled in your wallet. Choose Connect wallet to connect and verify when ready.' : errorText(error), !cancelled); }
     finally { walletBusy = false; button.disabled = false; updateButtons(); if (!stopped) button.focus(); }
   }));
   one('[data-mint-form]')?.addEventListener('submit', async (event) => { event.preventDefault(); await submitMint('injected'); });
@@ -705,7 +756,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
         syncDeadlines(result);
         if (one('[data-collection-page]')) { location.reload(); return; }
         message('[data-dev-feedback]', 'Local test wallet connected. Mint & reveal uses this isolated test chain.'); feedback('Local test wallet connected.');
-      } catch (error) { recoverError(error); message('[data-dev-feedback]', errorText(error)); }
+      } catch (error) { recoverError(error); message('[data-dev-feedback]', errorText(error), true); }
       finally { walletBusy = false; button.disabled = false; updateButtons(); }
     });
     one('[data-dev-mint]')?.addEventListener('click', async () => submitMint('local'));
@@ -713,18 +764,18 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
   one('[data-copy-handoff]')?.addEventListener('click', async () => {
     const field = one('[data-handoff-prompt]'); if (!field) return;
     try { await navigator.clipboard.writeText(field.value); message('[data-copy-feedback]', 'Copied. Paste it into Grok.'); }
-    catch { field.focus(); field.select(); message('[data-copy-feedback]', 'Select and copy the prompt above.'); }
+    catch { field.focus(); field.select(); message('[data-copy-feedback]', 'Select and copy the prompt above.', true); }
   });
   one('[data-disconnect-wallet]')?.addEventListener('click', async (event) => {
     const button = event.currentTarget;
     if (button.disabled || mintBusy || requestBusy) return;
     button.disabled = true;
     try { await post('/api/session/logout', {}); invalidateWallet(); location.reload(); }
-    catch (error) { feedback(errorText(error)); button.disabled = false; }
+    catch (error) { feedback(errorText(error), true); button.disabled = false; }
   });
-  const onAccounts = () => { if (walletBusy) walletGeneration++; else { invalidateWallet(); feedback('The wallet account changed. Connect it again before continuing.'); } };
-  const onChain = () => { const label = one('[data-mint-network]'); if (label) label.hidden = true; if (walletBusy) walletGeneration++; else { invalidateWallet(); feedback('The wallet network changed. Connect it again before continuing.'); } };
-  const onDisconnect = () => { invalidateWallet(); feedback('The selected wallet disconnected. Unlock it and reconnect. Any submitted mint is still being checked.'); };
+  const onAccounts = () => { if (walletBusy) walletGeneration++; else { invalidateWallet(); feedback('The wallet account changed. Connect it again before continuing.', true); } };
+  const onChain = () => { const label = one('[data-mint-network]'); if (label) label.hidden = true; if (walletBusy) walletGeneration++; else { invalidateWallet(); feedback('The wallet network changed. Connect it again before continuing.', true); } };
+  const onDisconnect = () => { invalidateWallet(); feedback('The selected wallet disconnected. Unlock it and reconnect. Any submitted mint is still being checked.', true); };
   bindWallet(wallets.restore(storageGet('wallet-provider')));
   window.addEventListener('pagehide', () => { stopped = true; bootGeneration++; assessmentGeneration++; mintGeneration++; inspectionGeneration++; clearTimeout(timer); clearTimeout(bootTimer); clearTimeout(expiryTimer); abort.abort(); cancelWalletChoice?.(); bindWallet(null); wallets.dispose(); }, { once: true });
   window.addEventListener('pageshow', (event) => { if (event.persisted) location.reload(); });
@@ -748,14 +799,14 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
         }
       }
       readUnavailable = false; bootFailures = 0;
-      if (bootFeedback && one(bootFeedback.selector)?.textContent === bootFeedback.copy) message(bootFeedback.selector, '');
+      if (bootFeedback && one(bootFeedback.selector)?.textContent === bootFeedback.rendered) message(bootFeedback.selector, '');
       bootFeedback = null;
       const savedMode = storageGet('wallet-mode');
       const mode = local && savedMode?.mode === 'local' && sameAddress(savedMode.address, walletAddress(state)) ? 'local' : 'injected';
       if (!selectedWallet && mode === 'injected') bindWallet(wallets.restore(storageGet('wallet-provider')));
       if (wallet === walletGeneration && (state.walletVerified === true || page?.dataset.walletProved === 'true')) {
         if (mode === 'local' || selectedWallet) walletReady(walletAddress(state), state, mode);
-        else { storageRemove(intentKey); feedback('Choose and reconnect your wallet to continue. The previous wallet could not be identified.'); }
+        else { storageRemove(intentKey); feedback('Choose and reconnect your wallet to continue. The previous wallet could not be identified.', true); }
       }
       syncDeadlines(state);
       if (submittedHash || uncertainSubmission || page?.dataset.mintState === 'pending') { message('[data-assessment-status]', ui().status); return; }
@@ -770,7 +821,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
         const retrying = !requestExpired() || submittedHash || uncertainSubmission || page?.dataset.mintState === 'pending';
         const copy = errorText(error) + (retrying ? ' Checking again automatically; ' + (one('[data-check-progress]') ? 'choose Check progress to check now.' : 'reload this page to check now.') : '');
         const selector = page ? '[data-poll-feedback]' : '[data-request-feedback]';
-        message(selector, copy); bootFeedback = { selector, copy };
+        message(selector, copy, true); bootFeedback = { selector, rendered: one(selector)?.textContent };
         if (retrying) bootTimer = setTimeout(boot, retryDelay(++bootFailures));
       }
     } finally { if (!stopped && generation === bootGeneration) { booting = false; updateButtons(); } }
@@ -794,7 +845,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
     } else uncertainSubmission = true;
     walletMode = local && submission.mode === 'local' ? 'local' : 'injected';
     storageRemove(intentKey);
-    feedback(submittedHash ? 'Checking your submitted transaction before revealing.' : 'Check wallet activity. This page is checking for a confirmed mint before any retry.');
+    feedback(submittedHash ? 'Checking your submitted transaction before revealing.' : 'Check wallet activity. This page is checking for a confirmed mint before any retry.', !submittedHash);
   }
   if (submittedHash || uncertainSubmission || page?.dataset.mintState === 'pending') schedule(pollMint, 100);
   if (page) syncDeadlines(page.dataset);

@@ -12,6 +12,8 @@ import { eligibilityFixture, fixturePinForProfile } from "./persistence/fixtures
 import { PublicChainGate } from "./publicChain.js";
 import { GenerativeWalletChain } from "./walletChain.js";
 import { GenerativeRecoveryChain } from "./generativeRecoveryChain.js";
+import { pulseFixturePin } from "./fixtures/pulse.js";
+import { pulseMintTypedData, pulseMintCalldata, verifyPulseSignature } from "./pulseAuthorization.js";
 
 const profiles = Object.values(GENERATIVE_PROFILES);
 const hash = (s: string) => keccak256(stringToHex(s));
@@ -32,7 +34,7 @@ describe("explicit generative profile registry", () => {
   });
   // Undefined is the historical default at low-level encoding boundaries only.
   it("preserves historical experimental default bytes", () => {
-    const pin = fixturePinForProfile("generative-experimental-v1"), p = profiles[0];
+    const pin = fixturePinForProfile("generative-experimental-v1"), p = GENERATIVE_PROFILES["generative-experimental-v1"];
     expect(generativeRendererIdentity(pin.address, pin.runtimeCodeHash)).toBe(pin.identity);
     expect(prepareGenerativeInputs(syntheticPublicAssessment(), pin.identity)).toEqual(prepareGenerativeInputs(syntheticPublicAssessment(), pin.identity, p.inputProfile));
     expect(pin).not.toHaveProperty("inputProfile");
@@ -58,6 +60,23 @@ describe.each(profiles)("$contractProfile isolation", p => {
     expect(generativeRendererIdentity(pin.address, pin.runtimeCodeHash, other.inputProfile)).not.toBe(pin.identity);
   });
   it("separates EIP-712 signatures and never admits mixed-profile calldata", async () => {
+    if (p.contractProfile === "generative-pulse-v1-rc1") {
+      const economic = {...a,mintMode:0 as const,slotId:"0",maxPrice:"0"};
+      const typed = pulseMintTypedData(domain,economic), signature = await signer.signTypedData(typed);
+      expect(typed.domain.name).toBe(p.domainName);
+      await expect(verifyPulseSignature(domain,economic,signature,signer.address)).resolves.toBeUndefined();
+      expect(pulseMintCalldata({domain,authorization:economic,inputs,signature,proof:[]})).toMatch(/^0x/);
+      expect(() => generativeMintTypedData(domain,a,p.inputProfile)).toThrow("economic fields");
+      for (const historical of profiles.filter(v => v !== p)) {
+        expect(await verifyGenerativeMintAuthorization(domain,a,signature,signer.address,historical.inputProfile)).toBe(false);
+        const wrong = await signer.signTypedData(generativeMintTypedData(domain,a,historical.inputProfile));
+        await expect(verifyPulseSignature(domain,economic,wrong,signer.address)).rejects.toThrow();
+        const forged = prepareGenerativeInputs(assessment,pin.identity,historical.inputProfile);
+        expect(() => pulseMintCalldata({domain,authorization:{...economic,inputDigest:forged.digest},inputs:forged,signature,proof:[]})).toThrow();
+      }
+      return;
+    }
+    const historical = profiles.find(v => v !== p && v.contractProfile !== "generative-pulse-v1-rc1")!;
     const typed = generativeMintTypedData(domain, a, p.inputProfile), signature = await signer.signTypedData(typed);
     expect(typed.domain.name).toBe(p.domainName);
     expect(await verifyGenerativeMintAuthorization(domain, a, signature, signer.address, p.inputProfile)).toBe(true);
@@ -65,11 +84,12 @@ describe.each(profiles)("$contractProfile isolation", p => {
     await expect(generativeMintCalldata({ domain, authorization: a, inputs, signature, authorizer: signer.address })).resolves.toMatch(/^0x/);
     const forgedInputs = prepareGenerativeInputs(assessment, pin.identity, other.inputProfile), forgedAuth = { ...a, inputDigest: forgedInputs.digest };
     await expect(generativeMintCalldata({ domain, authorization: forgedAuth, inputs: forgedInputs, signature, authorizer: signer.address })).rejects.toThrow();
-    const wrongDomain = await signer.signTypedData(generativeMintTypedData(domain, a, other.inputProfile));
+    const wrongDomain = await signer.signTypedData(generativeMintTypedData(domain, a, historical.inputProfile));
     await expect(generativeMintCalldata({ domain, authorization: a, inputs, signature: wrongDomain, authorizer: signer.address })).rejects.toThrow();
   });
   it("requires profile/pin agreement in chain, wallet and recovery gates", () => {
-    const f = eligibilityFixture("ns", "deployment"), config = { ...f.config, contractProfile: p.contractProfile, generativeRenderer: pin };
+    const f = eligibilityFixture("ns", "deployment"), config = { ...f.config, contractProfile: p.contractProfile, generativeRenderer: pin,
+      ...(p.contractProfile === "generative-pulse-v1-rc1" ? {pulse:pulseFixturePin(f.config.contract,pin.identity,[signer.address]).pin} : {}) };
     const sources = f.sources(config);
     for (const Gate of [PublicChainGate, GenerativeWalletChain, GenerativeRecoveryChain]) {
       expect(() => new Gate(config, sources)).not.toThrow();
@@ -77,6 +97,9 @@ describe.each(profiles)("$contractProfile isolation", p => {
       expect(() => new Gate({ ...config, generativeRenderer: undefined }, sources)).toThrow();
       expect(() => new Gate({ ...config, chainId: 11155111n }, sources)).toThrow();
     }
-    expect(() => generativeMintTypedData({ ...domain, chainId: 11155111 }, a, p.inputProfile)).toThrow("local Anvil");
+    if (p.contractProfile === "generative-pulse-v1-rc1") {
+      expect(() => pulseMintTypedData({...domain,chainId:11155111},{...a,mintMode:0,slotId:"0",maxPrice:"0"})).not.toThrow();
+      expect(() => generativeMintTypedData({...domain,chainId:11155111},a,p.inputProfile)).toThrow("economic fields");
+    } else expect(() => generativeMintTypedData({ ...domain, chainId: 11155111 }, a, p.inputProfile)).toThrow("local Anvil");
   });
 });

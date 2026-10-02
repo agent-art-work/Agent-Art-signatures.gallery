@@ -1,4 +1,5 @@
 import { getAddress } from "viem";
+import canonicalize from "canonicalize";
 import { isGenerativeProfile } from "../generativeProfiles.js";
 import type { PublicChainGateConfig } from "../publicChain.js";
 import type { DurableMintRuntime } from "./runtimeService.js";
@@ -17,5 +18,8 @@ export function assertIsolatedGenerativeBinding(runtime: DurableMintRuntime, c: 
     || getAddress(c.authorizer) !== getAddress(p.authorizer)
     || String(c.deploymentBlock.number) !== p.deployment_block || c.deploymentBlock.hash !== p.deployment_block_hash) {
     throw new Error("Mismatched isolated deployment configuration; public startup remains disabled.");
+  }
+  if (runtime.requests.pulse ? !c.pulse || canonicalize(c.pulse) !== canonicalize(runtime.requests.pulse.binding.deployment) : c.pulse !== undefined) {
+    throw new Error("Mismatched isolated Pulse economics configuration; public startup remains disabled.");
   }
 }

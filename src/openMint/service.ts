@@ -11,7 +11,7 @@ import { normalizeOpenMintAuthorization, openMintTokenURIHash, type OpenMintAuth
 import { isCode, isDiagnosticReference, opaqueCode, PublicError, type SiteSession } from "./security.js";
 import { SerialKeys, type KeyValueStore } from "./storage.js";
 import type { OpenMintNetwork } from "./network.js";
-import type { MintConfidence } from "./revealPolicy.js";
+import { canRevealMint, type MintConfidence } from "./revealPolicy.js";
 
 export interface MintState {
   state: MintConfidence;
@@ -385,7 +385,7 @@ export class OpenMintService {
       const artifact = await this.artifact(value.assessment.handle);
       if (!artifact) continue;
       const mint = await this.state(artifact.assessment.handle);
-      if (mint.state === "minted" && (!wallet || mint.wallet?.toLowerCase() === wallet.toLowerCase())) result.push({ artifact, mint });
+      if (canRevealMint(mint.state) && (!wallet || mint.wallet?.toLowerCase() === wallet.toLowerCase())) result.push({ artifact, mint });
     }
     return result;
   }

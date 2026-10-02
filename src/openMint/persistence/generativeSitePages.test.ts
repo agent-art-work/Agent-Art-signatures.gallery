@@ -8,12 +8,12 @@ import type { ProjectionReads } from "../projection/http.js";
 import { ProjectionCursorError } from "../projection/model.js";
 import { RENDERER_VERSION, MBTI_TYPES } from "../identity.js";
 
-function fixture() {
+function fixture(pulse = false) {
   const wallet = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266", digest = `0x${"a".repeat(64)}`;
   const session = { id: "session", generation: 1, wallet, verified: true };
   const runtime = { sessions: { origin: "http://127.0.0.1:12345", session: vi.fn(async () => ({ session, created: false })),
     requireSession: vi.fn(async () => ({ ...session })), cookie: vi.fn(() => "cookie") },
-    sessionView: vi.fn((s: typeof session) => ({ wallet: s.wallet, walletVerified: s.verified })), requests: { profile: { contract_address: `0x${"2".repeat(40)}` } } };
+    sessionView: vi.fn((s: typeof session) => ({ wallet: s.wallet, walletVerified: s.verified })), requests: { pulse: pulse ? {} : undefined, profile: { contract_address: `0x${"2".repeat(40)}` } } };
   const model: AssessmentPageModel = { handle: "alice", renderHandle: "Alice", mbti: "INTJ", code: "", status: "ready", canMint: false,
     rendererVersion: "experimental-fixed18-not-locked", imageUrl: `/api/signatures/alice/artwork/${digest}/svg`, mint: { state: "minted" } };
   const detail = vi.fn(async (_handle: string, _signal: AbortSignal) => model);
@@ -29,6 +29,12 @@ function fixture() {
 }
 
 describe("isolated generative site pages", () => {
+  it("does not advertise fee-free paid minting for the Pulse composition", async () => {
+    const f = fixture(true), r = await f.call("/about");
+    expect(r.body).toContain("Paid mints follow Pulse pricing");
+    expect(r.body).not.toContain("No mint fee.");
+    expect(f.runtime.sessions.session).not.toHaveBeenCalled();
+  });
   it.each(MBTI_TYPES)("renders the free %s preview without any session or chain read", async mbti => {
     const f = fixture(), r = await f.call(`/preview/Alice/${mbti}.svg?renderer=${RENDERER_VERSION}`);
     expect(r.status).toBe(200); expect(r.body).toContain("<svg"); expect(r.body).toContain("Alice");
@@ -62,7 +68,9 @@ describe("isolated generative site pages", () => {
     if (mode === "no-version") delete f.model.rendererVersion;
     const r = await f.call("/p/Alice/variations"); expect(r.status).toBe(200);
     expect(r.body).toContain('data-preview-mint-state="unavailable"'); expect(r.body.match(/>Preview<\/span>/g)).toHaveLength(16);
-    expect(r.body).toContain("One handle, all 16 MBTI interpretations"); expect(r.body).toContain("Warning");
+    expect(r.body).toContain("One handle, all 16 MBTI interpretations");
+    expect(r.body).not.toContain('class="open-preview-notice-label">Warning');
+    expect(r.body).not.toContain("Mint status cannot be verified");
     expect(r.body).not.toContain("PRIVATE SECRET"); expect(r.body).not.toContain("Mint for this handle");
   });
   it.each([["/s/alice/enfp", "/p/alice/ENFP", 308], ["/s/Alice", "/p/Alice", 308], ["/s/Alice/variations", "/p/Alice/variations", 308],
@@ -73,7 +81,7 @@ describe("isolated generative site pages", () => {
   it("shows current-owner collections only for a still-verified session and paginates", async () => {
     const f = fixture(), r = await f.call("/me?after=cursor"); expect(r.status).toBe(200);
     expect(r.body).toContain("@Alice"); expect(r.body).toContain('href="/me?after=next"'); expect(r.body).toContain(f.wallet);
-    expect(f.projection.gallery).toHaveBeenCalledWith({ filter: { kind: "owner", value: f.wallet.toLowerCase() }, limit: 24, cursor: "cursor" });
+    expect(f.projection.gallery).toHaveBeenCalledWith({ filter: { kind: "owner", value: f.wallet.toLowerCase() }, limit: 24, includeConfirming: true, cursor: "cursor" });
     expect(f.runtime.sessions.requireSession).toHaveBeenCalledWith("cookie");
   });
   it("allocates a session only for the signed-out collection, never claims an empty verified collection", async () => {
@@ -91,6 +99,8 @@ describe("isolated generative site pages", () => {
   it.each(["unknown", "safety-halted"] as const)("does not mistake %s for an empty wallet", async state => {
     const f = fixture(); f.projection.gallery.mockResolvedValue({ state, items: [] });
     const r = await f.call("/me"); expect(r.status).toBe(503); expect(r.body).not.toContain("no minted signatures");
+    expect(r.body).toContain("Your collection could not be loaded right now.");
+    expect(r.body).not.toContain("Mint status cannot be verified");
   });
   it("rejects expired or mismatched cursors without leaking details", async () => {
     const f = fixture(); f.projection.gallery.mockRejectedValue(new ProjectionCursorError("private cursor"));
