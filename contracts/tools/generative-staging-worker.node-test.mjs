@@ -11,12 +11,71 @@ import { stagingReviewFixture } from "../../src/openMint/staging/fixtures/stagin
 import { createStagingAssessmentController } from "./generative-staging-assessment.mjs";
 import { admissionDigest } from "../../src/openMint/staging/admission.ts";
 
+async function expectCheckpoint(checkpoint, operation, label, timeoutMs = 20000) {
+  let timer;
+  try {
+    await Promise.race([checkpoint, operation.then(
+      result => { throw Error(`${label} completed before its checkpoint: ${JSON.stringify(result)}`); },
+      cause => { throw Error(`${label} rejected before its checkpoint`, { cause }); },
+    ), new Promise((_, reject) => { timer = setTimeout(() => reject(Error(`${label} checkpoint timed out`)), timeoutMs); })]);
+  } finally { clearTimeout(timer); }
+}
+class TestSettlementTimeout extends Error {}
+async function settleWithin(operation, label, timeoutMs = 20000) {
+  let timer;
+  try {
+    return await Promise.race([operation, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new TestSettlementTimeout(`${label} settlement timed out`)), timeoutMs);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+test("worker checkpoint reports early terminal completion instead of hanging", async () => {
+  await assert.rejects(expectCheckpoint(new Promise(() => {}), Promise.resolve({ kind: "terminal", outcome: { kind: "blocked-before-dispatch" } }), "worker"),
+    /completed before its checkpoint.*blocked-before-dispatch/);
+});
+test("worker checkpoint surfaces early refusal instead of hanging", async () => {
+  const cause = Error("mock pre-dispatch refusal");
+  await assert.rejects(expectCheckpoint(new Promise(() => {}), Promise.reject(cause), "worker"), error => error.cause === cause);
+});
+test("worker checkpoint bounds an unreachable mocked callback", async () => {
+  await assert.rejects(expectCheckpoint(new Promise(() => {}), new Promise(() => {}), "worker", 5), /checkpoint timed out/);
+});
+test("worker close has a visible bound if settlement regresses", async () => {
+  await assert.rejects(settleWithin(new Promise(() => {}), "worker drain", 5), TestSettlementTimeout);
+});
+test("worker settlement preserves the original rejection", async () => {
+  const cause = Error("mock drain rejection");
+  await assert.rejects(settleWithin(Promise.reject(cause), "worker drain"), error => error === cause);
+});
+
 describe("future staging worker developed locally: real disposable SQL, mocked X/Grok and synthetic Sepolia", { skip: process.env.OPEN_MINT_TEST_POSTGRES !== "1" }, () => {
   let cluster, admin, f; const workers = [];
+  const settle = async (operation, label) => {
+    try { return await settleWithin(operation, label); }
+    catch (error) {
+      if (error instanceof TestSettlementTimeout) {
+        for (const worker of workers) worker.halt(); f?.controller.halt();
+        // Query promises still reject; quiet only idle socket error events
+        // after this already-fatal test timeout, preserving its diagnostic.
+        for (const client of [admin, f?.db, f?.runtime].filter(Boolean)) client.on("error", () => {});
+        // Never touch any active database: this suite owns this private cluster.
+        try { cluster?.stop(); } catch (cleanup) { throw new AggregateError([error, cleanup], label); }
+      }
+      throw error;
+    }
+  };
+  const close = worker => settle(worker.close(), "staging worker close");
   before(async () => { cluster = disposablePostgres(); admin = new Client(cluster.config); await admin.connect(); });
-  after(async () => { await admin?.end(); cluster?.stop(); });
+  after(async () => { try { await settle(admin?.end(), "worker administrator close"); } finally { cluster?.stop(); } });
   beforeEach(async () => { f = await stagingAssessmentFixture(cluster, admin, { claimed: false }); });
-  afterEach(async () => { for (const w of workers.splice(0)) await w.close(); await f?.close(); f = undefined; });
+  afterEach(async () => {
+    const failures = [], owned = workers.splice(0); for (const worker of owned) worker.halt(); f?.controller.halt();
+    for (const worker of owned) { try { await close(worker); } catch (error) { failures.push(error); } }
+    try { await settle(f?.close(), "worker fixture close"); } catch (error) { failures.push(error); }
+    finally { f = undefined; }
+    if (failures.length) throw new AggregateError(failures, "Staging worker teardown failed");
+  });
   const state = async () => (await f.db.query(`SELECT j.state AS job,a.state AS attempt,
     (SELECT count(*)::int FROM open_mint.provider_receipts) AS receipts,
     (SELECT count(*)::int FROM open_mint.assessments) AS accepted,
@@ -60,7 +119,7 @@ describe("future staging worker developed locally: real disposable SQL, mocked X
     const result = await h.worker.run(await f.intent());
     assert.equal(result.kind, "accepted"); assert.deepEqual(h.counts, { x: 1, grok: 1, refresh: 2 });
     assert.deepEqual(await state(), { job: "complete", attempt: "accepted", receipts: 2, accepted: 1, reservations: 1 });
-    await h.worker.close(); await f.restart(); const next = setup({ provider: undefined, identityResolver: undefined, refreshEligibility: undefined }, timedInput().input);
+    await close(h.worker); await f.restart(); const next = setup({ provider: undefined, identityResolver: undefined, refreshEligibility: undefined }, timedInput().input);
     assert.deepEqual(await next.worker.run(await f.intent()), { ...result, reused: true }); assert.equal(next.counts.grok, 0);
   });
   test("v1 signed review and unhashed timing edits cannot authorize v2 work", async () => {
@@ -75,24 +134,28 @@ describe("future staging worker developed locally: real disposable SQL, mocked X
     const h = setup({}, timedInput({ jobTimeoutMs: 10000, xCompletionMs: 2000, grokCompletionMs: 250 }).input);
     let release; const held = new Promise(r => release = r);
     h.hooks.grok = async response => { await held; return Response.json(response); };
-    const result = await h.worker.run(await f.intent()); assert.deepEqual(result, { kind: "terminal", outcome: { kind: "uncertain", phase: "grok" } });
-    release(); await new Promise(r => setImmediate(r)); assert.equal((await state()).accepted, 0);
+    try { const result = await h.worker.run(await f.intent()); assert.deepEqual(result, { kind: "terminal", outcome: { kind: "uncertain", phase: "grok" } }); }
+    finally { release(); }
+    await new Promise(r => setImmediate(r)); assert.equal((await state()).accepted, 0);
     assert.deepEqual(await f.fences(), ["grok", "x-identity"]); assert.equal((await state()).reservations, 1);
-    await h.worker.close(); await f.restart(); const next = setup({}, timedInput().input);
+    await close(h.worker); await f.restart(); const next = setup({}, timedInput().input);
     await assert.rejects(next.worker.run(await f.intent())); assert.equal(next.counts.x, 0);
   });
   for (const reason of ["review", "cancel", "shutdown"]) test(`v2 in-flight ${reason} never accepts late Grok success or permits replay`, async () => {
     const { input, signed } = timedInput(), h = setup({}, input), stop = new AbortController(); let entered, release;
     const ready = new Promise(r => entered = r), held = new Promise(r => release = r);
     h.hooks.grok = async response => { entered(); await held; return Response.json(response); };
-    const run = h.worker.run(await f.intent(), stop.signal); await ready;
-    if (reason === "review") signed.withdraw();
-    if (reason === "cancel") stop.abort();
-    if (reason === "shutdown") await h.worker.close();
-    release(); const result = await run; assert.equal(result.outcome.kind, "uncertain");
+    const run = h.worker.run(await f.intent(), stop.signal);
+    try {
+      await expectCheckpoint(ready, run, `in-flight ${reason} Grok`);
+      if (reason === "review") signed.withdraw();
+      if (reason === "cancel") stop.abort();
+      if (reason === "shutdown") await close(h.worker);
+      release(); const result = await run; assert.equal(result.outcome.kind, "uncertain");
+    } finally { release(); stop.abort(); await settle(run.catch(() => {}), "in-flight Grok drain"); }
     assert.equal((await state()).accepted, 0); assert.equal(h.counts.grok, 1); assert.equal((await state()).reservations, 1);
     if (reason === "review") assert.equal((await state()).receipts, 2); // Accounting is retained even though result is withheld.
-    await h.worker.close(); await f.restart(); await assert.rejects(setup({}, timedInput().input).worker.run(await f.intent()));
+    await close(h.worker); await f.restart(); await assert.rejects(setup({}, timedInput().input).worker.run(await f.intent()));
   });
   test("v2 whole-job deadline bounds a hung refresh without extending request, RPC or lease settings", async () => {
     const { input } = timedInput({ jobTimeoutMs: 1500, xCompletionMs: 100, grokCompletionMs: 100 }), h = setup({}, input);
@@ -107,7 +170,7 @@ describe("future staging worker developed locally: real disposable SQL, mocked X
     assert.equal(result.assessment.xIdentity.username, "ALIce"); assert.deepEqual(h.counts, { x: 1, grok: 1, refresh: 2 });
     assert.deepEqual(await state(), { job: "complete", attempt: "accepted", receipts: 2, accepted: 1, reservations: 1 });
     assert.deepEqual(await h.worker.run(await f.intent()), { ...result, reused: true });
-    await h.worker.close(); await f.restart(); await f.db.query("UPDATE open_mint.budget_policies SET generation_enabled=false");
+    await close(h.worker); await f.restart(); await f.db.query("UPDATE open_mint.budget_policies SET generation_enabled=false");
     const reused = setup({ provider: undefined, identityResolver: undefined, refreshEligibility: undefined });
     assert.deepEqual(await reused.worker.run(await f.intent()), { ...result, reused: true });
     assert.deepEqual(reused.counts, { x: 0, grok: 0, refresh: 0 });
@@ -168,7 +231,7 @@ describe("future staging worker developed locally: real disposable SQL, mocked X
     assert.equal(result.outcome.kind, scenario === "abstention" ? "abstained" : scenario.endsWith("invalid") ? "invalid" : "uncertain");
     assert.equal((await state()).accepted, 0); assert.equal((await state()).reservations, 1);
     const calls = { ...h.counts }; await assert.rejects(h.worker.run(await f.intent())); assert.deepEqual(h.counts, calls);
-    await h.worker.close(); await f.restart(); const next = setup(); await assert.rejects(next.worker.run(await f.intent())); assert.equal(next.counts.x, 0);
+    await close(h.worker); await f.restart(); const next = setup(); await assert.rejects(next.worker.run(await f.intent())); assert.equal(next.counts.x, 0);
   });
   for (const scenario of ["review", "generation", "wallet"]) test(`checks ${scenario} again between X and Grok`, async () => {
     const h = setup(); h.hooks.refresh = async () => {
@@ -194,7 +257,7 @@ describe("future staging worker developed locally: real disposable SQL, mocked X
       if (armed && sql === "COMMIT") throw Error("Injected lost commit acknowledgement");
     };
     await assert.rejects(h.worker.run(await f.intent())); f.faults.afterQuery = undefined;
-    const previousCalls = { ...h.counts }; await h.worker.close(); await f.restart(); const next = setup();
+    const previousCalls = { ...h.counts }; await close(h.worker); await f.restart(); const next = setup();
     if (kind === "accepted") assert.equal((await next.worker.run(await f.intent())).reused, true);
     else await assert.rejects(next.worker.run(await f.intent()));
     assert.equal(next.counts.x, 0); assert.deepEqual(h.counts, previousCalls); assert.equal((await state()).reservations, 1);
@@ -203,11 +266,15 @@ describe("future staging worker developed locally: real disposable SQL, mocked X
     const h = setup(), signal = new AbortController(), input = await f.intent(); let entered, release;
     const inFlight = new Promise(r => entered = r), hold = new Promise(r => release = r);
     h.hooks.x = async () => { entered(); await hold; return Response.json({ data: { id: "123", username: "ALIce" } }); };
-    const run = h.worker.run(input, signal.signal); await inFlight;
-    await assert.rejects(h.worker.run(input), /already running/); signal.abort();
-    const result = await run; assert.equal(result.outcome.kind, "uncertain"); release(); await Promise.resolve();
+    const run = h.worker.run(input, signal.signal);
+    try {
+      await expectCheckpoint(inFlight, run, "concurrent worker X");
+      await assert.rejects(h.worker.run(input), /already running/); signal.abort();
+      const result = await run; assert.equal(result.outcome.kind, "uncertain");
+    } finally { release(); signal.abort(); await settle(run.catch(() => {}), "concurrent X drain"); }
+    await Promise.resolve();
     assert.equal((await state()).accepted, 0); assert.equal(h.counts.grok, 0); assert.equal(h.counts.x, 1);
-    await h.worker.close(); await assert.rejects(h.worker.run(input));
+    await close(h.worker); await assert.rejects(h.worker.run(input));
   });
   test("whole-worker deadline bounds a hung eligibility refresh before dispatch", async () => {
     const config = JSON.parse(f.input.operatingJson); config.settings.rpc.timeoutMs = 1000; config.settings.hosting.requestTimeoutMs = 1000; config.settings.hosting.drainTimeoutMs = 1000;
@@ -219,15 +286,17 @@ describe("future staging worker developed locally: real disposable SQL, mocked X
   });
   test("close cancels and drains a just-started run before it owns a job", async () => {
     const h = setup(), pending = h.worker.run(await f.intent());
-    const close = h.worker.close(); await assert.rejects(pending, /cancelled/); await close;
-    assert.equal((await state()).job, "queued"); assert.equal(h.counts.x, 0); await h.worker.close();
+    await Promise.all([close(h.worker), assert.rejects(settle(pending, "just-started worker drain"), /cancelled/)]);
+    assert.equal((await state()).job, "queued"); assert.equal(h.counts.x, 0); await close(h.worker);
   });
   test("close cancels an active provider call and waits for durable uncertainty", async () => {
     const h = setup(); let entered;
     const ready = new Promise(r => entered = r);
     h.hooks.x = async () => { entered(); return new Promise(() => {}); };
-    const pending = h.worker.run(await f.intent()); await ready; await h.worker.close();
-    assert.deepEqual(await pending, { kind: "terminal", outcome: { kind: "uncertain", phase: "x-identity" } });
+    const pending = h.worker.run(await f.intent());
+    try { await expectCheckpoint(ready, pending, "closing active X provider"); }
+    finally { await close(h.worker); }
+    assert.deepEqual(await settle(pending, "active X provider drain"), { kind: "terminal", outcome: { kind: "uncertain", phase: "x-identity" } });
     assert.equal((await state()).job, "complete"); assert.equal(h.counts.grok, 0);
   });
 });

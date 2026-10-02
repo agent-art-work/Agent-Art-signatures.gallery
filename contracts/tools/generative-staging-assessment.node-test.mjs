@@ -12,12 +12,59 @@ import { GrokAssessmentProvider } from "../../src/openMint/grok.ts";
 import { capabilityHash } from "../../src/openMint/persistence/sessions.ts";
 import { stagingReviewFixture } from "../../src/openMint/staging/fixtures/stagingReview.ts";
 
+// A mocked dispatch can be refused before its callback is reached. Await the
+// actual operation too, so that refusal fails the test instead of leaving a
+// disposable PG connection alive behind an unreachable checkpoint forever.
+async function expectCheckpoint(checkpoint, operation, label, timeoutMs = 20000) {
+  let timer;
+  try {
+    await Promise.race([checkpoint, operation.then(
+      result => { throw Error(`${label} completed before its checkpoint: ${JSON.stringify(result)}`); },
+      cause => { throw Error(`${label} rejected before its checkpoint`, { cause }); },
+    ), new Promise((_, reject) => { timer = setTimeout(() => reject(Error(`${label} checkpoint timed out`)), timeoutMs); })]);
+  } finally { clearTimeout(timer); }
+}
+class TestSettlementTimeout extends Error {}
+async function settleWithin(operation, label, timeoutMs = 20000) {
+  let timer;
+  try {
+    return await Promise.race([operation, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new TestSettlementTimeout(`${label} settlement timed out`)), timeoutMs);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+test("assessment checkpoint surfaces early dispatch rejection instead of hanging", async () => {
+  const cause = Error("mock pre-dispatch refusal");
+  await assert.rejects(expectCheckpoint(new Promise(() => {}), Promise.reject(cause), "assessment"), error => error.cause === cause);
+});
+test("assessment checkpoint bounds an unreachable mocked callback", async () => {
+  await assert.rejects(expectCheckpoint(new Promise(() => {}), new Promise(() => {}), "assessment", 5), /checkpoint timed out/);
+});
+test("assessment teardown has a visible bound if settlement regresses", async () => {
+  await assert.rejects(settleWithin(new Promise(() => {}), "assessment drain", 5), TestSettlementTimeout);
+});
+
 describe("staging assessment/reuse controller; real private PG16 and synthetic active Sepolia", { skip: process.env.OPEN_MINT_TEST_POSTGRES !== "1" }, () => {
   let cluster, admin, f;
+  const settle = async (operation, label) => {
+    try { return await settleWithin(operation, label); }
+    catch (error) {
+      if (error instanceof TestSettlementTimeout) {
+        f?.controller.halt();
+        // The timeout already fails this test. Preserve it as the diagnostic;
+        // idle socket shutdown must not turn into an uncaught Client event.
+        for (const client of [admin, f?.db, f?.runtime].filter(Boolean)) client.on("error", () => {});
+        // Only the new private cluster allocated by this suite is stopped.
+        try { cluster?.stop(); } catch (cleanup) { throw new AggregateError([error, cleanup], label); }
+      }
+      throw error;
+    }
+  };
   before(async () => { cluster = disposablePostgres(); admin = new Client(cluster.config); await admin.connect(); });
-  after(async () => { await admin?.end(); cluster?.stop(); });
+  after(async () => { try { await settle(admin?.end(), "assessment administrator close"); } finally { cluster?.stop(); } });
   beforeEach(async () => { f = await stagingAssessmentFixture(cluster, admin); });
-  afterEach(async () => { await f?.close(); f = undefined; });
+  afterEach(async () => { f?.controller.halt(); try { await settle(f?.close(), "assessment fixture close"); } finally { f = undefined; } });
   const dispatch = async (leg, effect = async d => { d.assertCurrent(leg); return "effect"; }, input) => f.controller.dispatch(input ?? await f.intent(), leg,
     f.input.assessmentPolicy.model, new AbortController().signal, effect);
   const modify = async sql => {
@@ -25,7 +72,7 @@ describe("staging assessment/reuse controller; real private PG16 and synthetic a
     try { await f.db.query(sql); await f.db.query("COMMIT"); } catch (error) { await f.db.query("ROLLBACK"); throw error; }
   };
   test("explicit v2 runtime binds inspector/recovery roles and dispatches only after the matching v2 certificate", async () => {
-    await f.close(); f = await stagingAssessmentFixture(cluster, admin, { v2: true });
+    await settle(f.close(), "assessment v1 fixture close"); f = await stagingAssessmentFixture(cluster, admin, { v2: true });
     assert.equal(f.input.databaseReview.version, "sg-generative-runtime-db-review-v2");
     await dispatch("x-identity", async d => { d.assertCurrent("x-identity"); return "offline-v2"; });
     assert.deepEqual(await f.fences(), ["x-identity"]);
@@ -113,7 +160,7 @@ describe("staging assessment/reuse controller; real private PG16 and synthetic a
     } else {
       if (scenario === "halted") f.controller.halt();
       if (scenario === "cancelled") abort.abort();
-      if (scenario === "closed writer") await f.writer.close();
+      if (scenario === "closed writer") await settle(f.writer.close(), "assessment writer close");
       if (scenario === "chain mismatch") f.active.mutate((m, _p, v, i) => m === "eth_chainId" && i === 1 ? "0x1" : v);
       await assert.rejects(f.controller.dispatch(input, "x-identity", f.input.assessmentPolicy.model, abort.signal, async () => effects++));
     }
@@ -143,8 +190,11 @@ describe("staging assessment/reuse controller; real private PG16 and synthetic a
     const input = await f.intent(); let enter, release, effects = 0;
     const entered = new Promise(r => enter = r), hold = new Promise(r => release = r);
     const first = dispatch("x-identity", async d => { effects++; enter(); await hold; d.assertCurrent("x-identity"); throw Error("Transport outcome unknown"); }, input);
-    await entered; await assert.rejects(dispatch("x-identity", async () => effects++, input)); release();
-    await assert.rejects(first, error => error.effectMayHaveStarted === true);
+    try {
+      await expectCheckpoint(entered, first, "concurrent assessment dispatch");
+      await assert.rejects(dispatch("x-identity", async () => effects++, input)); release();
+      await assert.rejects(first, error => error.effectMayHaveStarted === true);
+    } finally { release(); await settle(first.catch(() => {}), "concurrent assessment drain"); }
     assert.equal(effects, 1); await f.restart(); await assert.rejects(dispatch("x-identity", async () => effects++));
     assert.equal(effects, 1); assert.deepEqual(await f.fences(), ["x-identity"]);
   });
@@ -167,8 +217,8 @@ describe("staging assessment/reuse controller; real private PG16 and synthetic a
     const waiting = new Promise(r => entered = r), held = new Promise(r => resume = r);
     f.faults.afterQuery = async sql => { if (!blocked && sql.startsWith("WITH")) { blocked = true; entered(); await held; } };
     const result = controller.dispatch(intent, "x-identity", f.input.assessmentPolicy.model, undefined, async () => effects++);
-    try { await waiting; await assert.rejects(result, error => error.effectMayHaveStarted === true); }
-    finally { resume(); f.faults.afterQuery = undefined; controller.halt(); }
+    try { await expectCheckpoint(waiting, result, "pre-gate SQL"); await assert.rejects(result, error => error.effectMayHaveStarted === true); }
+    finally { resume(); f.faults.afterQuery = undefined; controller.halt(); await settle(result.catch(() => {}), "pre-gate SQL drain"); }
     await f.writer.transaction(tx => tx.query("SELECT 1"));
     await assert.rejects(controller.reuse(intent)); assert.equal(effects, 0); assert.deepEqual(await f.fences(), []);
   });

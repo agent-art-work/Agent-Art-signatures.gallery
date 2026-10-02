@@ -8,7 +8,7 @@ production deployment is part of this work.
 
 | Item | Output | Verification |
 | --- | --- | --- |
-| CI selection | Separate bounded Pulse job discovers mock suites, verifies Core/RC1/RC2 locks, exercises a new disposable PG16 relay, backup helper and offline Chrome audit | Local selection guard, YAML validation, exact selected suite execution; hosted execution is separate |
+| CI selection | Separate bounded Pulse job plus independently bootstrapped core, admission, staging and recovery lanes; every inherited campaign command retained | Exact 44-command preservation guard, YAML validation, selected suite execution; hosted results recorded separately |
 | RPC deadlines/fallback | Shared read budgets, browser fetch/body cancellation and validation-flight ownership fences | Slow-primary/healthy-secondary loopback HTTP and client regression; cancellation, stale completions, conflict and no-send guards |
 | Mobile/accessibility | Readable guidance, stacked narrow wallet controls, visually wrapped allowlist rows, accessible headings/phase/status | [48-case real Chrome evidence and scope](pulse-ui-accessibility.md) |
 | Documentation | Current RC2/port 3007/admin/relay/early-reveal summary; historical RC1 and R1–R5 evidence remain labelled | Updated development/readiness tables without declaring hosted release acceptance |
@@ -54,7 +54,7 @@ and closure policy plus paid Pulse configuration; do not manufacture them.
 - Unchanged coverage ratchet passed: statements **94.69%**, branches **91.89%**,
   functions **97.71%** (minimums remain 93/87/97).
 - Offline Foundry campaign: **251 passed, zero failures/skips**.
-- Dynamically selected Pulse mock/disposable-PG regression: **495 passed,
+- Dynamically selected Pulse mock/disposable-PG regression: **497 passed,
   zero failures/skips**. Standalone C5 JavaScript/Anvil differential tests remain
   explicitly separate from this mock-only selector, not silently omitted.
 - Backup helper: **5 passed**. Full real historical extraction/content/permission
@@ -63,6 +63,9 @@ and closure policy plus paid Pulse configuration; do not manufacture them.
   requests or JavaScript exceptions; representative screenshots inspected.
 - Build, typecheck, renderer/slogan locks, Core/RC1/RC2 integration locks,
   CI selection guards and whitespace checks passed.
+- Future-staging controller/worker native-coverage campaign: **84 passed**,
+  including eight test-harness regressions; **100% lines/functions and 99.34%
+  branches**, with its existing 100/98/100 thresholds unchanged.
 
 Local evidence files are `/private/tmp/sg-hardening-final-coverage-20261002.json`,
 `coverage/coverage-summary.json`, and `/private/tmp/sg-ui-a11y-final/results.json`.
@@ -79,6 +82,25 @@ Font/license HTTP checks now have separate per-asset cases with the original
 exact-byte/header assertions and default five-second limit, rather than putting
 all 16 subsets and artwork setup into one timing budget. The Pulse campaign also
 passed against a forced clean offline Foundry rebuild.
+
+The next hosted run passed the complete Pulse lane, including its real Chrome
+matrix, but the inherited all-in-one verification job reached its 35-minute
+ceiling while the staging worker suite waited without producing a result.
+Controller tests had passed. Test checkpoints now race the actual operation and
+a diagnostic deadline, so an early refusal/completion cannot leave an
+unreachable callback waiting forever. Held mocks release in `finally`; close,
+drain and teardown also have test-only bounds. A fatal teardown timeout stops
+only the private cluster allocated by that suite and remains a test failure.
+No application timeout, assertion or coverage threshold changed.
+
+All 44 inherited campaign commands now run exactly once across independent core
+(35 minutes), admission (20), staging (25) and recovery (20) jobs. Each fresh
+lane installs locked dependencies, PostgreSQL 16 and offline contract
+prerequisites; no lane imports another lane's state or artifacts. The separate
+Pulse job retains its ten-minute ceiling. Serializing the two assessment test
+files was slower in a local benchmark, so their existing concurrency remains
+unchanged. Hosted execution of the partition must still be observed; it is not
+inferred from these local passes.
 
 After the local restart, read-only `/health` reported `mintReady: true`,
 `galleryAvailable: true`, `observerHealthy: true`, no safety halt/conflict, and

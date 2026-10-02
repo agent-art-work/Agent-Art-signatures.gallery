@@ -16,8 +16,9 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    # Expanded real-PostgreSQL fault suites need more job time; application,
-    # admission, signer and transport deadlines are unchanged.
+    # Keep the original core budget. Native coverage, PG fault campaigns and
+    # restore checks have independent fresh runners below; no runtime deadline
+    # or coverage threshold is widened to make this campaign fit.
     timeout-minutes: 35
     env:
       # All provider calls in this job are mocked. Never pass billing credentials.
@@ -64,52 +65,8 @@ jobs:
           npm run test:generative:numerics
       - name: Reject unsafe offline Sepolia operating plans
         run: npm run test:generative:operating-plan
-      - name: Verify declared active governance history with dedicated coverage
-        run: npm run test:generative:active-state:coverage
-      - name: Verify internal single-operation admission and locked chain composition
-        run: npm run test:generative:admission:coverage
-      - name: Verify local provider-leg admission against disposable PostgreSQL
-        run: npm run test:generative:assessment-admission
-      - name: Verify local signing and wallet admission against disposable PostgreSQL
-        run: npm run test:generative:mint-admission
-      - name: Verify private saved-result reuse against disposable PostgreSQL
-        run: npm run test:generative:reuse-admission
-      - name: Verify pinned signed local review and revocation
-        run: npm run test:generative:local-review
-      - name: Verify complete guarded local runtime and cancellation against disposable PostgreSQL
-        run: npm run test:generative:local-runtime
-      - name: Verify pinned review files, safe file reads and local startup preflight
-        run: |
-          npm run test:generative:review-files
-          npm run test:generative:review-startup
-      - name: Verify exact staging database schema, grants and reviewed profiles
-        run: npm run test:generative:database-certification
-      - name: Verify read-only paused Sepolia startup and bounded HTTP without public effects
-        run: |
-          npm run test:generative:readiness-http
-          npm run test:generative:staging-readiness
       - name: Verify exact deployed RC immutables and reject local genesis
         run: npm run generative:deployment:rehearsal -- --execute-local-test-transactions
-      - name: Verify future staging worker locally with guarded ports and mocked providers
-        run: |
-          npm run test:generative:staging-review
-          npm run test:generative:staging-assessment
-      - name: Verify staging cookies and bounded proxy transport with isolated loopback HTTP
-        run: npm run test:generative:staging-transport
-      - name: Verify staging canonical URLs, private metadata and finalized-only PNG cards
-        run: npm run test:generative:staging-sharing
-      - name: Verify future staging input authority and wallet fences locally without broadcast
-        run: npm run test:generative:staging-mint
-      - name: Verify private future staging runtime, site and verified reveal on loopback mocks
-        run: npm run test:generative:staging-runtime
-      - name: Rehearse isolated RC1 backup, restore and projection recovery
-        run: npm run test:generative:staging-restore
-      - name: Verify bounded staging recovery inspection, proof and operator approval
-        run: |
-          npm run test:generative:staging-recovery-unit
-          npm run test:generative:staging-recovery-pg
-      - name: Rehearse explicit v2 staging recovery and restore with disposable infrastructure
-        run: npm run test:generative:staging-recovery-flow
       - name: Verify actual activation and governance transactions on disposable Anvil
         run: npm run generative:active-state:rehearsal -- --execute-local-test-transactions
       - name: Verify candidate full metadata reads against shared application limits
@@ -144,6 +101,147 @@ jobs:
           done
           test "$ready" = 1 || { cat "$RUNNER_TEMP/open-mint-fixture.log"; exit 1; }
           OPEN_MINT_TEST_ORIGIN="$OPEN_MINT_ORIGIN" npm run open:rehearsal -- --execute-local-test-transactions
+
+  admission:
+    runs-on: ubuntu-24.04
+    # Separate, disposable runner: no previous job's .local state or artifacts.
+    timeout-minutes: 20
+    env:
+      XAI_API_KEY: ''
+      OPEN_MINT_X_BEARER_TOKEN: ''
+      OPEN_MINT_TEST_HTTP: '1'
+      OPEN_MINT_TEST_POSTGRES: '1'
+      OPEN_MINT_TEST_POSTGRES_BIN: /usr/lib/postgresql/16/bin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: v1.5.1
+      - name: Install locked dependencies and isolated database binaries
+        run: |
+          npm ci
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16
+      - name: Build fresh offline contract prerequisites
+        working-directory: contracts
+        run: forge build --offline
+      - name: Check prerequisite release identity without generating a lock
+        run: node scripts/verify-generative-release.mjs
+      - name: Verify declared active governance history with dedicated coverage
+        run: npm run test:generative:active-state:coverage
+      - name: Verify internal single-operation admission and locked chain composition
+        run: npm run test:generative:admission:coverage
+      - name: Verify local provider-leg admission against disposable PostgreSQL
+        run: npm run test:generative:assessment-admission
+      - name: Verify local signing and wallet admission against disposable PostgreSQL
+        run: npm run test:generative:mint-admission
+      - name: Verify private saved-result reuse against disposable PostgreSQL
+        run: npm run test:generative:reuse-admission
+      - name: Verify pinned signed local review and revocation
+        run: npm run test:generative:local-review
+      - name: Verify complete guarded local runtime and cancellation against disposable PostgreSQL
+        run: npm run test:generative:local-runtime
+      - name: Verify pinned review files, safe file reads and local startup preflight
+        run: |
+          npm run test:generative:review-files
+          npm run test:generative:review-startup
+      - name: Verify exact staging database schema, grants and reviewed profiles
+        run: npm run test:generative:database-certification
+
+  staging:
+    runs-on: ubuntu-24.04
+    # Native coverage and mocked provider lifetimes do not compete with core
+    # rehearsals. Each test builds its own SQL fixture or detached package.
+    timeout-minutes: 25
+    env:
+      XAI_API_KEY: ''
+      OPEN_MINT_X_BEARER_TOKEN: ''
+      OPEN_MINT_TEST_HTTP: '1'
+      OPEN_MINT_TEST_POSTGRES: '1'
+      OPEN_MINT_TEST_POSTGRES_BIN: /usr/lib/postgresql/16/bin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: v1.5.1
+      - name: Install locked dependencies and isolated database binaries
+        run: |
+          npm ci
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16
+      - name: Build fresh offline contract prerequisites
+        working-directory: contracts
+        run: forge build --offline
+      - name: Check prerequisite release identity without generating a lock
+        run: node scripts/verify-generative-release.mjs
+      - name: Verify read-only paused Sepolia startup and bounded HTTP without public effects
+        run: |
+          npm run test:generative:readiness-http
+          npm run test:generative:staging-readiness
+      - name: Verify future staging worker locally with guarded ports and mocked providers
+        run: |
+          npm run test:generative:staging-review
+          npm run test:generative:staging-assessment
+      - name: Verify staging cookies and bounded proxy transport with isolated loopback HTTP
+        run: npm run test:generative:staging-transport
+      - name: Verify staging canonical URLs, private metadata and finalized-only PNG cards
+        run: npm run test:generative:staging-sharing
+      - name: Verify future staging input authority and wallet fences locally without broadcast
+        run: npm run test:generative:staging-mint
+      - name: Verify private future staging runtime, site and verified reveal on loopback mocks
+        run: npm run test:generative:staging-runtime
+
+  recovery:
+    runs-on: ubuntu-24.04
+    # Backup/restore and migrations run only against new disposable clusters.
+    timeout-minutes: 20
+    env:
+      XAI_API_KEY: ''
+      OPEN_MINT_X_BEARER_TOKEN: ''
+      OPEN_MINT_TEST_HTTP: '1'
+      OPEN_MINT_TEST_POSTGRES: '1'
+      OPEN_MINT_TEST_POSTGRES_BIN: /usr/lib/postgresql/16/bin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: v1.5.1
+      - name: Install locked dependencies and isolated database binaries
+        run: |
+          npm ci
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16
+      - name: Build fresh offline contract prerequisites
+        working-directory: contracts
+        run: forge build --offline
+      - name: Check prerequisite release identity without generating a lock
+        run: node scripts/verify-generative-release.mjs
+      - name: Rehearse isolated RC1 backup, restore and projection recovery
+        run: npm run test:generative:staging-restore
+      - name: Verify bounded staging recovery inspection, proof and operator approval
+        run: |
+          npm run test:generative:staging-recovery-unit
+          npm run test:generative:staging-recovery-pg
+      - name: Rehearse explicit v2 staging recovery and restore with disposable infrastructure
+        run: npm run test:generative:staging-recovery-flow
 
   pulse:
     runs-on: ubuntu-24.04
