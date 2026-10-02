@@ -37,7 +37,7 @@ export async function startAdminSepoliaSite(port = 3007) {
   assert.notEqual(primary.hostname, secondary.hostname);
   const context = { rpc: retrySafeReads(boundedReadSource(rpcTransport(primary.href))),
     second: retrySafeReads(boundedReadSource(rpcTransport(secondary.href))) };
-  return startSepoliaTestSite(port, { plan, journal, directory: DIR, context,
+  return startSepoliaTestSite(port, { plan, journal, directory: DIR, context, adminWeb: true,
     // A pending CREATE is expected, not a permanently blocked assertion lane.
     verifyDeployment: verifyFinalizedAdminBinding,
     allowlistProvider: () => {

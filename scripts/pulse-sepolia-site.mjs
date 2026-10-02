@@ -34,11 +34,15 @@ import { observeSepoliaOwnership } from './pulse-sepolia-ownership.mjs';
 import { SEPOLIA_READINESS_CLIENT } from './pulse-sepolia-readiness-client.mjs';
 import { createSepoliaUiRenderer } from './pulse-sepolia-ui.mjs';
 import { inspectSepoliaAttempt, requireExpiredAttemptProof, savedMintAuthorization, validateRecoveryTransaction, sepoliaMintAbi, sepoliaAuthorizationDigest } from './pulse-sepolia-attempt-recovery.mjs';
+import { createSepoliaAdminWebService } from './pulse-sepolia-admin-web-service.mjs';
+import { sepoliaAdminPage, SEPOLIA_ADMIN_CSS } from './pulse-sepolia-admin-page.mjs';
+import { SEPOLIA_ADMIN_CLIENT } from './pulse-sepolia-admin-client.mjs';
 
 // Dedicated disposable rehearsal, NOT a relaxed local-real or hosted staging
 // admission path. No provider SDK or deployer unlock is imported/called here.
-// Only the isolated unfunded authorizer key enters this process. HTTP cannot
-// deploy, unpause, transfer funds, modify prices or broadcast transactions.
+// Only the isolated unfunded authorizer key enters this process. The optional
+// RC2 admin page prepares role-checked calldata for the operator's browser
+// wallet; HTTP never unlocks the admin, signs or broadcasts its transactions.
 const qty = n => '0x' + BigInt(n).toString(16);
 const stringify = v => JSON.stringify(v, (_k, n) => typeof n === 'bigint' ? n.toString() : n);
 export function saleNotice(sale) {
@@ -48,6 +52,20 @@ export function saleNotice(sale) {
     ? `Free mint ended · Deadline reached · ${count}.`
     : `Free mint ended · ${count}.`;
   return `Free mint open · ${count}.`;
+}
+/** Public phase presentation is not a wallet quote or mint admission. */
+export function publicSaleStatus(sale, now = Math.floor(Date.now() / 1000)) {
+  if (!sale) return { phase: 'unknown', paused: false };
+  assert.ok(sale.phase === 0 || sale.phase === 1);
+  // A previously open free phase cannot still be advertised beyond its known
+  // deadline. Wait for a new chain read; never invent a paid price or eligibility.
+  if (sale.phase === 0 && sale.freeDeadline !== undefined && BigInt(sale.freeDeadline) <= BigInt(now))
+    return { phase: 'unknown', paused: sale.paused === true };
+  const used = Number(sale.freeMinted), quota = Number(sale.freeMintQuota ?? sale.freeSlotCount);
+  return { phase: sale.phase === 0 ? 'free' : 'paid', paused: sale.paused === true,
+    ...(sale.freeConfigRevision !== undefined ? { freeConfigRevision: String(sale.freeConfigRevision) } : {}),
+    ...(Number.isSafeInteger(used) && used >= 0 && Number.isSafeInteger(quota) && quota >= used
+      ? { freeMinted: used, freeMintQuota: quota } : {}) };
 }
 export function fixtureMbti(handle) { return MBTI_TYPES[parseInt(keccak256(stringToHex(canonicalHandle(handle))).slice(2, 4), 16) % 16]; }
 /** Durable submission tracking is not collection freshness. In particular,
@@ -65,7 +83,7 @@ export function submissionTrackingStatus(row) {
 export function testConsent(value) {
   const v = fields(value, ['handle', 'mode', 'maximumETH']);
   const renderHandle = preservedHandle(v.handle), handle = canonicalHandle(renderHandle);
-  requireForUser(v.mode === 'free' || v.mode === 'paid', 'INVALID_MODE', 'Choose free or paid explicitly.');
+  requireForUser(v.mode === 'free' || v.mode === 'paid', 'INVALID_MODE', 'Mint availability needs to be checked before continuing.');
   requireForUser(typeof v.maximumETH === 'string' && /^(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/.test(v.maximumETH), 'INVALID_PRICE', 'Enter a valid maximum mint price.');
   const cap = parseEther(v.maximumETH);
   requireForUser(v.mode === 'free' ? cap === 0n : cap > 0n && cap <= 100000000000000n, 'INVALID_PRICE', 'The maximum mint price is 0.0001 Sepolia ETH. Network gas is additional.');
@@ -502,7 +520,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
   let snapshot, observerCheckpoint, running = true, serial = Promise.resolve(), lastRefreshMs, cacheWriteError, relay;
   const ui = dependencies.ui === false ? undefined : dependencies.ui ?? createSepoliaUiRenderer();
   const pageFunctions = { homePage, mintPage, assessmentPage, revealedSignature, previewPage, previewVariationsPage,
-    mbtiGalleryPage, collectionPage, aboutPage, errorPage, mintControlStudyPage, previewSvg: renderSignatureSvg };
+    mbtiGalleryPage, collectionPage, aboutPage, errorPage, mintControlStudyPage, sepoliaAdminPage, previewSvg: renderSignatureSvg };
   const render = async (name, ...args) => {
     if (ui) { try { return await ui.call(name, ...args); } catch {} }
     return pageFunctions[name](...args);
@@ -531,6 +549,18 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
     'Mint availability cannot be checked right now. Please try again shortly.');
   const requireActive = () => { requireBinding(); requireForUser(running, 'OBSERVATION_UNAVAILABLE',
     'Mint availability cannot be checked right now. Please try again shortly.'); };
+  if (dependencies.adminWeb) assert.equal(p.contractProfile, PULSE_ADMIN_PROFILE);
+  const adminWeb = dependencies.adminWeb ? dependencies.adminWebService ?? createSepoliaAdminWebService({
+    plan: p, context: c, directory,
+    requireBinding: () => {
+      requireForUser(binding && !conflict() && running, 'ADMIN_DEPLOYMENT_UNAVAILABLE',
+        'Admin controls are not ready. Please try again shortly.');
+      return binding;
+    },
+    getAllowlist: () => JSON.parse(readFileSync(resolve(directory, 'free-config.json'), 'utf8')),
+    persistAllowlist: configuration => save('free-config.json', configuration, directory),
+    onUpdated: () => { void saleLoop.refresh(); void observer.refresh(); },
+  }) : undefined;
   function persistGallery() {
     try {
       if (conflict()) { if (!cache.state().safetyHalted) cache.invalidate(); return; }
@@ -579,13 +609,6 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
   // Absence in a preview may be called unminted only from fresh complete
   // history. This is separate from transaction tracking and sale readiness.
   const fresh = () => requireFreshMintSnapshot(snapshot, refreshError);
-  const freshSale = () => {
-    requireBinding();
-    const state = health();
-    requireForUser(state.mintReady || state.mintState === 'paused', 'OBSERVATION_UNAVAILABLE',
-      'Mint availability cannot be checked right now. Please try again shortly.');
-    return sale;
-  };
   // A sale check completed by an explicit action supersedes a background pass
   // that started earlier. Its late result/error cannot revoke newer evidence.
   const publishSale = value => { sale = value; saleError = undefined; saleRevision++; };
@@ -747,12 +770,13 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
     }).finally(() => { entry.pending = false; entry.at = Date.now(); });
     receiptReads.set(key, entry); return entry.promise;
   }
-  const currentSaleNotice = () => { try { return saleNotice(freshSale().sale); } catch {
-    return health().mintState === 'checking' ? 'Checking mint availability…' : undefined;
-  } };
+  // The relay's last verified phase remains useful presentation while a new
+  // admission lease is obtained. It never replaces prepare/begin's fresh reads.
+  const currentSaleStatus = () => publicSaleStatus(binding && !conflict() ? sale?.sale : undefined);
+  const currentSaleNotice = () => currentSaleStatus().phase !== 'unknown' ? saleNotice(sale.sale) : 'Checking mint availability…';
   const options = session => ({ publicOrigin: origin, stylesheetUrl: '/assets/sepolia.css', clientScriptUrl: '/assets/sepolia.js',
     chainId: '11155111', chainName: 'Ethereum Sepolia', contract: at, generativeArtwork: true, pulseMint: true,
-    assessmentSource: 'sample', pulseSaleNotice: currentSaleNotice(),
+    assessmentSource: 'sample', pulseSaleNotice: currentSaleNotice(), pulseSaleStatus: currentSaleStatus(),
     mintObservationManaged: true, galleryPending: !health().galleryAvailable,
     ...(session ? { csrfToken: session.csrf, wallet: session.wallet, walletVerified: !!session.walletProof && session.walletProof.expiresAt > Date.now() } : {}) });
   const entries = () => [...includedMints(true).values()].map(m => ({ ...m, code: '', imageUrl: `/test-art/${m.handle}.svg`, url: `/signatures/${m.handle}`, mint: { state: m.state, tokenId: m.tokenId, transactionHash: m.transactionHash } }));
@@ -771,10 +795,21 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
   function verified(session) { requireForUser(session.wallet && session.walletProof?.wallet === session.wallet && session.walletProof.expiresAt > Date.now(), 'CONNECT_WALLET', 'Connect and verify your Sepolia wallet.'); return session.wallet; }
   async function mintOptions(wallet) {
     requireBinding();
-    const state = await readMintState(c, binding, p, { wallet }, { signal: AbortSignal.timeout(45000) });
+    let state;
+    try { state = await readMintState(c, binding, p, { wallet }, { signal: AbortSignal.timeout(45000) }); }
+    catch (error) {
+      if (readUnavailable(error)) throw new PublicError(503, 'OBSERVATION_UNAVAILABLE', 'Mint availability cannot be checked right now. Please try again shortly.');
+      throw error;
+    }
     requireForUser(!state.sale.paused, 'MINT_PAUSED', 'Minting is paused.');
     publishSale(state);
-    return { free: state.free, paid: state.paid, slot: state.slot, saleNotice: state.saleNotice, priceWei: state.priceWei, priceETH: state.priceETH };
+    const saleStatus = publicSaleStatus(state.sale);
+    requireForUser(saleStatus.phase !== 'unknown', 'OBSERVATION_UNAVAILABLE', 'Mint availability cannot be checked right now. Please try again shortly.');
+    requireForUser(saleStatus.phase !== 'free' || state.allowlistReady !== false, 'FREE_ELIGIBILITY_UNAVAILABLE',
+      'Your free mint eligibility cannot be checked right now. Please try again shortly.');
+    return { free: state.free && saleStatus.phase === 'free', paid: state.paid && saleStatus.phase === 'paid', phase: saleStatus.phase,
+      saleStatus, slot: state.slot, saleNotice: saleStatus.phase === 'unknown' ? 'Checking mint availability…' : state.saleNotice,
+      priceWei: state.priceWei, priceETH: state.priceETH };
   }
   async function prepare(body, session) {
     const wallet = verified(session), generation = session.generation, consent = testConsent(body);
@@ -784,7 +819,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
     assert.equal(session.generation, generation); assert.equal(verified(session), wallet);
     requireForUser(!economic.sale.paused, 'MINT_PAUSED', 'Minting is paused.');
     requireForUser(!economic.minted, 'HANDLE_MINTED', 'This handle is already minted.');
-    requireForUser(consent.mode === 'free' ? economic.free : economic.paid && consent.cap >= BigInt(economic.priceWei), 'QUOTE_CHANGED', 'Selected phase or spending ceiling is no longer valid. Check mint options.');
+    requireForUser(consent.mode === 'free' ? economic.free : economic.paid && consent.cap >= BigInt(economic.priceWei), 'QUOTE_CHANGED', 'Mint availability or price changed. Please check again before minting.');
     publishSale(economic);
     const prior = Object.hasOwn(db.requests, consent.handle) ? db.requests[consent.handle] : undefined;
     if (prior?.stage === 'expired') {
@@ -869,6 +904,10 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
     ['/assets/sepolia.css', [SITE_FONT_CSS + SITE_CSS + OPEN_MINT_CSS, 'text/css']],
     ['/assets/sepolia.js', [SEPOLIA_TEST_CLIENT, 'text/javascript']], [FAVICON_URL, [FAVICON_SVG, 'image/svg+xml']],
     ['/assets/sepolia-readiness.js', [SEPOLIA_READINESS_CLIENT, 'text/javascript']],
+    ...(adminWeb ? [
+      ['/assets/sepolia-admin.js', [SEPOLIA_ADMIN_CLIENT, 'text/javascript']],
+      ['/assets/sepolia-admin.css', [SEPOLIA_ADMIN_CSS, 'text/css']],
+    ] : []),
     [SLOGAN_MBTI_HERO_SCRIPT_URL, [SLOGAN_MBTI_HERO_SCRIPT, 'text/javascript']], [SLOGAN_TOOLTIP_SCRIPT_URL, [SLOGAN_TOOLTIP_SCRIPT, 'text/javascript']],
     [MINT_CONTROL_STUDY_CSS_PATH, [MINT_CONTROL_STUDY_CSS, 'text/css']],
     [MINT_CONTROL_STUDY_SCRIPT_PATH, [MINT_CONTROL_STUDY_SCRIPT, 'text/javascript']],
@@ -905,7 +944,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
             ? 'Ownership history needs to be checked. This collection reflects the last verified ownership.'
             : 'Ownership updates could not be checked. This collection reflects the last verified ownership.' : undefined,
           collectionRevision: JSON.stringify([ownership?.head.hash, !!ownershipError, snapshot?.head.hash]),
-          cacheWriteError, uiRevision: ui?.revision?.() ?? 0, relay: relay.state(), mintNotice: mintAvailabilityNotice(capabilities),
+          cacheWriteError, uiRevision: ui?.revision?.() ?? 0, relay: relay.state(), mintNotice: mintAvailabilityNotice(capabilities), saleStatus: currentSaleStatus(),
           relayStore: { configured: !!dependencies.relayStore || !!process.env.PULSE_RELAY_DATABASE_URL,
             enabled: !!relayStore, lastError: relayWriteError },
           revision: JSON.stringify([ui?.revision?.() ?? 0, svgBytes.size, capabilities.mintReady, capabilities.observerHealthy, capabilities.safetyHalted,
@@ -968,8 +1007,19 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
         const found = sessions.session(req.headers.cookie), session = found.session; if (found.created) res.setHeader('Set-Cookie', sessions.cookie(session));
         if (path === '/api/test/session') return json({ csrf: session.csrf, wallet: session.walletProof?.expiresAt > Date.now() ? session.wallet : undefined });
         if (path === '/api/test/options') return json(await mintOptions(verified(session)));
+        if (path === '/api/test/admin/status') {
+          requireForUser(!!adminWeb, 'ADMIN_UNAVAILABLE', 'Administration is not enabled for this deployment.');
+          const wallet = verified(session), generation = session.generation;
+          const result = await adminWeb.status(wallet);
+          requireForUser(session.generation === generation && verified(session) === wallet,
+            'CONNECT_WALLET', 'Connect and verify your admin wallet again.');
+          return json(result);
+        }
         const opts = options(session);
         if (path === '/') return send(200, await render('homePage', opts, entries()));
+        if (path === '/admin' && adminWeb) return send(200, await render('sepoliaAdminPage', {
+          ...opts, adminWallet: p.authorities.admin, clientScriptUrl: '/assets/sepolia-admin.js',
+        }), 'text/html; charset=utf-8', false);
         // Relay viewing is quiet; only mutable mint admission owns a warning.
         if (path === '/mint') return send(200, await render('mintPage', url.searchParams.get('handle') ?? '',
           { ...opts, mintObservationNotice: mintAvailabilityNotice(health()) }));
@@ -997,11 +1047,34 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
       }
       requireForUser(running, 'OBSERVATION_UNAVAILABLE', 'Mint availability cannot be checked right now. Please try again shortly.');
       assert.equal(req.method, 'POST'); assert.equal(req.headers.origin, origin); assert.equal(req.headers['content-type'], 'application/json');
-      let raw = ''; for await (const chunk of req) { raw += chunk; assert.ok(Buffer.byteLength(raw) <= 4096); }
+      const adminRoute = /^\/api\/test\/admin\/(review|action|report|cancel)$/.exec(path);
+      let raw = ''; for await (const chunk of req) {
+        raw += chunk;
+        requireForUser(Buffer.byteLength(raw) <= (adminRoute?.[1] === 'review' ? 256 * 1024 : 4096),
+          'INVALID_INPUT', 'The request is too large.');
+      }
       const body = JSON.parse(raw), { session } = sessions.session(req.headers.cookie);
       sessions.authorizePost(session, req.headers.origin, req.headers['x-csrf-token']);
+      if (adminRoute) {
+        requireForUser(!!adminWeb, 'ADMIN_UNAVAILABLE', 'Administration is not enabled for this deployment.');
+        const wallet = verified(session), generation = session.generation;
+        const method = adminRoute[1];
+        fields(body, method === 'review' ? ['wallets', 'quota'] : method === 'action' ? ['action'] : method === 'report'
+          ? ['intentId', 'transactionHash'] : ['intentId'], method === 'action' ? ['reviewId'] : []);
+        const task = serial.then(async () => {
+          requireForUser(session.generation === generation && verified(session) === wallet,
+            'CONNECT_WALLET', 'Connect and verify your admin wallet again.');
+          const result = await adminWeb[method](wallet, body);
+          requireForUser(session.generation === generation && verified(session) === wallet,
+            'CONNECT_WALLET', 'Connect and verify your admin wallet again.');
+          return result;
+        });
+        serial = task.catch(() => undefined);
+        return json(await task);
+      }
       if (path === '/api/test/logout') { fields(body, []); sessions.logout(session); return json({ disconnected: true }); }
-      if (path === '/api/test/challenge') {
+      if (path === '/api/test/challenge' || path === '/api/test/admin/challenge') {
+        if (path === '/api/test/admin/challenge') requireForUser(!!adminWeb, 'ADMIN_UNAVAILABLE', 'Administration is not enabled for this deployment.');
         fields(body, ['address']);
         requireBinding();
         // Reject unsupported accounts before asking the wallet to sign. Check
@@ -1010,7 +1083,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
         const generation = session.generation;
         const address = await checkWalletSupport(c, body.address);
         assert.equal(session.generation, generation);
-        return json(sessions.challenge(session, address));
+        return json(sessions.challenge(session, address, undefined, path === '/api/test/admin/challenge' ? 'admin' : 'mint'));
       }
       if (path === '/api/test/verify') { fields(body, ['challengeId', 'signature']); return json({ wallet: await sessions.verify(session, body.challengeId, body.signature) }); }
       if (path === '/api/test/prepare') {
@@ -1039,7 +1112,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
               && (row.mode === 'free' ? preflight.free && BigInt(preflight.slot) === authorization.slotId
                 && (binding.contractProfile !== PULSE_ADMIN_PROFILE || BigInt(preflight.freeConfigRevision) === authorization.freeConfigRevision)
                 : preflight.paid && BigInt(row.cap) >= BigInt(preflight.priceWei)),
-            'QUOTE_CHANGED', 'Selected phase or spending ceiling is no longer valid. Check mint options.');
+            'QUOTE_CHANGED', 'Mint availability or price changed. Please check again before minting.');
             assert.equal(session.generation, generation); assert.equal(verified(session), wallet);
             requireForUser(row.stage === 'prepared', 'SUBMISSION_STARTED', 'Submission already started.'); assert.ok(row.deadline > Date.now() / 1000);
             publishSale(preflight); next = { ...row, stage: 'begun' };

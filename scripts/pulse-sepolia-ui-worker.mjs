@@ -9,6 +9,8 @@ import { SLOGAN_TOOLTIP_SCRIPT_URL, SLOGAN_TOOLTIP_SCRIPT } from '../src/brand/s
 import { mintControlStudyPage, MINT_CONTROL_STUDY_CSS_PATH, MINT_CONTROL_STUDY_CSS, MINT_CONTROL_STUDY_SCRIPT_PATH, MINT_CONTROL_STUDY_SCRIPT } from '../src/brand/mintControlStudy.ts';
 import { SEPOLIA_TEST_CLIENT } from './pulse-sepolia-client.mjs';
 import { SEPOLIA_READINESS_CLIENT } from './pulse-sepolia-readiness-client.mjs';
+import { sepoliaAdminPage, SEPOLIA_ADMIN_CSS } from './pulse-sepolia-admin-page.mjs';
+import { SEPOLIA_ADMIN_CLIENT } from './pulse-sepolia-admin-client.mjs';
 
 // This render-only child has no inherited credentials, signer, RPC, sessions,
 // request journal or state writer. Replacing it cannot restart the backend.
@@ -18,6 +20,8 @@ const assets = new Map([
   ['/assets/sepolia.css', [SITE_FONT_CSS + SITE_CSS + pages.OPEN_MINT_CSS, 'text/css']],
   ['/assets/sepolia.js', [SEPOLIA_TEST_CLIENT, 'text/javascript']],
   ['/assets/sepolia-readiness.js', [SEPOLIA_READINESS_CLIENT, 'text/javascript']],
+  ['/assets/sepolia-admin.js', [SEPOLIA_ADMIN_CLIENT, 'text/javascript']],
+  ['/assets/sepolia-admin.css', [SEPOLIA_ADMIN_CSS, 'text/css']],
   [FAVICON_URL, [FAVICON_SVG, 'image/svg+xml']],
   [SLOGAN_MBTI_HERO_SCRIPT_URL, [SLOGAN_MBTI_HERO_SCRIPT, 'text/javascript']],
   [SLOGAN_TOOLTIP_SCRIPT_URL, [SLOGAN_TOOLTIP_SCRIPT, 'text/javascript']],
@@ -37,6 +41,7 @@ process.on('message', request => {
         if (font) result = [{ kind: 'font', encoding: 'base64', data: font.bytes.toString('base64') }, font.contentType];
       }
     }
+    else if (request.name === 'sepoliaAdminPage') result = sepoliaAdminPage(...request.args);
     else if (request.name === 'mintControlStudyPage') result = mintControlStudyPage(...request.args);
     else if (request.name === 'previewSvg') result = renderSignatureSvg(...request.args);
     else { assert.ok(names.includes(request.name)); result = pages[request.name](...request.args); }

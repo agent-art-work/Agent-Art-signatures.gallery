@@ -62,7 +62,7 @@ export class WalletSessions {
       throw new PublicError(403, "SESSION_REQUIRED", "Refresh this page and try again.");
     }
   }
-  challenge(session: SiteSession, address: unknown, code?: string): { challengeId: string; message: string } {
+  challenge(session: SiteSession, address: unknown, code?: string, purpose: "mint" | "admin" = "mint"): { challengeId: string; message: string } {
     let canonical: Address;
     try { canonical = getAddress(String(address)); } catch { throw new PublicError(400, "INVALID_WALLET", "Enter a valid wallet address."); }
     if (/^0x0{40}$/i.test(canonical) || (code !== undefined && !isCode(code))) throw new PublicError(400, "INVALID_WALLET", "Invalid wallet request.");
@@ -70,8 +70,10 @@ export class WalletSessions {
     const id = opaqueCode();
     const expiresAt = now + 600_000;
     const nonce = randomBytes(16).toString("hex");
-    const statement = code ? "Connect this wallet to this signature request. This does not submit a mint transaction." : "Sign in to view your collection and prepare mints when you choose Mint & reveal. Connecting alone does not request an assessment or submit a transaction.";
-    const resource = code ? `${this.origin}/requests/${code}` : `${this.origin}/me`;
+    const statement = purpose === "admin"
+      ? "Sign in to administer the free-mint allowlist and quota. Signing in does not submit a contract transaction. Every change requires separate approval in your wallet."
+      : code ? "Connect this wallet to this signature request. This does not submit a mint transaction." : "Sign in to view your collection and prepare mints when you choose Mint & reveal. Connecting alone does not request an assessment or submit a transaction.";
+    const resource = purpose === "admin" ? `${this.origin}/admin` : code ? `${this.origin}/requests/${code}` : `${this.origin}/me`;
     const message = `${new URL(this.origin).host} wants you to sign in with your Ethereum account:\n${canonical}\n\n${statement}\n\nURI: ${this.origin}\nVersion: 1\nChain ID: ${this.chainId}\nNonce: ${nonce}\nIssued At: ${new Date(now).toISOString()}\nExpiration Time: ${new Date(expiresAt).toISOString()}\nResources:\n- ${resource}`;
     // Superseding a challenge also discards prior mint consent/proof.
     delete session.walletProof;

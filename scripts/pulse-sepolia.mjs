@@ -29,6 +29,21 @@ const qty = n => '0x' + BigInt(n).toString(16);
 const expand = p => p?.startsWith('~/') ? resolve(homedir(), p.slice(2)) : p;
 const read = p => JSON.parse(readFileSync(p, 'utf8'));
 const sameAddress = (a, b) => assert.equal(getAddress(a), getAddress(b));
+const SAFE_READ_METHODS = new Set(['eth_chainId', 'eth_getBlockByNumber', 'eth_getCode', 'eth_getBalance', 'eth_getTransactionCount', 'eth_getTransactionByHash', 'eth_getTransactionReceipt', 'eth_getLogs', 'eth_call', 'eth_estimateGas']);
+
+/** Classify only an RPC error response, never successful-but-wrong evidence.
+ * EIP-1474 resource errors can mean a provider lacks the pinned block/state.
+ * Invalid inputs and EVM execution failures remain non-retryable even when
+ * their message contains a word such as "limit" or "temporarily". */
+export function retryableSepoliaRpcError(method, error) {
+  if (!SAFE_READ_METHODS.has(method) || !error || typeof error !== 'object' || Array.isArray(error)) return false;
+  const message = typeof error.message === 'string' ? error.message : '';
+  if (/revert|invalid opcode|out of gas|execution failed/i.test(message)) return false;
+  const code = Number.isInteger(error.code) ? error.code : undefined;
+  if ([-32700, -32600, -32601, -32602, -32000, -32003, -32004, -32006, 3].includes(code)) return false;
+  if (code === -32001 || code === -32002) return true;
+  return /rate|limit|temporar|timeout|historical state|missing trie/i.test(message);
+}
 
 /** Generated journals are private, durable, atomic and confined to this run.
  * Signed bytes are saved BEFORE broadcast. Unknown delivery never chooses a new nonce. */
@@ -72,7 +87,7 @@ export function rpcTransport(url) {
     });
     let result; try { result = JSON.parse(raw); } catch { throw unavailableRpcData(); }
     if (result.error || result.id !== 1 || !Object.hasOwn(result, 'result')) throw Object.assign(new Error(`Sepolia ${method} RPC refused the request; details suppressed.`), {
-      retryableRead: !!result.error && /rate|limit|temporar|timeout|historical state|missing trie/i.test(String(result.error.message)),
+      retryableRead: retryableSepoliaRpcError(method, result.error),
       rateLimited: !!result.error && /rate|limit/i.test(String(result.error.message)),
       rpcErrorCode: Number.isInteger(result.error?.code) ? result.error.code : undefined,
     });
@@ -81,13 +96,12 @@ export function rpcTransport(url) {
 }
 
 export function retrySafeReads(request) {
-  const safe = new Set(['eth_chainId', 'eth_getBlockByNumber', 'eth_getCode', 'eth_getBalance', 'eth_getTransactionCount', 'eth_getTransactionByHash', 'eth_getTransactionReceipt', 'eth_getLogs', 'eth_call', 'eth_estimateGas']);
   return async (method, params = [], options = {}) => {
     options.signal?.throwIfAborted();
     try { return await request(method, params, options); }
     catch (error) {
       options.signal?.throwIfAborted();
-      if (!safe.has(method) || error.retryableRead !== true) throw error;
+      if (!SAFE_READ_METHODS.has(method) || error.retryableRead !== true) throw error;
       if (error.httpStatus === 429 || error.rateLimited === true) {
         try { await sleep(3000, undefined, { signal: options.signal }); }
         catch (aborted) { options.signal?.throwIfAborted(); throw aborted; }

@@ -9,7 +9,8 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
   // A monitored signature is still a viewing surface unless the page is an
   // actual mint flow. Relay/RPC health is not a visitor-facing gallery notice.
   const mintProcess = !!($('[data-mint-entry]') || $('[data-assessment-code]') || $('[data-mint-process]'));
-  let csrf, wallet, provider, watchedProvider, busy = false, connecting = false, restoring = false, sessionReady = false, connectionEpoch = 0, detachWalletEvents, priceRequest;
+  let csrf, wallet, provider, watchedProvider, busy = false, connecting = false, restoring = false, sessionReady = false, connectionEpoch = 0, detachWalletEvents, priceRequest, mintQuote, saleGeneration = 0, saleFingerprint;
+  let optionsRetryTimer, optionsRetryCount = 0, optionsFailed = false;
   let statusTimer, statusGeneration = 0, revealed, readReady = true, statusFailures = 0, statusFailureSince, statusIntegrity = false, pendingRecovery = false, terminalRequest = false;
   let recoveryHandle, recoveryRequest, pendingCache;
   const pendingReference = () => {
@@ -85,7 +86,7 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
     const timer = controller && setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(path, { method: body ? 'POST' : 'GET', headers: body ? { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf } : {}, body: body ? JSON.stringify(body) : undefined, ...(controller ? { signal: controller.signal } : {}) });
-      const value = await response.json(); if (!response.ok) throw Object.assign(Error(value.error || 'The request could not be completed.'), { code: value.code }); return value;
+      const value = await response.json(); if (!response.ok) throw Object.assign(Error(value.error || 'The request could not be completed.'), { code: value.code, status: response.status }); return value;
     } catch (e) {
       if (controller?.signal.aborted) throw Error(path.startsWith('/api/test/status')
         ? 'Mint status could not be checked right now. Checking again shortly.' : path === '/api/test/options'
@@ -105,6 +106,7 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
     detachWalletEvents?.(); watchedProvider = activeProvider;
     const changed = text => {
       if (watchedProvider !== activeProvider) return;
+      cancelOptionsRetry(); optionsFailed = false;
       connectionEpoch++; wallet = undefined; provider = undefined;
       if (pendingRecovery && !revealed) {
         // A reconnect may start a new proof/status epoch. Responses from the
@@ -148,10 +150,9 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
       if (chainId?.toLowerCase() !== '0xaa36a7') throw Error('Choose Ethereum Sepolia in your wallet, then reconnect.');
       provider = activeProvider;
       walletFeedback('Wallet connected.');
-      if ($('[data-pulse-check]')) {
+      if ($('[data-pulse-options]')) {
         void options().then(() => {
-          if (epoch === connectionEpoch && wallet === savedWallet) walletFeedback(pendingRecovery || terminalRequest
-            ? 'Wallet connected.' : 'Wallet connected. Choose your mint option when ready.');
+          if (epoch === connectionEpoch && wallet === savedWallet) walletFeedback('Wallet connected.');
         }).catch(() => {}); // The price section owns its failure and recovery.
       }
     } catch (error) {
@@ -173,16 +174,67 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
     // textContent removes that styled element and turns it into bare text.
     const connectLabel = $('[data-connect-wallet] > span'); if (connectLabel) connectLabel.textContent = restoring ? 'Restoring wallet…' : connecting ? 'Connecting…' : wallet ? provider ? 'Change wallet' : 'Reconnect wallet' : 'Connect wallet';
     const button = $('[data-connect-wallet]'); if (button) button.disabled = connecting || restoring || !sessionReady || busy;
-    const checkingPrice = priceRequest?.epoch === connectionEpoch && priceRequest.wallet === wallet;
+    const checkingPrice = priceRequest?.epoch === connectionEpoch && priceRequest.wallet === wallet && priceRequest.saleGeneration === saleGeneration;
+    const phase = $('[data-pulse-options]')?.dataset.pulsePhase;
+    const refreshVisible = phase === 'paid' || optionsFailed && !optionsRetryTimer && !checkingPrice;
+    const refresh = $('[data-pulse-check]'), refreshActions = $('[data-pulse-refresh]');
+    if (refresh) refresh.hidden = !refreshVisible;
+    if (refreshActions) refreshActions.hidden = !refreshVisible;
     const priceButton = $('[data-pulse-check]'); if (priceButton) priceButton.disabled = !!checkingPrice;
-    const priceLabel = $('[data-pulse-check] > span'); if (priceLabel) priceLabel.textContent = checkingPrice ? 'Checking price…' : 'Check price';
-    const submit = $('[data-request-submit]'); if (submit) submit.disabled = !wallet || !provider || busy || pendingRecovery || terminalRequest || !!revealed || connecting || restoring || !readReady;
+    const priceLabel = $('[data-pulse-check] > span'); if (priceLabel) priceLabel.textContent = checkingPrice ? phase === 'paid' ? 'Checking price…' : 'Checking…' : phase === 'paid' ? 'Refresh price' : 'Try again';
+    const quoteReady = mintQuote?.epoch === connectionEpoch && mintQuote.wallet === wallet && mintQuote.available;
+    const submit = $('[data-request-submit]'); if (submit) submit.disabled = !wallet || !provider || busy || pendingRecovery || terminalRequest || !!revealed || connecting || restoring || !readReady || !!$('[data-pulse-options]') && (!quoteReady || !ceilingReady());
     const checkingRecovery = recoveryRequest?.epoch === connectionEpoch && recoveryRequest.generation === statusGeneration;
     for (const [selector, label] of [['[data-mint-recovery-check]', 'Check previous mint'], ['[data-mint-recovery-transaction]', 'Check transaction']]) {
       const button = $(selector), span = $(selector + ' > span');
       if (button) button.disabled = !!checkingRecovery;
       if (span) span.textContent = checkingRecovery && recoveryRequest.selector === selector ? 'Checking…' : label;
     }
+  }
+  function ethToWei(value) {
+    if (typeof value !== 'string' || !/^(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/.test(value)) return;
+    const [whole, decimal = ''] = value.split('.');
+    return BigInt(whole) * 1000000000000000000n + BigInt(decimal.padEnd(18, '0'));
+  }
+  function ceilingReady() {
+    if (mintQuote?.phase !== 'paid') return true;
+    const cap = ethToWei($('[name="pulse-max-eth"]')?.value);
+    return cap !== undefined && cap > 0n && cap <= 100000000000000n && cap >= mintQuote.priceWei;
+  }
+  function cancelOptionsRetry() { clearTimeout(optionsRetryTimer); optionsRetryTimer = undefined; }
+  function presentSale(status, notice, observed = false) {
+    const section = $('[data-pulse-options]');
+    if (!section || !status) return;
+    const phase = ['free', 'paid'].includes(status.phase) ? status.phase : 'unknown';
+    if (observed) {
+      const fingerprint = JSON.stringify([phase, status.paused === true, status.freeMinted, status.freeMintQuota, status.freeConfigRevision]);
+      if (fingerprint !== saleFingerprint) { saleFingerprint = fingerprint; saleGeneration++; cancelOptionsRetry(); optionsFailed = false; }
+    }
+    section.dataset.pulsePhase = phase;
+    const title = $('[data-pulse-title]'); if (title) title.textContent = phase === 'free' ? 'Free Mint' : phase === 'paid' ? 'Mint price' : 'Mint availability';
+    const paid = $('[data-pulse-paid]'), free = $('[data-pulse-free]');
+    if (paid) paid.hidden = phase !== 'paid';
+    if (free) free.hidden = phase !== 'free';
+    const refresh = $('[data-pulse-check]'); if (refresh) refresh.hidden = phase !== 'paid';
+    const refreshActions = $('[data-pulse-refresh]'); if (refreshActions) refreshActions.hidden = phase !== 'paid';
+    const sale = $('[data-pulse-sale-status]');
+    if (sale) {
+      if (notice) sale.textContent = notice;
+      else if (status.paused) sale.textContent = 'Minting is paused.';
+      else if (Number.isInteger(status.freeMinted) && Number.isInteger(status.freeMintQuota)) sale.textContent = `${phase === 'free' ? 'Free mint open' : phase === 'paid' ? 'Free mint ended' : 'Checking mint availability…'} · ${status.freeMinted}/${status.freeMintQuota} slots used.`;
+      else sale.textContent = phase === 'unknown' ? 'Checking mint availability…' : '';
+    }
+    // Public phase presentation is not wallet eligibility or mint authority.
+    // A changed phase/paused sale must invalidate the old wallet quote before
+    // an automatic replacement read settles.
+    if (mintQuote && (mintQuote.phase !== phase || status.paused)) {
+      mintQuote = undefined;
+      if (observed) renderInlineFeedback($('[data-pulse-feedback]'), status.paused ? 'Minting is paused.' : 'Checking mint availability…');
+    }
+    const mode = $('[name="pulse-mode"]');
+    if (mode && !mintQuote) mode.value = '';
+    const cap = $('[name="pulse-max-eth"]');
+    if (cap) cap.disabled = phase !== 'paid' || status.paused === true || !mintQuote?.available;
   }
   function showRecovery(handle) {
     const previousHandle = recoveryHandle, hash = $('[name="mint-recovery-hash"]');
@@ -256,7 +308,7 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
     })();
     return request.promise;
   }
-  function options() {
+  function options(retry = false) {
     const selectedWallet = wallet, epoch = connectionEpoch;
     if (!wallet) {
       const error = Error('Connect your wallet first.');
@@ -266,22 +318,51 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
     // A quote is read-only, independent of saved-mint recovery. Coalesce
     // repeated clicks/automatic checks for this proof without freezing wallet
     // controls or letting an old wallet's response overwrite a newer quote.
-    if (priceRequest?.epoch === epoch && priceRequest.wallet === selectedWallet) return priceRequest.promise;
-    const request = { epoch, wallet: selectedWallet };
+    if (priceRequest?.epoch === epoch && priceRequest.wallet === selectedWallet && priceRequest.saleGeneration === saleGeneration) return priceRequest.promise;
+    cancelOptionsRetry(); if (!retry) optionsRetryCount = 0;
+    optionsFailed = false;
+    const request = { epoch, wallet: selectedWallet, saleGeneration };
     priceRequest = request; connected();
-    renderInlineFeedback($('[data-pulse-feedback]'), 'Checking price…');
+    renderInlineFeedback($('[data-pulse-feedback]'), $('[data-pulse-options]')?.dataset.pulsePhase === 'paid' ? 'Checking price…' : 'Checking your free mint eligibility…');
     request.promise = (async () => {
       try {
         const result = await api('/api/test/options', undefined, 45000);
-        if (epoch !== connectionEpoch || wallet !== selectedWallet) return;
-        const sale = $('[data-pulse-sale-status]'); if (sale) sale.textContent = result.saleNotice;
-        const free = $('[name="pulse-mode"][value="free"]'), paid = $('[name="pulse-mode"][value="paid"]'), cap = $('[name="pulse-max-eth"]');
-        if (free) { free.disabled = !result.free; if (!result.free) free.checked = false; }
-        if (paid) { paid.disabled = !result.paid; if (!result.paid) paid.checked = false; }
-        if (cap) { cap.disabled = !result.paid; if (!cap.value) cap.value = '0.0001'; }
-        renderInlineFeedback($('[data-pulse-feedback]'), result.free ? 'You have an unused free mint slot. You pay network gas.' : result.paid ? `Current Pulse price: ${result.priceETH} Sepolia ETH. Choose a ceiling; unused payment is refunded.` : 'No eligible free slot. Paid minting begins when the free phase ends.');
+        if (epoch !== connectionEpoch || wallet !== selectedWallet || request.saleGeneration !== saleGeneration) return;
+        const phase = result.phase || result.saleStatus?.phase || (result.free ? 'free' : result.paid ? 'paid' : 'unknown');
+        if (!['free', 'paid'].includes(phase) || typeof result.free !== 'boolean' || typeof result.paid !== 'boolean'
+          || result.saleStatus?.phase && result.saleStatus.phase !== phase
+          || result.free && (phase !== 'free' || result.paid) || result.paid && phase !== 'paid') throw Object.assign(Error('Mint availability could not be verified. Please try again shortly.'), { code: 'MINT_QUOTE_INVALID' });
+        const priceWei = phase === 'paid' ? typeof result.priceWei === 'string' && /^(0|[1-9][0-9]*)$/.test(result.priceWei) ? BigInt(result.priceWei) : ethToWei(result.priceETH) : undefined;
+        if (phase === 'paid' && (priceWei === undefined || priceWei < 0n)) throw Object.assign(Error('Mint price could not be verified. Please try again shortly.'), { code: 'MINT_QUOTE_INVALID' });
+        const status = { ...result.saleStatus, phase, paused: result.paused === true || result.saleStatus?.paused === true };
+        presentSale(status, result.saleNotice);
+        mintQuote = { epoch, wallet: selectedWallet, phase, priceWei, available: !status.paused && (phase === 'free' ? result.free === true : result.paid === true) };
+        optionsRetryCount = 0;
+        const mode = $('[name="pulse-mode"]'), cap = $('[name="pulse-max-eth"]');
+        if (mode) mode.value = mintQuote.available ? phase : '';
+        if (cap) cap.disabled = !mintQuote.available || phase !== 'paid';
+        renderInlineFeedback($('[data-pulse-feedback]'), status.paused ? 'Minting is paused.' : phase === 'free' ? result.free
+          ? 'You have an unused free mint slot. You pay network gas.' : 'This wallet has no available free mint slot. Paid minting begins when the free phase ends.'
+          : result.paid ? `Current Pulse price: ${result.priceETH} Sepolia ETH. Choose a ceiling; unused payment is refunded.` : 'Paid minting is not available right now.');
       } catch (error) {
-        if (epoch === connectionEpoch && wallet === selectedWallet) renderInlineFeedback($('[data-pulse-feedback]'), error.message, true);
+        if (epoch === connectionEpoch && wallet === selectedWallet && request.saleGeneration === saleGeneration) {
+          mintQuote = undefined;
+          const mode = $('[name="pulse-mode"]'), cap = $('[name="pulse-max-eth"]');
+          if (mode) mode.value = '';
+          if (cap) cap.disabled = true;
+          optionsFailed = true;
+          renderInlineFeedback($('[data-pulse-feedback]'), error.message, true);
+          const transient = (!error.code && !error.status || ['OBSERVATION_UNAVAILABLE', 'RPC_DATA_UNAVAILABLE'].includes(error.code)) && error.status !== 401 && error.status !== 403;
+          if (transient && optionsRetryCount < 2 && wallet && provider && readReady) {
+            const retryProvider = provider, retryGeneration = saleGeneration, retryEpoch = connectionEpoch;
+            const delay = ++optionsRetryCount * 10000;
+            optionsRetryTimer = setTimeout(() => {
+              optionsRetryTimer = undefined;
+              if (retryEpoch !== connectionEpoch || retryGeneration !== saleGeneration || wallet !== selectedWallet || provider !== retryProvider || !readReady) { connected(); return; }
+              void options(true).catch(() => {});
+            }, delay);
+          }
+        }
         throw error;
       } finally {
         if (priceRequest === request) { priceRequest = undefined; connected(); }
@@ -292,6 +373,7 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
   async function connect() {
     if (connecting || restoring || busy) return;
     connecting = true; wallet = undefined; provider = undefined; detachWalletEvents?.();
+    cancelOptionsRetry(); optionsFailed = false;
     connectionEpoch++;
     if (pendingRecovery) { statusGeneration++; clearTimeout(statusTimer); }
     connected(); walletFeedback('Opening your wallet…');
@@ -336,10 +418,9 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
         void options().catch(() => {});
         connected(); return;
       }
-      walletFeedback('Wallet connected. Checking mint options…');
-      let optionsReady = false;
-      try { await options(); optionsReady = true; } catch {} // Already shown beside the price controls.
-      if (proofEpoch === connectionEpoch) walletFeedback(optionsReady ? 'Wallet connected. Choose your mint option when ready.' : 'Wallet connected.');
+      walletFeedback('Wallet connected.');
+      try { await options(); } catch {} // Already shown beside the phase controls.
+      if (proofEpoch === connectionEpoch) walletFeedback('Wallet connected.');
     } catch (e) {
       walletFeedback(e.code === 4001 ? 'Wallet sign-in was cancelled. Connect again when ready.' : e.message, e.code !== 4001);
     } finally { connecting = false; connected(); }
@@ -513,6 +594,7 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
   $('[data-connect-wallet]')?.addEventListener('click', connect);
   $('[data-disconnect-wallet]')?.addEventListener('click', () => api('/api/test/logout', {}).then(() => location.reload()).catch(e => feedback(e.message, true)));
   $('[data-pulse-check]')?.addEventListener('click', () => options().catch(() => {}));
+  $('[name="pulse-max-eth"]')?.addEventListener('input', connected);
   $('[data-mint-recovery-check]')?.addEventListener('click', () => recoverPreviousMint());
   $('[data-mint-recovery-transaction]')?.addEventListener('click', () => recoverPreviousMint(true));
   $('[data-mint-another]')?.addEventListener('click', () => {
@@ -552,9 +634,10 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
       if (!provider || !wallet) throw Error('Connect your wallet again.');
       await chain(); const current = await provider.request({ method: 'eth_accounts' });
       if (current[0]?.toLowerCase() !== wallet.toLowerCase()) throw Error('Wallet changed. Connect again.');
-      const handle = $('[name="handle"]').value, mode = $('[name="pulse-mode"]:checked')?.value;
+      const handle = $('[name="handle"]').value, mode = mintQuote?.epoch === connectionEpoch && mintQuote.wallet === wallet && mintQuote.available ? mintQuote.phase : undefined;
       attemptedHandle = handle.trim().replace(/^@/, '').toLowerCase();
-      if (!mode) throw Error('Check mint options first.');
+      if (!mode) throw Error('Mint availability is being checked. Please try again shortly.');
+      if (mode === 'paid' && !ceilingReady()) throw Error('Enter a maximum mint price at or above the current price.');
       feedback('Preparing your signature…');
       const plan = await api('/api/test/prepare', { handle, mode, maximumETH: mode === 'paid' ? $('[name="pulse-max-eth"]').value : '0' });
       if (plan.transaction.chainId !== '0xaa36a7' || plan.transaction.from.toLowerCase() !== wallet.toLowerCase()
@@ -628,6 +711,7 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
     void poll(handle); return true;
   }
   function loadSession() {
+    cancelOptionsRetry(); optionsFailed = false;
     connectionEpoch++; detachWalletEvents?.(); provider = undefined; wallet = undefined; sessionReady = false; connected();
     return api('/api/test/session').then(async s => {
       csrf = s.csrf; wallet = s.wallet; sessionReady = true;
@@ -653,6 +737,7 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
   let session = loadSession();
   window.addEventListener('sg:readiness-changed', event => {
     readReady = event.detail?.mintReady === true;
+    presentSale(event.detail?.saleStatus, undefined, true);
     if (busy || connecting || restoring || revealed) return;
     connected();
     if (!event.detail?.mintReady) {
@@ -660,7 +745,7 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
       return;
     }
     if (!sessionReady) { session = loadSession(); return; }
-    if (wallet && provider && $('[data-pulse-check]')) {
+    if (wallet && provider && $('[data-pulse-options]')) {
       void options().then(connected).catch(() => {});
     }
   });
@@ -679,6 +764,6 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
     revealed = { state: detail.dataset.mintState, tokenId: detail.dataset.revealToken, inputDigest: detail.dataset.revealInput, rendererIdentity: detail.dataset.revealRenderer };
     void poll(detail.dataset.revealHandle);
   }
-  window.addEventListener('pagehide', () => { statusGeneration++; clearTimeout(statusTimer); });
+  window.addEventListener('pagehide', () => { statusGeneration++; clearTimeout(statusTimer); cancelOptionsRetry(); });
 }
 export const SEPOLIA_TEST_CLIENT = `(${sepoliaTestClient.toString()})(${mintHandleDraft.toString()}, ${bindHandleValidation.toString()}, ${renderInlineFeedback.toString()});`;

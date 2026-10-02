@@ -47,7 +47,7 @@ function assertWarning(node, message) {
 
 async function harness({ alteredPlan, rejectSend = false, sendError, restoredWallet = false, challengeError, challengeGate, optionsError, announceRabby = false,
   missingProvider = false, walletState = { accounts: [WALLET], chainId: '0xaa36a7' }, accountsGate, walletReadError, optionsGate, accountEventOnGrant = false,
-  prepareGate, prepareError, sendGate, reportGate, recoveryGate, recoveryError, recoveryValue,
+  prepareGate, prepareError, sendGate, reportGate, recoveryGate, recoveryError, recoveryValue, initialOptions, maximumETH = '0.0001', initialPhase = 'paid',
   storage = new Map(), storageFault, fetchOverride, initialHandle = 'SomeHandle', status = RESULT, statusError, reportError,
   surface = 'entry', initialWarning = '', sessionError } = {}) {
   const calls = [], nodes = new Map(), locations = [], timers = [], statusResponses = [], optionsResponses = [], optionsSignals = [];
@@ -57,7 +57,7 @@ async function harness({ alteredPlan, rejectSend = false, sendError, restoredWal
   let mintStatus = status, mintStatusError = statusError, mintOptionsError = optionsError;
   const selectors = ['[data-request-feedback]', '[data-mint-feedback]', '[data-wallet-label]', '[data-connect-wallet]', '[data-request-submit]',
     '[data-assessment-request]', '[data-mint-entry]', '[data-pulse-feedback]', '[data-pulse-sale-status]', '[data-pulse-check]', '[name="handle"]', '[name="pulse-max-eth"]',
-    '[name="pulse-mode"][value="free"]', '[name="pulse-mode"][value="paid"]', '[name="pulse-mode"]:checked',
+    '[data-pulse-options]', '[data-pulse-title]', '[data-pulse-paid]', '[data-pulse-free]', '[data-pulse-refresh]', '[name="pulse-mode"]',
     '[data-mint-result]', '[data-mint-result-artwork]', '[data-mint-result-link]', '[data-mint-result-feedback]', '[data-mint-another]',
     '[data-mint-state-label]', '[data-mint-result] [data-mint-state-label]', '.signature-page',
     '[data-mint-observation-warning]', '[data-mint-observation-message]', '[data-mint-action-notice]', '[data-mint-result-notice]',
@@ -75,7 +75,7 @@ async function harness({ alteredPlan, rejectSend = false, sendError, restoredWal
   nodes.set('[data-mint-result] [data-mint-state-label]', nodes.get('[data-mint-state-label]'));
   // Model the DOM's destructive textContent setter: button styling lives on
   // its child span, not the button itself. The old flat mock missed this bug.
-  for (const [selector, initialLabel] of [['[data-connect-wallet]', 'Connect wallet'], ['[data-pulse-check]', 'Check price'],
+  for (const [selector, initialLabel] of [['[data-connect-wallet]', 'Connect wallet'], ['[data-pulse-check]', 'Refresh price'],
     ['[data-mint-recovery-check]', 'Check previous mint'], ['[data-mint-recovery-transaction]', 'Check transaction']]) {
     const button = nodes.get(selector), label = { textContent: initialLabel };
     nodes.set(selector + ' > span', label);
@@ -86,8 +86,8 @@ async function harness({ alteredPlan, rejectSend = false, sendError, restoredWal
   }
   nodes.get('[name="handle"]').value = initialHandle;
   nodes.set('[data-mint-preview]', { attributes: {}, setAttribute(k, v) { this.attributes[k] = v; }, removeAttribute(k) { delete this.attributes[k]; } });
-  nodes.get('[name="pulse-max-eth"]').value = '0.0001';
-  nodes.get('[name="pulse-mode"]:checked').value = 'paid';
+  nodes.get('[name="pulse-max-eth"]').value = maximumETH;
+  nodes.get('[data-pulse-options]').dataset.pulsePhase = initialPhase;
   if (surface === 'collection') {
     for (const selector of selectors) if (!['[data-mint-feedback]', '[data-wallet-label]', '[data-connect-wallet]', '[data-mint-observation-warning]', '[data-mint-observation-message]'].includes(selector)) nodes.delete(selector);
     nodes.delete('[data-pulse-check] > span'); nodes.delete('[data-mint-preview]'); nodes.set('[data-collection-page]', element());
@@ -165,10 +165,10 @@ async function harness({ alteredPlan, rejectSend = false, sendError, restoredWal
     const result = path === '/api/test/session' ? { csrf: 'csrf', ...(serverWallet ? { wallet: serverWallet } : {}) }
       : path === '/api/test/challenge' ? { challengeId: 'challenge', message: 'Local proof' }
       : path === '/api/test/verify' ? { wallet: walletState.accounts[0] }
-      : path === '/api/test/options' ? { paid: true, free: false, priceETH: '0.000001', saleNotice: 'Free mint ended · 2/2 slots used.' }
+      : path === '/api/test/options' ? initialOptions || { phase: 'paid', paid: true, free: false, priceETH: '0.000001', saleNotice: 'Free mint ended · 2/2 slots used.' }
       : path === '/api/test/prepare' ? { code: 'code', handle: 'somehandle', transaction: { chainId: '0xaa36a7', from: WALLET, to: CONTRACT, ...alteredPlan } }
       : path.startsWith('/api/test/status?') ? mintStatus : { saved: true };
-    if (path === '/api/test/prepare') assert.deepEqual(body, { handle: 'SomeHandle', mode: 'paid', maximumETH: '0.0001' });
+    if (path === '/api/test/prepare') assert.deepEqual(body, { handle: 'SomeHandle', mode: initialOptions?.phase || 'paid', maximumETH: initialOptions?.phase === 'free' ? '0' : maximumETH });
     if (path === '/api/test/report') assert.deepEqual(body, { code: 'code', transactionHash: HASH });
     return { ok: true, json: async () => result };
   };
@@ -229,7 +229,7 @@ test('wallet failure and recovery use the shared warning style without styling n
   assertWarning(feedback, 'Wallet changed. Connect it again.');
   await h.connect();
   assert.doesNotMatch(feedback.className, /open-preview-warning|open-preview-notice/);
-  assert.equal(feedback.textContent, 'Wallet connected. Choose your mint option when ready.');
+  assert.equal(feedback.textContent, 'Wallet connected.');
   assert.equal(feedback.children.length, 0);
   assert.ok(!h.calls.includes('/api/test/prepare'));
   assert.ok(!h.calls.includes('eth_sendTransaction'));
@@ -266,7 +266,7 @@ test('checking price immediately shows progress, preserves its styled span and c
   release(); await Promise.all([first, second]); await flush();
   assert.match(price.textContent, /Current Pulse price:/);
   assert.equal(button.disabled, false);
-  assert.equal(label.textContent, 'Check price');
+  assert.equal(label.textContent, 'Refresh price');
   assert.equal(h.nodes.get('[data-pulse-check] > span'), label);
   assert.equal(h.nodes.get('[data-mint-feedback]').textContent, walletFeedback);
   for (const forbidden of ['eth_requestAccounts', 'personal_sign', '/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
@@ -287,7 +287,7 @@ test('a price timeout releases its button and can be retried while keeping unkno
   assert.equal(signal.aborted, true);
   assertWarning(h.nodes.get('[data-pulse-feedback]'), 'Price could not be checked right now. Please try again.');
   assert.equal(h.nodes.get('[data-pulse-check]').disabled, false);
-  assert.equal(h.nodes.get('[data-pulse-check] > span').textContent, 'Check price');
+  assert.equal(h.nodes.get('[data-pulse-check] > span').textContent, 'Refresh price');
   assert.equal(h.nodes.get('[data-connect-wallet]').disabled, false);
   assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
   assert.equal(h.nodes.get('[data-mint-feedback]').textContent, walletFeedback);
@@ -309,7 +309,7 @@ test('checking price without a wallet gives explicit feedback and leaves wallet 
   await h.nodes.get('[data-pulse-check]').handlers.click();
   assertWarning(h.nodes.get('[data-pulse-feedback]'), 'Connect your wallet first.');
   assert.equal(h.nodes.get('[data-pulse-check]').disabled, false);
-  assert.equal(h.nodes.get('[data-pulse-check] > span').textContent, 'Check price');
+  assert.equal(h.nodes.get('[data-pulse-check] > span').textContent, 'Refresh price');
   assert.equal(h.nodes.get('[data-connect-wallet]').disabled, false);
   assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
   assert.deepEqual(h.calls, ['/api/test/session']);
@@ -334,10 +334,11 @@ test('a late old-wallet quote cannot overwrite a new-wallet quote or release its
   releaseNew(); await flush();
   assert.equal(h.nodes.get('[data-pulse-sale-status]').textContent, 'New wallet price');
   assert.match(h.nodes.get('[data-pulse-feedback]').textContent, /0\.000123 Sepolia ETH/);
-  assert.equal(h.nodes.get('[name="pulse-mode"][value="free"]').disabled, true);
-  assert.equal(h.nodes.get('[name="pulse-mode"][value="paid"]').disabled, false);
+  assert.equal(h.nodes.get('[name="pulse-mode"]').value, 'paid');
+  assert.equal(h.nodes.get('[data-pulse-free]').hidden, true);
+  assert.equal(h.nodes.get('[data-pulse-paid]').hidden, false);
   assert.equal(h.nodes.get('[data-pulse-check]').disabled, false);
-  assert.equal(h.nodes.get('[data-pulse-check] > span').textContent, 'Check price');
+  assert.equal(h.nodes.get('[data-pulse-check] > span').textContent, 'Refresh price');
   assert.ok(!h.calls.includes('/api/test/prepare')); assert.ok(!h.calls.includes('eth_sendTransaction'));
 });
 
@@ -396,12 +397,215 @@ test('capability outage and automatic read recovery preserve wallet/input/consen
   assert.ok(!h.calls.includes('personal_sign')); assert.ok(!h.calls.includes('/api/test/prepare')); assert.ok(!h.calls.includes('eth_sendTransaction'));
 });
 
+const freeOptions = (eligible = true) => ({ phase: 'free', free: eligible, paid: false,
+  saleStatus: { phase: 'free', paused: false, freeMinted: 1, freeMintQuota: 4 }, saleNotice: 'Free mint open · 1/4 slots used.' });
+const paidOptions = () => ({ phase: 'paid', free: false, paid: true, priceETH: '0.000001',
+  saleStatus: { phase: 'paid', paused: false, freeMinted: 4, freeMintQuota: 4 }, saleNotice: 'Free mint ended · 4/4 slots used.' });
+
+test('restored eligible wallet automatically selects the free phase without payment controls, price defaults or mint requests', async () => {
+  const h = await harness({ restoredWallet: true, initialOptions: freeOptions(), initialPhase: 'free', maximumETH: '' });
+  assert.equal(h.nodes.get('[data-pulse-options]').dataset.pulsePhase, 'free');
+  assert.equal(h.nodes.get('[data-pulse-title]').textContent, 'Free Mint');
+  assert.equal(h.nodes.get('[data-pulse-free]').hidden, false);
+  assert.equal(h.nodes.get('[data-pulse-paid]').hidden, true);
+  assert.equal(h.nodes.get('[data-pulse-check]').hidden, true);
+  assert.equal(h.nodes.get('[data-pulse-refresh]').hidden, true);
+  assert.equal(h.nodes.get('[name="pulse-mode"]').value, 'free');
+  assert.equal(h.nodes.get('[name="pulse-max-eth"]').value, '');
+  assert.equal(h.nodes.get('[name="pulse-max-eth"]').disabled, true);
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, false);
+  assert.equal(h.calls.filter(call => call === '/api/test/options').length, 1);
+  assert.match(h.nodes.get('[data-pulse-feedback]').textContent, /unused free mint slot/);
+  for (const forbidden of ['personal_sign', '/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
+  await h.mint();
+  assert.equal(h.calls.filter(call => call === 'eth_sendTransaction').length, 1, 'Only an explicit submit may mint the selected free slot');
+});
+
+test('free phase wallet without a slot sees eligibility explanation, never a paid choice or an enabled mint', async () => {
+  const h = await harness({ restoredWallet: true, initialOptions: freeOptions(false), initialPhase: 'free' });
+  assert.equal(h.nodes.get('[data-pulse-title]').textContent, 'Free Mint');
+  assert.equal(h.nodes.get('[data-pulse-paid]').hidden, true);
+  assert.equal(h.nodes.get('[data-pulse-free]').hidden, false);
+  assert.equal(h.nodes.get('[name="pulse-mode"]').value, '');
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+  assert.equal(h.nodes.get('[data-connect-wallet]').disabled, false);
+  assert.match(h.nodes.get('[data-pulse-feedback]').textContent, /This wallet has no available free mint slot/);
+  assert.doesNotMatch(h.nodes.get('[data-pulse-feedback]').className, /open-preview-warning/);
+  await h.mint();
+  for (const forbidden of ['/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
+});
+
+test('public phase updates display the free phase before sign-in without authorizing minting or checking wallet eligibility', async () => {
+  const h = await harness({ initialPhase: 'unknown' });
+  h.windowEvents.get('sg:readiness-changed')({ detail: { mintReady: true, saleStatus: freeOptions().saleStatus } });
+  await flush();
+  assert.equal(h.nodes.get('[data-pulse-title]').textContent, 'Free Mint');
+  assert.equal(h.nodes.get('[data-pulse-sale-status]').textContent, 'Free mint open · 1/4 slots used.');
+  assert.equal(h.nodes.get('[data-pulse-paid]').hidden, true);
+  assert.equal(h.nodes.get('[name="pulse-mode"]').value, '');
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+  assert.deepEqual(h.calls, ['/api/test/session']);
+});
+
+test('an observed free-to-paid transition rejects late same-wallet free quotes and preserves an empty explicit ceiling', async () => {
+  const h = await harness({ restoredWallet: true, initialOptions: freeOptions(), initialPhase: 'free', maximumETH: '' });
+  let releaseFree, releasePaid;
+  h.queueOptions(freeOptions(), new Promise(resolve => { releaseFree = resolve; }));
+  const oldQuote = h.nodes.get('[data-pulse-check]').handlers.click();
+  h.queueOptions(paidOptions(), new Promise(resolve => { releasePaid = resolve; }));
+  h.windowEvents.get('sg:readiness-changed')({ detail: { mintReady: true, saleStatus: paidOptions().saleStatus } });
+  assert.equal(h.nodes.get('[data-pulse-options]').dataset.pulsePhase, 'paid');
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+  assert.equal(h.nodes.get('[name="pulse-mode"]').value, '');
+  releaseFree(); await oldQuote;
+  assert.equal(h.nodes.get('[data-pulse-options]').dataset.pulsePhase, 'paid');
+  assert.equal(h.nodes.get('[data-pulse-check]').disabled, true, 'A stale free quote cannot release the newer paid read');
+  releasePaid(); await flush();
+  assert.equal(h.nodes.get('[data-pulse-title]').textContent, 'Mint price');
+  assert.equal(h.nodes.get('[data-pulse-paid]').hidden, false);
+  assert.equal(h.nodes.get('[data-pulse-free]').hidden, true);
+  assert.equal(h.nodes.get('[data-pulse-refresh]').hidden, false);
+  assert.equal(h.nodes.get('[name="pulse-mode"]').value, 'paid');
+  assert.equal(h.nodes.get('[name="pulse-max-eth"]').disabled, false);
+  assert.equal(h.nodes.get('[name="pulse-max-eth"]').value, '', 'Entering the paid phase cannot invent spending consent');
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true, 'Paid mint needs an explicit valid ceiling');
+  h.nodes.get('[name="pulse-max-eth"]').value = '0.0001';
+  h.nodes.get('[name="pulse-max-eth"]').handlers.input();
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, false);
+  for (const forbidden of ['personal_sign', '/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
+});
+
+test('paused public phase invalidates eligibility without switching to paid or allowing a stale quote to reopen minting', async () => {
+  const h = await harness({ restoredWallet: true, initialOptions: freeOptions(), initialPhase: 'free' });
+  let release;
+  h.queueOptions(freeOptions(), new Promise(resolve => { release = resolve; }));
+  const quote = h.nodes.get('[data-pulse-check]').handlers.click();
+  h.windowEvents.get('sg:readiness-changed')({ detail: { mintReady: false, saleStatus: { ...freeOptions().saleStatus, paused: true } } });
+  assert.equal(h.nodes.get('[data-pulse-title]').textContent, 'Free Mint');
+  assert.equal(h.nodes.get('[data-pulse-sale-status]').textContent, 'Minting is paused.');
+  assert.equal(h.nodes.get('[data-pulse-feedback]').textContent, 'Minting is paused.');
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+  assert.equal(h.nodes.get('[name="pulse-mode"]').value, '');
+  release(); await quote;
+  assert.equal(h.nodes.get('[data-pulse-sale-status]').textContent, 'Minting is paused.');
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+  assert.equal(h.nodes.get('[data-connect-wallet]').disabled, false);
+  await h.mint();
+  for (const forbidden of ['/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
+});
+
+test('allowlist revision changes fence old eligibility responses without changing the sale phase or quota', async () => {
+  const initial = { ...freeOptions(), saleStatus: { ...freeOptions().saleStatus, freeConfigRevision: '1' } };
+  const h = await harness({ restoredWallet: true, initialOptions: initial, initialPhase: 'free' });
+  h.windowEvents.get('sg:readiness-changed')({ detail: { mintReady: true, saleStatus: initial.saleStatus } }); await flush();
+  let releaseOld, releaseNew;
+  h.queueOptions(initial, new Promise(resolve => { releaseOld = resolve; }));
+  const oldQuote = h.nodes.get('[data-pulse-check]').handlers.click();
+  const revised = { ...freeOptions(false), saleStatus: { ...initial.saleStatus, freeConfigRevision: '2' } };
+  h.queueOptions(revised, new Promise(resolve => { releaseNew = resolve; }));
+  h.windowEvents.get('sg:readiness-changed')({ detail: { mintReady: true, saleStatus: revised.saleStatus } });
+  releaseOld(); await oldQuote;
+  assert.equal(h.nodes.get('[data-pulse-check]').disabled, true, 'Earlier policy response cannot settle the new policy read');
+  releaseNew(); await flush();
+  assert.equal(h.nodes.get('[name="pulse-mode"]').value, ''); assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+  assert.match(h.nodes.get('[data-pulse-feedback]').textContent, /no available free mint slot/);
+  assert.ok(!h.calls.includes('/api/test/prepare')); assert.ok(!h.calls.includes('eth_sendTransaction'));
+});
+
+test('phase and eligibility disagreement cannot authorize free or paid minting', async () => {
+  for (const quote of [{ ...freeOptions(), paid: true }, { ...freeOptions(), phase: 'paid' }, { ...paidOptions(), phase: 'free' }, { ...paidOptions(), phase: 'unknown' },
+    { ...freeOptions(), free: 'true' }, { ...freeOptions(), saleStatus: { ...freeOptions().saleStatus, phase: 'paid' } }]) {
+    const h = await harness({ restoredWallet: true, initialOptions: quote });
+    assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+    assert.equal(h.nodes.get('[name="pulse-mode"]').value, '');
+    assertWarning(h.nodes.get('[data-pulse-feedback]'), 'Mint availability could not be verified. Please try again shortly.');
+    await h.mint();
+    for (const forbidden of ['/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
+  }
+});
+
+test('changing the wallet while free eligibility is being checked cannot reuse the preceding wallet slot', async () => {
+  const walletState = { accounts: [WALLET], chainId: '0xaa36a7' };
+  const h = await harness({ restoredWallet: true, walletState, initialOptions: freeOptions(), initialPhase: 'free' });
+  let release;
+  h.queueOptions(freeOptions(), new Promise(resolve => { release = resolve; }));
+  const quote = h.nodes.get('[data-pulse-check]').handlers.click();
+  walletState.accounts = [CONTRACT]; h.walletEvents.get('accountsChanged')([CONTRACT]);
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+  release(); await quote;
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+  await h.mint();
+  for (const forbidden of ['/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
+});
+
+test('paid mint requires an explicit exact-wei ceiling without substituting a default or using floating-point rounding', async () => {
+  const h = await harness({ restoredWallet: true, initialOptions: { ...paidOptions(), priceWei: '1000000000001', priceETH: '0.000001000000000001' }, maximumETH: '' });
+  const cap = h.nodes.get('[name="pulse-max-eth"]'), submit = h.nodes.get('[data-request-submit]');
+  assert.equal(cap.value, ''); assert.equal(submit.disabled, true);
+  for (const invalid of ['', '0', '-1', '1e-6', '0.000001', '0.000001000000000000', '0.000100000000000001', '0.0000010000000000001']) {
+    cap.value = invalid; cap.handlers.input(); assert.equal(submit.disabled, true, invalid);
+  }
+  cap.value = '0.000001000000000001'; cap.handlers.input(); assert.equal(submit.disabled, false);
+  cap.value = '0.0001'; cap.handlers.input(); assert.equal(submit.disabled, false);
+  for (const forbidden of ['/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
+});
+
+test('free eligibility outages get at most two delayed read retries then an explicit Try again action, never a mint', async () => {
+  const h = await harness({ restoredWallet: true, initialOptions: freeOptions(), initialPhase: 'free', optionsError: 'Eligibility temporarily unavailable' });
+  const retry = delay => h.timers.findLast(timer => timer.ms === delay && !timer.cleared);
+  assert.equal(h.calls.filter(call => call === '/api/test/options').length, 1);
+  assert.equal(h.nodes.get('[data-pulse-check]').hidden, true);
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+  assert.ok(retry(10000)); retry(10000).fn(); await flush();
+  assert.equal(h.calls.filter(call => call === '/api/test/options').length, 2);
+  assert.ok(retry(20000)); retry(20000).fn(); await flush();
+  assert.equal(h.calls.filter(call => call === '/api/test/options').length, 3);
+  assert.equal(h.nodes.get('[data-pulse-check]').hidden, false);
+  assert.equal(h.nodes.get('[data-pulse-refresh]').hidden, false);
+  assert.equal(h.nodes.get('[data-pulse-check] > span').textContent, 'Try again');
+  h.setOptionsError(undefined); await h.nodes.get('[data-pulse-check]').handlers.click();
+  assert.equal(h.nodes.get('[data-pulse-check]').hidden, true);
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, false);
+  assert.match(h.nodes.get('[data-pulse-feedback]').textContent, /unused free mint slot/);
+  for (const forbidden of ['personal_sign', '/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
+});
+
+test('eligibility retries cancel on phase changes, wallet invalidation and leaving the page', async () => {
+  for (const interruption of ['phase', 'wallet', 'pagehide']) {
+    const h = await harness({ restoredWallet: true, initialOptions: freeOptions(), initialPhase: 'free', optionsError: 'Transport unavailable' });
+    const timer = h.timers.findLast(timer => timer.ms === 10000 && !timer.cleared); assert.ok(timer);
+    if (interruption === 'phase') h.windowEvents.get('sg:readiness-changed')({ detail: { mintReady: false, saleStatus: { phase: 'paid', paused: true, freeMinted: 4, freeMintQuota: 4 } } });
+    else if (interruption === 'wallet') h.walletEvents.get('accountsChanged')([]);
+    else h.windowEvents.get('pagehide')({});
+    assert.equal(timer.cleared, true, interruption);
+    assert.equal(h.calls.filter(call => call === '/api/test/options').length, 1);
+    for (const forbidden of ['personal_sign', '/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
+  }
+});
+
+test('authentication, integrity and malformed eligibility failures are never automatically retried', async () => {
+  for (const failure of [{ status: 401, code: 'CONNECT_WALLET' }, { status: 409, code: 'MINT_EVIDENCE_CONFLICT' }, { status: 409, code: 'REQUEST_UNAVAILABLE' }]) {
+    const h = await harness({ restoredWallet: true, initialPhase: 'free', fetchOverride: path => path === '/api/test/options'
+      ? { ok: false, status: failure.status, json: async () => ({ code: failure.code, error: 'Availability needs attention' }) } : undefined });
+    assert.equal(h.calls.filter(call => call === '/api/test/options').length, 1);
+    assert.equal(h.timers.filter(timer => [10000, 20000].includes(timer.ms) && !timer.cleared).length, 0);
+    assert.equal(h.nodes.get('[data-pulse-check]').hidden, false);
+    assert.equal(h.nodes.get('[data-pulse-check] > span').textContent, 'Try again');
+    assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+    for (const forbidden of ['personal_sign', '/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
+  }
+  const malformed = await harness({ restoredWallet: true, initialPhase: 'free', initialOptions: { ...freeOptions(), paid: true } });
+  assert.equal(malformed.timers.filter(timer => [10000, 20000].includes(timer.ms) && !timer.cleared).length, 0);
+  assert.equal(malformed.nodes.get('[data-request-submit]').disabled, true);
+});
+
 test('loading and connecting never prepare or send; explicit submit persists begin then sends once and reveals only observed inclusion', async () => {
   const h = await harness(); assert.deepEqual(h.calls, ['/api/test/session']);
   await h.connect(); assert.ok(!h.calls.includes('/api/test/prepare')); assert.ok(!h.calls.includes('eth_sendTransaction'));
   assert.equal(h.nodes.get('[data-pulse-sale-status]').textContent, 'Free mint ended · 2/2 slots used.');
   assert.doesNotMatch(h.nodes.get('[data-request-feedback]').textContent, /fixture|test MBTI|not Grok/i);
-  assert.notEqual(h.nodes.get('[name="pulse-mode"][value="paid"]').checked, true, 'A quote must not select spending consent');
+  assert.equal(h.nodes.get('[name="pulse-mode"]').value, 'paid');
+  assert.equal(h.nodes.get('[name="pulse-max-eth"]').value, '0.0001', 'A quote must preserve the explicit price ceiling');
   await Promise.all([h.mint(), h.mint()]);
   assert.equal(h.calls.filter(c => c === 'eth_sendTransaction').length, 1);
   assert.ok(h.calls.indexOf('/api/test/begin') < h.calls.indexOf('eth_sendTransaction'));
@@ -775,7 +979,8 @@ test('valid server proof silently restores the matching authorized wallet after 
   assert.ok(h.calls.includes('eth_accounts')); assert.ok(h.calls.includes('eth_chainId')); assert.ok(h.calls.includes('/api/test/options'));
   for (const forbidden of ['eth_requestAccounts', 'wallet_switchEthereumChain', 'personal_sign', '/api/test/challenge', '/api/test/verify',
     '/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
-  assert.notEqual(h.nodes.get('[name="pulse-mode"][value="paid"]').checked, true);
+  assert.equal(h.nodes.get('[name="pulse-mode"]').value, 'paid');
+  assert.equal(h.nodes.get('[name="pulse-max-eth"]').value, '0.0001');
 });
 
 test('missing permission, different account, wrong chain, unavailable provider and failed reads do not silently enable minting', async () => {
@@ -946,7 +1151,7 @@ test('slow verification is visible beside the wallet button and repeated clicks 
   release(); await flush();
   assert.equal(h.nodes.get('[data-connect-wallet]').disabled, false);
   assert.equal(h.nodes.get('[data-request-submit]').disabled, false);
-  assert.equal(h.nodes.get('[data-mint-feedback]').textContent, 'Wallet connected. Choose your mint option when ready.');
+  assert.equal(h.nodes.get('[data-mint-feedback]').textContent, 'Wallet connected.');
   assert.equal(h.calls.filter(c => c === 'personal_sign').length, 1);
 });
 
@@ -1042,7 +1247,7 @@ test('explicit recovery coalesces clicks, preserves styled spans, and unlocks on
   assert.equal(span.textContent, 'Check previous mint');
   assert.equal(h.nodes.get('[name="handle"]').value, 'SomeHandle');
   assert.equal(h.nodes.get('[name="pulse-max-eth"]').value, '0.0001');
-  assert.equal(h.nodes.get('[name="pulse-mode"]:checked').value, 'paid');
+  assert.equal(h.nodes.get('[name="pulse-mode"]').value, 'paid');
   assert.equal(h.nodes.get('[data-request-feedback]').textContent, 'The previous mint did not complete. You can mint when ready.');
   for (const forbidden of ['personal_sign', '/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
 });
@@ -1326,7 +1531,7 @@ test('recovery waits for silent wallet restoration without blocking an independe
   releaseAccounts(); await flush();
   assert.equal(h.nodes.get('[data-connect-wallet] > span').textContent, 'Change wallet');
   h.queueRecovery(retryProof); await h.nodes.get('[data-mint-recovery-check]').handlers.click();
-  assert.equal(h.nodes.get('[data-request-submit]').disabled, false);
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true, 'Recovery cannot replace the initial wallet eligibility/price quote');
   assert.equal(h.nodes.get('[data-pulse-check]').disabled, true);
   releasePrice(); await quote;
   assert.equal(h.nodes.get('[data-pulse-check]').disabled, false);
@@ -1334,7 +1539,7 @@ test('recovery waits for silent wallet restoration without blocking an independe
   for (const forbidden of ['personal_sign', '/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
 });
 
-test('price completion and failure cannot overwrite recovery progress or alter proof-based mint availability', async () => {
+test('price completion and failure cannot overwrite recovery progress and new minting still needs a valid quote', async () => {
   for (const completionOrder of ['price-first', 'recovery-first']) for (const priceFails of [false, true]) {
     let releasePrice, releaseRecovery;
     const priceGate = new Promise(resolve => { releasePrice = resolve; }), recoveryGate = new Promise(resolve => { releaseRecovery = resolve; });
@@ -1360,7 +1565,7 @@ test('price completion and failure cannot overwrite recovery progress or alter p
       releasePrice(); await quote;
     }
     assert.equal(h.storage.has('sg-sepolia-pending'), false);
-    assert.equal(h.nodes.get('[data-request-submit]').disabled, false);
+    assert.equal(h.nodes.get('[data-request-submit]').disabled, priceFails);
     assert.equal(h.nodes.get('[data-request-feedback]').textContent, 'The previous mint did not complete. You can mint when ready.');
     assert.equal(h.nodes.get('[data-mint-recovery-check]').disabled, false);
     if (priceFails) assertWarning(h.nodes.get('[data-pulse-feedback]'), 'Price unavailable');

@@ -16,6 +16,47 @@ const publicMint: PublicPreviewState = {
   imageUrl: "/art/archived-mint.svg", url: "/signatures/alice_bob_key",
 };
 
+it('shows the relay sale phase on home without making visitors select free or paid', () => {
+  for (const [phase, label, notice] of [
+    ['free', 'Free Mint', 'Free mint open · 1/4 slots used.'],
+    ['paid', 'Paid Mint', 'Paid mint open · Free mint ended.'],
+    ['unknown', 'Mint a signature', 'Checking mint availability…'],
+  ] as const) {
+    const html = homePage({ pulseMint: true, pulseSaleStatus: { phase, paused: false, freeMinted: 1, freeMintQuota: 4 } });
+    expect(html).toContain(`<span data-home-mint-label>${label}</span>`);
+    expect(html).toContain(`data-home-mint-status role="status">${notice}</p>`);
+    expect(html).not.toContain('type="radio"');
+    expect(html).not.toContain('Warning</strong>');
+  }
+  expect(homePage({ pulseMint: true, pulseSaleStatus: { phase: 'free', paused: true } })).toContain('Minting is paused.');
+});
+
+it('renders only the active phase controls and does not pre-authorize a wallet from public sale presentation', () => {
+  const free = mintPage('', { pulseMint: true, pulseSaleStatus: { phase: 'free', paused: false } });
+  expect(free).toContain('data-pulse-title>Free Mint</h2>');
+  expect(free).toContain('data-pulse-paid hidden>');
+  expect(free).toContain('data-pulse-refresh hidden>');
+  expect(free).toContain('data-pulse-free>No mint fee. You pay network gas.');
+  expect(free).toContain('Connect your wallet to check your free mint slot.');
+  const paid = mintPage('', { pulseMint: true, pulseSaleStatus: { phase: 'paid', paused: false } });
+  expect(paid).toContain('data-pulse-title>Mint price</h2>');
+  expect(paid).toContain('<div data-pulse-paid>');
+  expect(paid).toContain('data-pulse-free hidden>');
+  expect(paid).toContain('Connect your wallet to check the current price.');
+  const unknown = mintPage('', { pulseMint: true });
+  expect(unknown).toContain('data-pulse-phase="unknown"');
+  expect(unknown).toContain('data-pulse-title>Mint availability</h2>');
+  expect(unknown).toContain('data-pulse-paid hidden>');
+  expect(unknown).toContain('data-pulse-free hidden>');
+  for (const html of [free, paid, unknown]) {
+    expect(html).toContain('type="hidden" name="pulse-mode" value=""');
+    expect(html).toContain('data-request-submit disabled');
+    expect(html).not.toContain('Choose how to mint');
+    expect(html).not.toContain('type="radio"');
+    expect(html).not.toContain('value="0.0001"');
+  }
+});
+
 it('server-rendered failures and uncertain submissions share the inline warning style, not ordinary progress', () => {
   for (const status of ['failed', 'abstained'] as const) {
     const page = assessmentPage({ ...ready, status, canMint: false, error: '<script>bad</script>' });
@@ -229,7 +270,7 @@ describe("open mint pages", () => {
     const html = homePage({}, entries);
     const intro = html.match(/<section class="open-intro"[^>]*>([\s\S]*?)<\/section>/)?.[1];
     expect(intro).toBeDefined();
-    expect(intro).toMatch(/^<p class="home-guidance">[\s\S]*?<\/p><div class="auth-actions"><a class="auth-action home-mint-cta" href="\/mint"><span>Mint a signature<\/span><\/a><\/div><details\b/);
+    expect(intro).toMatch(/^<p class="home-guidance">[\s\S]*?<\/p><div class="auth-actions"><a class="auth-action home-mint-cta" href="\/mint"[^>]*><span data-home-mint-label>Mint a signature<\/span><\/a><\/div><p[^>]*data-home-mint-status[^>]*><\/p><details\b/);
     const disclosure = intro!.match(/<details\b([^>]*)>([\s\S]*?)<\/details>/);
     expect(disclosure?.[1]).toBe(' class="auth-disclosure open-handoff"');
     expect(disclosure?.[1]).not.toMatch(/\bopen\b(?:\s|=|$)/);
@@ -302,7 +343,7 @@ describe("open mint pages", () => {
     expect(html).toContain('aria-label="My Collection"');
     expect(html).toContain(SITE_CSS_URL);
     expect(html).toContain('playpen-sans-latin-wght-normal.woff2');
-    expect(html).toContain('href="/mint"><span>Mint a signature</span>');
+    expect(html).toContain('href="/mint" data-home-mint-cta aria-describedby="home-mint-status"><span data-home-mint-label>Mint a signature</span>');
     expect(html).not.toContain('data-assessment-request');
     expect(html).not.toMatch(/Sign in with X|Claim with X|withdraw|\/auth\/x/);
     expect(OPEN_MINT_CSS).not.toMatch(/font-family:|--paper:|--font-family:/);
@@ -477,7 +518,7 @@ describe("open mint pages", () => {
     const html = mintPage("Alice", { pulseMint });
     const titles = [...html.matchAll(/<(?:span|h2)\b[^>]*class="mint-section-title"[^>]*>([^<]+)<\/(?:span|h2)>/g)]
       .map(match => match[1]);
-    expect(titles).toEqual(["Choose any X handle.", "To your wallet", ...(pulseMint ? ["Mint price", "Resolve previous mint"] : [])]);
+    expect(titles).toEqual(["Choose any X handle.", "To your wallet", ...(pulseMint ? ["Mint availability", "Resolve previous mint"] : [])]);
     expect(html).toContain('<label for="open-handle"><span class="mint-section-title">Choose any X handle.</span><input');
     expect(html).toContain('aria-labelledby="recipient-heading"><h2 id="recipient-heading" class="mint-section-title"');
     expect(OPEN_MINT_CSS).toContain(".open-mint .mint-entry-sheet .mint-section-title{display:block;min-width:0;font-size:14px;font-weight:var(--ui-font-weight);line-height:1.6;");
@@ -543,8 +584,7 @@ describe("open mint pages", () => {
     expect(css).not.toContain(".mint-entry-ceiling [name=pulse-max-eth]{");
     expect(css).not.toContain(".mint-entry-action [data-request-submit]{");
     expect(declarations(`${SITE_FIELD_SELECTOR}:disabled`)).toContain("cursor:not-allowed");
-    expect(declarations(".open-mint .mint-entry-modes label")).toContain("font-size:16px");
-    expect(declarations(".open-mint .mint-entry-modes label")).toContain("min-height:48px");
+    expect(OPEN_MINT_CSS).not.toContain("mint-entry-modes");
 
     const disconnected = mintPage("Alice", { pulseMint: true });
     const connected = mintPage("Alice", { pulseMint: true, wallet: "0x123", walletVerified: true });
@@ -553,12 +593,11 @@ describe("open mint pages", () => {
     for (const html of [disconnected, connected]) {
       expect(html).toContain('data-assessment-request data-pulse-mint="true"');
       expect(html).toContain('data-connect-wallet><span>');
-      expect(html).toContain('data-pulse-check><span>Check price</span>');
+      expect(html).toContain('data-pulse-check><span>Refresh price</span>');
       expect(html).toContain('class="open-handle-input" name="pulse-max-eth"');
       expect(html).toContain('class="auth-action" data-mint-result-link');
       expect(html).toContain('data-mint-another><span>Mint another signature</span>');
-      expect(html).toContain('name="pulse-mode" value="free" disabled');
-      expect(html).toContain('name="pulse-mode" value="paid" disabled');
+      expect(html).toContain('type="hidden" name="pulse-mode" value=""');
       expect(html).not.toMatch(/\bchecked(?:\s|=|>)/);
       expect(html.indexOf("Minting creates a permanent public token. Network gas is additional."))
         .toBeLessThan(html.indexOf("data-request-submit"));
@@ -580,28 +619,26 @@ describe("open mint pages", () => {
 
   it("keeps payment consent and irreversible-mint disclosures visible before the artistic entry CTA", () => {
     const html = mintPage("Alice", { pulseMint: true, wallet: "0x123", walletVerified: true,
-      pulseSaleNotice: "Free mint ended · 2/2 slots used." });
+      pulseSaleNotice: "Free mint ended · 2/2 slots used.", pulseSaleStatus: { phase: "paid", paused: false, freeMinted: 2, freeMintQuota: 2 } });
     const form = html.match(/<form\b[^>]*data-assessment-request[^>]*>([\s\S]*?)<\/form>/)?.[1];
     expect(form).toBeDefined();
     expect(html).toContain('data-assessment-request data-pulse-mint="true"');
-    const modes = form?.match(/<fieldset class="mint-entry-modes">([\s\S]*?)<\/fieldset>/)?.[1];
-    expect(modes).toContain('<legend class="visually-hidden">Choose how to mint</legend>');
-    expect(modes?.match(/<input\b[^>]*name="pulse-mode"[^>]*>/g)).toHaveLength(2);
-    expect(modes).toContain('type="radio" name="pulse-mode" value="free" disabled');
-    expect(modes).toContain('type="radio" name="pulse-mode" value="paid" disabled');
-    expect(modes).not.toMatch(/\bchecked(?:\s|=|>)/);
+    expect(form?.match(/<input\b[^>]*name="pulse-mode"[^>]*>/g)).toHaveLength(1);
+    expect(form).toContain('type="hidden" name="pulse-mode" value=""');
+    expect(form).not.toContain('type="radio"');
+    expect(form).not.toContain('Choose how to mint');
     expect(form).toContain('name="pulse-max-eth" inputmode="decimal" placeholder="Your ceiling" disabled aria-describedby="mint-price-note"');
     for (const disclosure of ["Maximum mint price (ETH)", "Paid mint sends your ceiling; unused ETH is refunded.",
-      "Free slots expire with the free phase.", "Grok chooses the final signature.", "Reveal after minting.",
+      "Grok chooses the final signature.", "Reveal after minting.",
       "Minting creates a permanent public token. Network gas is additional."]) {
       expect(form).toContain(disclosure);
       expect(form!.indexOf(disclosure)).toBeLessThan(form!.indexOf('data-request-submit'));
     }
-    expect(form).toContain('data-pulse-check><span>Check price</span>');
+    expect(form).toContain('data-pulse-check><span>Refresh price</span>');
     expect(form).toContain('data-pulse-sale-status role="status">Free mint ended · 2/2 slots used.');
     expect(form).toContain('data-request-submit><span>Mint &amp; reveal</span>');
     expect(form).not.toMatch(/<details\b|<summary\b|checkbox/);
-    expect(form).not.toContain('No mint fee.');
+    expect(form).toContain('data-pulse-free hidden>No mint fee.');
   });
 
   it("places the one conditional operational warning immediately beneath the mint CTA", () => {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
-import { fixtureMbti, testConsent, saleNotice, presentedSepoliaMints, collectionObservationFailure, supersededReceiptHints } from '../../scripts/pulse-sepolia-site.mjs';
+import { fixtureMbti, testConsent, saleNotice, publicSaleStatus, presentedSepoliaMints, collectionObservationFailure, supersededReceiptHints } from '../../scripts/pulse-sepolia-site.mjs';
 import { isMbti } from '../../src/openMint/identity.ts';
 import { requireFreshMintSnapshot, publicFailure } from '../../scripts/pulse-sepolia-errors.mjs';
 import { PublicError } from '../../src/openMint/security.ts';
@@ -11,6 +11,18 @@ test('sale status explains exhaustion, deadline, open and paused states without 
   assert.equal(saleNotice({ ...sale, endReason: 2, freeMinted: 1n }), 'Free mint ended · Deadline reached · 1/2 slots used.');
   assert.equal(saleNotice({ ...sale, phase: 0, freeMinted: 0n }), 'Free mint open · 0/2 slots used.');
   assert.equal(saleNotice({ ...sale, paused: true }), 'Minting is paused.');
+});
+test('public sale presentation carries the active phase and quota, never wallet eligibility', () => {
+  assert.deepEqual(publicSaleStatus(), { phase: 'unknown', paused: false });
+  const sale = { phase: 0, paused: false, freeMinted: 1n, freeSlotCount: 1000n, freeMintQuota: 4n };
+  assert.deepEqual(publicSaleStatus(sale), { phase: 'free', paused: false, freeMinted: 1, freeMintQuota: 4 });
+  assert.deepEqual(publicSaleStatus({ ...sale, phase: 1, paused: true }), { phase: 'paid', paused: true, freeMinted: 1, freeMintQuota: 4 });
+  assert.deepEqual(publicSaleStatus({ ...sale, freeMintQuota: 2n ** 100n }), { phase: 'free', paused: false });
+  assert.deepEqual(publicSaleStatus({ ...sale, freeMintQuota: undefined }), { phase: 'free', paused: false, freeMinted: 1, freeMintQuota: 1000 });
+  assert.equal(publicSaleStatus({ ...sale, freeDeadline: 101n }, 100).phase, 'free');
+  assert.deepEqual(publicSaleStatus({ ...sale, freeDeadline: 101n }, 101), { phase: 'unknown', paused: false });
+  assert.equal(publicSaleStatus({ ...sale, phase: 1, freeDeadline: 101n }, 102).phase, 'paid');
+  assert.throws(() => publicSaleStatus({ ...sale, phase: 2 }));
 });
 test('test consent requires an explicit phase, valid handle and bounded ETH ceiling', () => {
   assert.deepEqual(testConsent({ handle: '@Alice_Bob', mode: 'paid', maximumETH: '0.0001' }), { handle: 'alice_bob', renderHandle: 'Alice_Bob', mode: 'paid', cap: 100000000000000n });

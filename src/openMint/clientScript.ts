@@ -62,6 +62,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
   let bootGeneration = 0, assessmentGeneration = 0, mintGeneration = 0;
   let assessmentBusy = false, mintPollBusy = false, readFailures = 0, bootFailures = 0;
   let bootFeedback = null;
+  const pulseControllers = [];
   let requestDeadline = 0, proofDeadline = 0;
   let reservedUntil = 0;
   const wallets = createWalletProviders(window);
@@ -121,7 +122,23 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
     }
     all('[data-assessment-request]').forEach((form) => {
       const button = form.querySelector('button[type=submit]');
-      if (button) button.disabled = booting || !verified || walletBusy || mintBusy || requestBusy;
+      let pulseReady = true;
+      if (form.dataset.pulseMint === 'true') {
+        try {
+          const q = JSON.parse(form.dataset.pulseQuote || 'null');
+          const requestedHandle = (form.querySelector('input[name=handle]')?.value || '').trim().replace(/^@/, '').toLowerCase();
+          pulseReady = Boolean(q && !form.dataset.pulseChecking && q.validUntil > Date.now() && q.handle === requestedHandle && sameAddress(q.wallet, verified) && (q.phase === 'paid' || (q.phase === 'free' && q.freeAvailable === true)));
+          if (pulseReady && q.phase === 'paid') {
+            const value = (form.querySelector('input[name=pulse-max-eth]')?.value || '').trim();
+            pulseReady = value.length <= 80 && /^(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/.test(value);
+            if (pulseReady) {
+              const parts = value.split('.'), ceiling = BigInt(parts[0]) * 1000000000000000000n + BigInt((parts[1] || '').padEnd(18, '0'));
+              pulseReady = ceiling > 0n && ceiling < (1n << 256n) && ceiling >= BigInt(q.priceWei);
+            }
+          }
+        } catch { pulseReady = false; }
+      }
+      if (button) button.disabled = booting || !verified || walletBusy || mintBusy || requestBusy || !pulseReady;
     });
     const blocked = !page || !ui().canSubmit || reservedUntil > Date.now();
     const mint = one('[data-submit-mint]');
@@ -129,7 +146,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
     const dev = one('[data-dev-mint]');
     if (dev) dev.disabled = Boolean(blocked || walletMode !== 'local');
   };
-  const invalidateWallet = () => { walletGeneration++; verified = null; proofDeadline = 0; storageRemove(intentKey); storageRemove('wallet-mode'); updateButtons(); };
+  const invalidateWallet = () => { walletGeneration++; verified = null; proofDeadline = 0; storageRemove(intentKey); storageRemove('wallet-mode'); pulseControllers.forEach(controller => controller.invalidate()); updateButtons(); };
   const recoverError = error => {
     if (stopped) return;
     if (['WALLET_PROOF_REQUIRED', 'CHALLENGE_EXPIRED', 'CHALLENGE_REPLACED', 'INVALID_PROOF'].includes(error?.code)) invalidateWallet();
@@ -303,6 +320,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
     if (mode === 'injected') storageSet('wallet-provider', selectedWallet?.key);
     message('[data-wallet-label]', address);
     all('[data-connect-wallet]').forEach(button => { (button.querySelector('span') || button).textContent = 'Change wallet'; });
+    pulseControllers.forEach(controller => { void controller.refresh(); });
     updateButtons();
   };
   const reveal = (state) => {
@@ -642,25 +660,83 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
     input?.addEventListener('input', updatePreview);
     updatePreview();
     if(form.dataset.pulseMint === 'true') {
-      const clear = () => { delete form.dataset.pulseQuote; form.querySelectorAll('input[name=pulse-mode]').forEach(r => {r.checked=false;r.disabled=true;}); const cap=form.querySelector('input[name=pulse-max-eth]'); if(cap) cap.disabled=true; };
-      input?.addEventListener('input',clear);
-      form.querySelector('[data-pulse-check]')?.addEventListener('click',async () => {
-        clear();
-        const handle=(input?.value || '').trim().replace(/^@/,'');
-        const generation=walletGeneration;
-        if(!verified || !/^[A-Za-z0-9_]{1,15}$/.test(handle)) { message('[data-pulse-feedback]','Enter a handle and connect your wallet first.', true); return; }
+      const section = form.querySelector('[data-pulse-options]');
+      const mode = form.querySelector('input[name=pulse-mode]');
+      const cap = form.querySelector('input[name=pulse-max-eth]');
+      const refreshButton = form.querySelector('[data-pulse-check]');
+      let quoteGeneration = 0, quoteTimer, quoteFailures = 0;
+      const phaseView = phase => {
+        if (section) section.dataset.pulsePhase = phase;
+        const title = form.querySelector('[data-pulse-title]');
+        if (title) title.textContent = phase === 'free' ? 'Free Mint' : phase === 'paid' ? 'Mint price' : 'Mint availability';
+        const paid = form.querySelector('[data-pulse-paid]'); if (paid) paid.hidden = phase !== 'paid';
+        const free = form.querySelector('[data-pulse-free]'); if (free) free.hidden = phase !== 'free';
+        const refreshWrapper = form.querySelector('[data-pulse-refresh]'); if (refreshWrapper) refreshWrapper.hidden = phase !== 'paid';
+        if (refreshButton) { refreshButton.hidden = phase !== 'paid'; (refreshButton.querySelector('span') || refreshButton).textContent = 'Refresh price'; }
+      };
+      const clear = () => {
+        delete form.dataset.pulseQuote; delete form.dataset.pulseChecking;
+        if (mode) mode.value = '';
+        if (cap) cap.disabled = true;
+        updateButtons();
+      };
+      const invalidate = () => {
+        quoteGeneration++; clearTimeout(quoteTimer); clear();
+        message('[data-pulse-feedback]', verified ? 'Enter an X handle to check mint availability.' : 'Connect your wallet to check eligibility.');
+      };
+      const refresh = async () => {
+        if (stopped) return;
+        if (mintBusy || requestBusy) { clearTimeout(quoteTimer); quoteTimer = setTimeout(refresh, 2500); return; }
+        const handle = (input?.value || '').trim().replace(/^@/, '');
+        const generation = walletGeneration, quote = ++quoteGeneration;
+        clearTimeout(quoteTimer); clear();
+        if (!verified || !/^[A-Za-z0-9_]{1,15}$/.test(handle)) {
+          message('[data-pulse-feedback]', verified ? 'Enter an X handle to check mint availability.' : 'Connect your wallet to check eligibility.');
+          return;
+        }
+        form.dataset.pulseChecking = 'true';
+        if (refreshButton) refreshButton.disabled = true;
+        message('[data-pulse-feedback]', 'Checking mint availability…');
+        updateButtons();
         try {
           const q=await readJson('/api/mints/options?handle='+encodeURIComponent(handle));
-          if(generation !== walletGeneration || (input?.value || '').trim().replace(/^@/,'') !== handle || q.version !== 'sg-pulse-mint-options-v1' || q.handle !== handle.toLowerCase() || !sameAddress(q.wallet,verified) || !['free','paid'].includes(q.phase) || typeof q.priceWei !== 'string' || q.priceWei.length > 78 || !/^(0|[1-9][0-9]*)$/.test(q.priceWei) || BigInt(q.priceWei) >= (1n << 256n) || !Array.isArray(q.availableSlots) || q.availableSlots.length > 2048 || q.availableSlots.some(s => typeof s !== 'string' || !/^(0|[1-9][0-9]*)$/.test(s)) || !Number.isFinite(q.validUntil) || q.validUntil <= Date.now()) throw new Error('Mint options could not be verified.');
-          const snapshot={handle:q.handle,wallet:q.wallet,validUntil:q.validUntil,phase:q.phase,priceWei:q.priceWei};
+          if (stopped || quote !== quoteGeneration || generation !== walletGeneration || (input?.value || '').trim().replace(/^@/, '') !== handle) return;
+          if(q.version !== 'sg-pulse-mint-options-v1' || q.handle !== handle.toLowerCase() || !sameAddress(q.wallet,verified) || !['free','paid'].includes(q.phase) || typeof q.priceWei !== 'string' || q.priceWei.length > 78 || !/^(0|[1-9][0-9]*)$/.test(q.priceWei) || BigInt(q.priceWei) >= (1n << 256n) || (q.phase === 'free' && q.priceWei !== '0') || !Array.isArray(q.availableSlots) || q.availableSlots.length > 2048 || q.availableSlots.some(s => typeof s !== 'string' || !/^(0|[1-9][0-9]*)$/.test(s)) || !Number.isFinite(q.validUntil) || q.validUntil <= Date.now()) throw new Error('Mint availability could not be verified.');
+          const snapshot={handle:q.handle,wallet:q.wallet,validUntil:q.validUntil,phase:q.phase,priceWei:q.priceWei,freeAvailable:q.phase === 'free' && q.availableSlots.length > 0};
           form.dataset.pulseQuote=JSON.stringify(snapshot);
-          form.querySelector('input[name=pulse-mode][value=free]').disabled=q.phase !== 'free' || !q.availableSlots.length;
-          form.querySelector('input[name=pulse-mode][value=paid]').disabled=q.phase !== 'paid';
-          form.querySelector('input[name=pulse-max-eth]').disabled=q.phase !== 'paid';
+          if (mode) mode.value = q.phase;
+          if (cap) cap.disabled = q.phase !== 'paid';
+          phaseView(q.phase);
           const wei=BigInt(q.priceWei), eth=(wei / 1000000000000000000n).toString()+'.'+(wei % 1000000000000000000n).toString().padStart(18,'0');
-          message('[data-pulse-feedback]',q.phase === 'free' ? q.availableSlots.length ? 'Free mint available. Choose a slot-funded mint below.' : 'No unused free slot is available for this wallet.' : 'Current Pulse price: '+eth+' ETH. Choose paid mint and set your ceiling.');
-        } catch(error) {clear();message('[data-pulse-feedback]',errorText(error), true);}
+          message('[data-pulse-feedback]', q.phase === 'free' ? q.availableSlots.length ? 'Your wallet has '+q.availableSlots.length+' free mint '+(q.availableSlots.length === 1 ? 'slot.' : 'slots.') : 'This wallet has no unused free mint slots. Paid mint opens when the free phase ends.' : 'Current Pulse price: '+eth+' ETH. Set your ceiling; unused payment is refunded.');
+          quoteFailures = 0;
+          quoteTimer = setTimeout(refresh, Math.max(2500, Math.min(2147483647, q.validUntil - Date.now())));
+        } catch(error) {
+          if (stopped || quote !== quoteGeneration || generation !== walletGeneration) return;
+          recoverError(error);
+          if (generation !== walletGeneration) return;
+          clear(); phaseView('unknown'); message('[data-pulse-feedback]', errorText(error), true);
+          quoteTimer = setTimeout(refresh, retryDelay(++quoteFailures));
+        } finally {
+          if (!stopped && quote === quoteGeneration && generation === walletGeneration) {
+            delete form.dataset.pulseChecking;
+            if (refreshButton) refreshButton.disabled = false;
+            updateButtons();
+          }
+        }
+      };
+      pulseControllers.push({ refresh, invalidate, dispose: () => { quoteGeneration++; clearTimeout(quoteTimer); } });
+      input?.addEventListener('input', () => { invalidate(); if (verified) quoteTimer = setTimeout(refresh, 500); });
+      cap?.addEventListener('input', updateButtons);
+      refreshButton?.addEventListener('click', refresh);
+      window.addEventListener('focus', () => { if (verified && !walletBusy && !mintBusy && !requestBusy) void refresh(); });
+      window.addEventListener('sg:readiness-changed', event => {
+        if (event.detail?.mintReady !== true || !verified || walletBusy || mintBusy || requestBusy) return;
+        let q; try { q = JSON.parse(form.dataset.pulseQuote || 'null'); } catch {}
+        if (!q || q.validUntil <= Date.now() || (['free', 'paid'].includes(event.detail.saleStatus?.phase) && q.phase !== event.detail.saleStatus.phase)) void refresh();
       });
+      if (!['free', 'paid'].includes(section?.dataset.pulsePhase || '')) phaseView('unknown');
+      if (verified) void refresh();
     }
   });
   all('[data-assessment-request]').forEach((form) => form.addEventListener('submit', async (event) => {
@@ -673,17 +749,21 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
     let mintIntent;
     if(form.dataset.pulseMint === 'true') {
       try {
-        const q=JSON.parse(form.dataset.pulseQuote || 'null'), chosen=form.querySelector('input[name=pulse-mode]:checked');
-        if(!q || q.validUntil <= Date.now() || q.handle !== requestedHandle.toLowerCase() || !sameAddress(q.wallet,verified) || !chosen || chosen.disabled || chosen.value !== q.phase) throw new Error('Check mint options and choose a mint mode first.');
-        let maxPriceWei='0';
-        if(chosen.value === 'paid') {
-          const value=(form.querySelector('input[name=pulse-max-eth]')?.value || '').trim();
-          if(!/^(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/.test(value)) throw new Error('Enter your maximum mint price in ETH.');
-          const parts=value.split('.'); maxPriceWei=(BigInt(parts[0])*1000000000000000000n+BigInt((parts[1] || '').padEnd(18,'0'))).toString();
-          if(BigInt(maxPriceWei) >= 2n**256n || BigInt(maxPriceWei) < BigInt(q.priceWei)) throw new Error('Your ceiling is below the quoted price or out of range.');
+        const q=JSON.parse(form.dataset.pulseQuote || 'null');
+        if(!q || form.dataset.pulseChecking || q.validUntil <= Date.now() || q.handle !== requestedHandle.toLowerCase() || !sameAddress(q.wallet,verified) || !['free', 'paid'].includes(q.phase)) {
+          pulseControllers.forEach(controller => { void controller.refresh(); });
+          throw new Error('Checking mint availability. Please wait a moment.');
         }
-        mintIntent={mode:chosen.value,maxPriceWei};
-      } catch(error) {message('[data-request-feedback]',errorText(error), true);return;}
+        if(q.phase === 'free' && q.freeAvailable !== true) throw new Error('This wallet has no unused free mint slots. Paid mint opens when the free phase ends.');
+        let maxPriceWei='0';
+        if(q.phase === 'paid') {
+          const value=(form.querySelector('input[name=pulse-max-eth]')?.value || '').trim();
+          if(value.length > 80 || !/^(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/.test(value)) throw new Error('Enter your maximum mint price in ETH.');
+          const parts=value.split('.'); maxPriceWei=(BigInt(parts[0])*1000000000000000000n+BigInt((parts[1] || '').padEnd(18,'0'))).toString();
+          if(BigInt(maxPriceWei) === 0n || BigInt(maxPriceWei) >= 2n**256n || BigInt(maxPriceWei) < BigInt(q.priceWei)) throw new Error('Your ceiling is below the quoted price or out of range.');
+        }
+        mintIntent={mode:q.phase,maxPriceWei};
+      } catch(error) {message('[data-request-feedback]',errorText(error), error?.message !== 'Checking mint availability. Please wait a moment.');return;}
     }
     requestBusy = true; updateButtons();
     const recipient = verified, mode = walletMode, generation = walletGeneration;
@@ -777,7 +857,7 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
   const onChain = () => { const label = one('[data-mint-network]'); if (label) label.hidden = true; if (walletBusy) walletGeneration++; else { invalidateWallet(); feedback('The wallet network changed. Connect it again before continuing.', true); } };
   const onDisconnect = () => { invalidateWallet(); feedback('The selected wallet disconnected. Unlock it and reconnect. Any submitted mint is still being checked.', true); };
   bindWallet(wallets.restore(storageGet('wallet-provider')));
-  window.addEventListener('pagehide', () => { stopped = true; bootGeneration++; assessmentGeneration++; mintGeneration++; inspectionGeneration++; clearTimeout(timer); clearTimeout(bootTimer); clearTimeout(expiryTimer); abort.abort(); cancelWalletChoice?.(); bindWallet(null); wallets.dispose(); }, { once: true });
+  window.addEventListener('pagehide', () => { stopped = true; bootGeneration++; assessmentGeneration++; mintGeneration++; inspectionGeneration++; clearTimeout(timer); clearTimeout(bootTimer); clearTimeout(expiryTimer); pulseControllers.forEach(controller => controller.dispose()); abort.abort(); cancelWalletChoice?.(); bindWallet(null); wallets.dispose(); }, { once: true });
   window.addEventListener('pageshow', (event) => { if (event.persisted) location.reload(); });
   const boot = async () => {
     if (stopped || (!page && !one('[data-assessment-request]'))) return;

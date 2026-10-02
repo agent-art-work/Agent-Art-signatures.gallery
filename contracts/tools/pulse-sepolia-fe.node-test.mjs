@@ -9,7 +9,8 @@ test('read-only Sepolia FE serves the correct network and previews but refuses a
   const site = await startSepoliaFrontend({ port: 32004, collection: '0x88c435146A017338E48Abe3BEE2F11BcEab79cC2' });
   t.after(site.close);
   const response = await fetch(site.origin + '/mint?handle=AnAgentArtist'), html = await response.text();
-  assert.equal(response.status, 200); assert.match(html, /Ethereum Sepolia/); assert.doesNotMatch(html, /Local Anvil|No mint fee/);
+  assert.equal(response.status, 200); assert.match(html, /Ethereum Sepolia/); assert.doesNotMatch(html, /Local Anvil/);
+  assert.match(html, /data-pulse-phase="unknown"/); assert.match(html, /data-pulse-free hidden>No mint fee/);
   assert.match(html, /data-pulse-mint="true"/); assert.match(html, /value="AnAgentArtist"/);
   assert.match(html, /data-request-submit disabled/); assert.match(html, /cannot be checked right now/);
   const health = await (await fetch(site.origin + '/health')).json();

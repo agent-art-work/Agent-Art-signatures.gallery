@@ -1,7 +1,7 @@
 /** Read-only progressive recovery. No wallet API, form submission, consent,
  * authorization, transaction or navigation is initiated by this monitor. */
 export function sepoliaReadinessClient() {
-  let timer, stopped = false, revision, lastReady, generation = 0, pollFailures = 0, pollFailureSince, readyUntil = 0;
+  let timer, stopped = false, revision, lastReady, lastSale, saleRevision, generation = 0, pollFailures = 0, pollFailureSince, readyUntil = 0;
   const $ = selector => document.querySelector(selector);
   const mintProcess = () => !!($('[data-mint-process]') || $('[data-mint-entry]') || $('[data-assessment-code]'));
   const unavailableMint = 'Mint availability cannot be checked right now. Please try again shortly.';
@@ -26,10 +26,25 @@ export function sepoliaReadinessClient() {
       }
     }
   }
-  function readiness(ready) {
-    if (ready === lastReady) return;
+  function readiness(ready, saleStatus = lastSale) {
+    const nextSaleRevision = JSON.stringify(saleStatus);
+    if (ready === lastReady && nextSaleRevision === saleRevision) return;
     lastReady = ready;
-    window.dispatchEvent(new CustomEvent('sg:readiness-changed', { detail: { mintReady: ready } }));
+    lastSale = saleStatus; saleRevision = nextSaleRevision;
+    window.dispatchEvent(new CustomEvent('sg:readiness-changed', { detail: { mintReady: ready, saleStatus } }));
+  }
+  function salePresentation(sale) {
+    if (!sale || !['free', 'paid', 'unknown'].includes(sale.phase) || typeof sale.paused !== 'boolean') return undefined;
+    const label = $('[data-home-mint-label]'), status = $('[data-home-mint-status]');
+    if (label) label.textContent = sale.phase === 'free' ? 'Free Mint' : sale.phase === 'paid' ? 'Paid Mint' : 'Mint a signature';
+    if (status) {
+      const count = Number.isSafeInteger(sale.freeMinted) && sale.freeMinted >= 0 && Number.isSafeInteger(sale.freeMintQuota)
+        && sale.freeMintQuota >= sale.freeMinted ? ` · ${sale.freeMinted}/${sale.freeMintQuota} slots used.` : '.';
+      status.textContent = sale.paused ? 'Minting is paused.' : sale.phase === 'free' ? 'Free mint open' + count
+        : sale.phase === 'paid' ? 'Paid mint open · Free mint ended.' : 'Checking mint availability…';
+      status.hidden = false;
+    }
+    return sale;
   }
   async function update() {
     if (stopped) return;
@@ -56,7 +71,7 @@ export function sepoliaReadinessClient() {
       const collectionPage = !!$('[data-collection-page]');
       notice(mintPage ? state.safetyHalted ? state.mintNotice || 'Previously verified mints need to be checked before minting can continue.'
         : state.mintState === 'unavailable' ? unavailableMint : undefined : undefined);
-      readiness(ready);
+      readiness(ready, salePresentation(state.saleStatus));
       const viewRevision = collectionPage ? state.revision + ':' + state.collectionRevision : state.revision;
       if (revision !== viewRevision) {
         try {

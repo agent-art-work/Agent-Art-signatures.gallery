@@ -243,6 +243,7 @@ test('paid RC2 preparation uses revision zero even when reviewed free artifacts 
   f.controls.artifact = undefined; f.controls.phase = 1;
   const options = await get('options'); assert.equal(options.status, 200);
   assert.equal(options.body.free, false); assert.equal(options.body.paid, true);
+  assert.equal(options.body.phase, 'paid'); assert.equal(options.body.saleStatus.phase, 'paid');
   const prepared = await post('prepare', { handle: 'Bob', mode: 'paid', maximumETH: '0.0001' });
   assert.equal(prepared.status, 200, JSON.stringify(prepared.body));
   const decoded = decodeFunctionData({ abi, data: prepared.body.transaction.data });
@@ -256,7 +257,8 @@ test('invalid current artifacts cannot authorize free preparation or halt the re
   f.controls.artifact = structuredClone(f.controls.list);
   f.controls.artifact.proofs[0].siblings[0] = hash;
   const options = await get('options');
-  assert.equal(options.status, 200); assert.equal(options.body.free, false);
+  assert.equal(options.status, 409); assert.equal(options.body.code, 'FREE_ELIGIBILITY_UNAVAILABLE');
+  assert.match(options.body.error, /eligibility cannot be checked/);
   const preparation = await post('prepare', { handle: 'Alice', mode: 'free', maximumETH: '0' });
   assert.equal(preparation.status, 409); assert.equal(preparation.body.code, 'QUOTE_CHANGED');
   assert.deepEqual(f.records().requests, {});
@@ -264,4 +266,23 @@ test('invalid current artifacts cannot authorize free preparation or halt the re
   assert.equal(f.site.health().safetyHalted, false);
   assert.equal((await fetchLocal(f.origin + '/')).status, 200);
   assert.equal((await fetchLocal(f.origin + '/health/live')).status, 200);
+});
+
+test('public home and options share verified free quota and automatically reflect the paid phase', async t => {
+  const f = await httpFixture(t), { get } = await authenticate(f.origin);
+  const free = await get('options'); assert.equal(free.status, 200);
+  assert.equal(free.body.phase, 'free'); assert.equal(free.body.free, true); assert.equal(free.body.paid, false);
+  assert.deepEqual(free.body.saleStatus, { phase: 'free', paused: false, freeMinted: 0, freeMintQuota: 2, freeConfigRevision: '1' });
+  const home = await (await fetchLocal(f.origin + '/')).text();
+  assert.match(home, /data-home-mint-label>Free Mint<\/span>/); assert.match(home, /Free mint open · 0\/2 slots used/);
+  const mint = await (await fetchLocal(f.origin + '/mint')).text();
+  assert.match(mint, /data-pulse-phase="free"/); assert.match(mint, /data-pulse-paid hidden>/); assert.doesNotMatch(mint, /type="radio"/);
+  f.controls.phase = 1; f.controls.freeMinted = 2n;
+  const paid = await get('options'); assert.equal(paid.status, 200); assert.equal(paid.body.phase, 'paid');
+  const capabilities = await (await fetchLocal(f.origin + '/api/test/capabilities')).json();
+  assert.deepEqual(capabilities.saleStatus, { phase: 'paid', paused: false, freeMinted: 2, freeMintQuota: 2, freeConfigRevision: '1' });
+  const paidHome = await (await fetchLocal(f.origin + '/')).text(); assert.match(paidHome, /data-home-mint-label>Paid Mint<\/span>/);
+  const paidMint = await (await fetchLocal(f.origin + '/mint')).text(); assert.match(paidMint, /data-pulse-phase="paid"/);
+  assert.match(paidMint, /<div data-pulse-paid>/); assert.match(paidMint, /data-pulse-free hidden>/);
+  assert.equal(Object.keys(f.records().requests).length, 0); assert.ok(!f.calls.some(call => /send|sign/i.test(call.method)));
 });

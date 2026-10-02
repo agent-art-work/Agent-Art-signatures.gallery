@@ -91,6 +91,19 @@ describe("open mint session and input boundary", () => {
 });
 
 describe("wallet proof freshness and challenge isolation", () => {
+  it("uses explicit admin sign-in wording without granting contract permissions", async () => {
+    const sessions = new WalletSessions(origin, 11155111, () => initialTime);
+    const { session } = sessions.session();
+    const challenge = sessions.challenge(session, alice.address, undefined, "admin");
+    expect(challenge.message).toContain("administer the free-mint allowlist and quota");
+    expect(challenge.message).toContain("Every change requires separate approval in your wallet");
+    expect(challenge.message).toContain(`Resources:\n- ${origin}/admin`);
+    expect(challenge.message).not.toContain("prepare mints when you choose");
+    expect(await sessions.verify(session, challenge.challengeId, await alice.signMessage({ message: challenge.message }))).toBe(alice.address);
+    expect(session.walletProof?.wallet).toBe(alice.address);
+    expect(session).not.toHaveProperty("admin");
+  });
+
   it("binds a wallet proof to a request code, origin, chain and expiring challenge", async () => {
     const sessions = new WalletSessions(origin, 31337, () => initialTime);
     const session = sessions.session().session;

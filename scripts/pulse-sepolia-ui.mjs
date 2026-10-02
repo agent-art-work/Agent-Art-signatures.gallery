@@ -78,7 +78,7 @@ export function createSepoliaUiRenderer({ watchFiles = true, onReload = () => {}
   if (watchFiles) {
     const changed = filename => {
       const name = String(filename ?? '').replaceAll('\\', '/');
-      if (!/^(?:openMint\/|brand\/|v1\/(?:fonts|siteCss|controlsCss)\.ts|algorithmV2\/|pulse-sepolia-(?:client|readiness-client|ui-worker)\.mjs)/.test(name)) return;
+      if (!/^(?:openMint\/|brand\/|v1\/(?:fonts|siteCss|controlsCss)\.ts|algorithmV2\/|pulse-sepolia-(?:client|readiness-client|admin-page|admin-client|ui-worker)\.mjs)/.test(name)) return;
       clearTimeout(debounce); debounce = setTimeout(() => void reload(), 200);
     };
     for (const directory of ['src', 'scripts']) {

@@ -20,6 +20,10 @@ function harness({ mintPage = false, collectionPage = false, progressPage = fals
   if (resultVisible) selectors.set('[data-mint-result]', { hidden: false });
   if (collectionPage) { selectors.delete('.gallery-shell'); selectors.set('[data-collection-page]', root); }
   const input = { value: 'MyHandle' }, hero = { text: 'Anyone_Can_Sign_Anyone' };
+  const mintLabel = { textContent: 'Mint a signature' }, mintStatus = { textContent: '', hidden: true };
+  if (!mintPage && !collectionPage && !detailPage) {
+    selectors.set('[data-home-mint-label]', mintLabel); selectors.set('[data-home-mint-status]', mintStatus);
+  }
   const context = {
     document: { hidden: false, querySelector: key => selectors.get(key), querySelectorAll: key => key === '[data-inline-warning-message]' ? localFeedback.filter(node => node.dataset.inlineWarningMessage !== undefined) : [] }, location: { pathname: '/', href: 'http://127.0.0.1:3004/', origin: 'http://127.0.0.1:3004' },
     window: { addEventListener: (name, fn) => listeners.set(name, fn), dispatchEvent: event => events.push(event) },
@@ -36,7 +40,7 @@ function harness({ mintPage = false, collectionPage = false, progressPage = fals
     },
   };
   runInNewContext(SEPOLIA_READINESS_CLIENT, context);
-  return { calls, events, listeners, timers, warning, message, root, input, hero,
+  return { calls, events, listeners, timers, warning, message, root, input, hero, mintLabel, mintStatus,
     localWarning: (text, extra = {}) => {
       const node = { textContent: 'Warning ' + text, className: 'open-feedback preserved open-preview-notice open-preview-warning', dataset: { inlineWarningMessage: text, ...extra } };
       node.classList = { remove: (...names) => { node.className = node.className.split(/\s+/).filter(name => !names.includes(name)).join(' '); } };
@@ -46,6 +50,30 @@ function harness({ mintPage = false, collectionPage = false, progressPage = fals
     now: () => now,
     tick: async (elapsed = 5000) => { now += elapsed; timers.at(-1).fn(); await flush(); } };
 }
+
+test('home phase changes update CTA/status and notify clients even while readiness stays true', async () => {
+  const h = harness(); await flush();
+  const free = { phase: 'free', paused: false, freeMinted: 1, freeMintQuota: 4 };
+  h.setState({ chainId: 11155111, mintReady: true, revision: 'same', saleStatus: free }); await h.tick();
+  assert.equal(h.mintLabel.textContent, 'Free Mint'); assert.equal(h.mintStatus.textContent, 'Free mint open · 1/4 slots used.');
+  assert.deepEqual(h.events.at(-1).detail.saleStatus, free); const count = h.events.length;
+  await h.tick(); assert.equal(h.events.length, count, 'Unchanged phase/readiness does not repeatedly fetch eligibility');
+  h.setState({ chainId: 11155111, mintReady: true, revision: 'same', saleStatus: { ...free, phase: 'paid', freeMinted: 4 } }); await h.tick();
+  assert.equal(h.mintLabel.textContent, 'Paid Mint'); assert.equal(h.mintStatus.textContent, 'Paid mint open · Free mint ended.');
+  assert.equal(h.events.length, count + 1); assert.equal(h.events.at(-1).detail.saleStatus.phase, 'paid');
+  h.setState({ chainId: 11155111, mintReady: false, revision: 'same', saleStatus: { ...free, paused: true } }); await h.tick();
+  assert.equal(h.mintStatus.textContent, 'Minting is paused.'); assert.equal(h.warning.hidden, true);
+  h.setFail(true); await h.tick(); assert.equal(h.mintStatus.textContent, 'Minting is paused.', 'Transport failure does not fabricate a new phase');
+  assert.ok(h.calls.every(call => call.method === 'GET'));
+});
+
+test('unknown phase never advertises free eligibility and missing counts never display invalid quota', async () => {
+  const h = harness(); await flush();
+  h.setState({ chainId: 11155111, mintReady: false, revision: 'same', saleStatus: { phase: 'unknown', paused: false } }); await h.tick();
+  assert.equal(h.mintLabel.textContent, 'Mint a signature'); assert.equal(h.mintStatus.textContent, 'Checking mint availability…');
+  h.setState({ chainId: 11155111, mintReady: true, revision: 'same', saleStatus: { phase: 'free', paused: false, freeMinted: 9, freeMintQuota: 4 } }); await h.tick();
+  assert.equal(h.mintStatus.textContent, 'Free mint open.'); assert.equal(h.warning.hidden, true);
+});
 
 test('open gallery recovers automatically using GET only, preserving hero, inputs and user consent', async () => {
   const h = harness(); await flush(); assert.equal(h.root.current.outerHTML, 'empty');

@@ -8,19 +8,24 @@ export function pulseC7BrowserDriver({control,handle,mode,scenario}) {
     let s=read();
     if(!s && location.pathname==='/mint'){
       s={phase:'entry',stages:[]};save(s);
-      await wait(()=>document.querySelector('[data-connect-wallet]:not(:disabled)'),'connect enabled');
-      document.querySelector('[data-connect-wallet]').click();
-      await wait(()=>!document.querySelector('[data-assessment-request] button[type=submit]').disabled,'SIWE');
       const f=document.querySelector('[data-assessment-request]');
       check(f.dataset.pulseMint==='true','Pulse controls absent');
-      check(!f.querySelector('input[name=pulse-mode]:checked'),'Mode preselected');
+      check(f.querySelector('input[name=pulse-mode]')?.type==='hidden','Mint phase must be internal, not a user choice');
+      check(!f.querySelector('input[type=radio][name=pulse-mode]'),'Manual mint mode choices remain');
       f.querySelector('input[name=handle]').value=handle;f.querySelector('input[name=handle]').dispatchEvent(new Event('input'));
-      f.querySelector('[data-pulse-check]').click();
-      await wait(()=>f.dataset.pulseQuote,'read-only quote');
-      check(!f.querySelector('input[name=pulse-mode]:checked'),'Quote silently selected mode');
-      f.querySelector('input[name=pulse-mode][value='+mode+']').click();
-      if(mode==='paid') f.querySelector('input[name=pulse-max-eth]').value='0.01';
-      s.phase='sent';s.stages.push('SIWE','quote-without-default','explicit-'+mode);save(s);
+      await wait(()=>document.querySelector('[data-connect-wallet]:not(:disabled)'),'connect enabled');
+      document.querySelector('[data-connect-wallet]').click();
+      await wait(()=>{
+        try{const q=JSON.parse(f.dataset.pulseQuote||'null');return q?.handle===handle.toLowerCase()&&q.validUntil>Date.now()&&!f.dataset.pulseChecking;}catch{return false;}
+      },'automatic read-only phase and eligibility quote');
+      const q=JSON.parse(f.dataset.pulseQuote);
+      check(q.phase===mode&&f.querySelector('input[name=pulse-mode]').value===mode,'Verified sale phase does not match this rehearsal');
+      if(mode==='free')check(q.freeAvailable===true,'The rehearsal wallet has no unused free slot');
+      const cap=f.querySelector('input[name=pulse-max-eth]');
+      check(!cap.value,'Paid ceiling silently supplied');
+      if(mode==='paid'){cap.value='0.01';cap.dispatchEvent(new Event('input'));}
+      await wait(()=>!f.querySelector('button[type=submit]').disabled,'explicit mint action enabled');
+      s.phase='sent';s.stages.push('SIWE','automatic-phase-quote','explicit-'+mode+'-mint');save(s);
       f.querySelector('button[type=submit]').click();return;
     }
     if(!s)return;

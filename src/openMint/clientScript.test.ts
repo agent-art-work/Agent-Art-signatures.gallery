@@ -102,9 +102,11 @@ function setup(options: SetupOptions = {}) {
     elements['[data-assessment-request]'].children['input[name=handle]'].value = options.initialHandle ?? " @Agent_Art ";
     if (options.pulseEntry) {
       const form=elements['[data-assessment-request]']; form.dataset.pulseMint='true';
-      for (const mode of ['free','paid']) { const e=new Element(); e.value=mode; e.disabled=true; form.children[`input[name=pulse-mode][value=${mode}]`]=e; }
+      form.children['input[name=pulse-mode]']=new Element(); form.children['input[name=pulse-mode]'].type='hidden';
       form.children['input[name=pulse-max-eth]']=new Element(); form.children['input[name=pulse-max-eth]'].disabled=true;
       form.children['[data-pulse-check]']=new Element(); elements['[data-pulse-feedback]']=new Element();
+      for (const selector of ['[data-pulse-options]', '[data-pulse-title]', '[data-pulse-sale-status]', '[data-pulse-paid]', '[data-pulse-free]', '[data-pulse-refresh]']) form.children[selector]=new Element();
+      form.children['[data-pulse-options]'].dataset.pulsePhase='unknown';
     }
   }
   const requests: Array<{ path: string; body: any; init: any }> = [];
@@ -246,9 +248,9 @@ describe('shared inline warning feedback', () => {
     expect(feedback.textContent).toBe('Warning Connect and verify your wallet first.');
     expect(feedback.classList.contains('open-preview-warning')).toBe(true);
     await test.elements['[data-connect-wallet]'].emit('click');
-    await form.children['[data-pulse-check]'].emit('click');
+    await flush();
     expect(test.elements['[data-pulse-feedback]'].classList.contains('open-preview-warning')).toBe(false);
-    form.children['input[name=pulse-mode][value=paid]'].checked = true;
+    expect(form.children['input[name=pulse-mode]'].value).toBe('paid');
     form.children['input[name=pulse-max-eth]'].value = 'invalid';
     await form.emit('submit');
     expect(feedback.textContent).toBe('Warning Enter your maximum mint price in ETH.');
@@ -262,32 +264,216 @@ describe('shared inline warning feedback', () => {
   });
 });
 
+describe('automatic Pulse phase presentation', () => {
+  const quote = (phase = 'free', overrides = {}) => ({ version: 'sg-pulse-mint-options-v1', wallet: WALLET,
+    handle: 'agent_art', phase, priceWei: phase === 'paid' ? '1000000000000000' : '0',
+    availableSlots: phase === 'free' ? ['0', '1'] : [], validUntil: Date.now() + 10000, ...overrides });
+
+  it('automatically checks eligibility after a new verified connection, without requiring a price click', async () => {
+    const test = setup({ entry: true, pulseEntry: true, api: path => path.startsWith('/api/mints/options?') ? quote() : undefined });
+    await flush();
+    expect(test.requests.some(r => r.path.startsWith('/api/mints/options?'))).toBe(false);
+    await test.elements['[data-connect-wallet]'].emit('click'); await flush();
+    const form = test.elements['[data-assessment-request]'];
+    expect(test.requests.filter(r => r.path.startsWith('/api/mints/options?'))).toHaveLength(1);
+    expect(form.children['input[name=pulse-mode]'].value).toBe('free');
+    expect(form.children['[data-pulse-title]'].textContent).toBe('Free Mint');
+    expect(form.children['[data-pulse-options]'].dataset.pulsePhase).toBe('free');
+    expect(form.children['[data-pulse-refresh]'].hidden).toBe(true);
+    expect(test.elements['[data-pulse-feedback]'].textContent).toBe('Your wallet has 2 free mint slots.');
+    expect(form.children['button[type=submit]'].disabled).toBe(false);
+    expect(test.requests.some(r => r.path === '/api/assessments')).toBe(false);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it('keeps an ineligible wallet in the free phase without offering paid mint as a workaround', async () => {
+    const test = setup({ entry: true, pulseEntry: true, walletProved: true,
+      api: path => path.startsWith('/api/mints/options?') ? quote('free', { availableSlots: [] }) : undefined });
+    await flush();
+    const form = test.elements['[data-assessment-request]'];
+    expect(form.children['[data-pulse-title]'].textContent).toBe('Free Mint');
+    expect(form.children['[data-pulse-free]'].hidden).toBe(false);
+    expect(form.children['[data-pulse-paid]'].hidden).toBe(true);
+    expect(form.children['input[name=pulse-max-eth]'].disabled).toBe(true);
+    expect(form.children['button[type=submit]'].disabled).toBe(true);
+    expect(test.elements['[data-pulse-feedback]'].textContent).toContain('no unused free mint slots');
+    expect(test.elements['[data-pulse-feedback]'].classList.contains('open-preview-warning')).toBe(false);
+    await form.emit('submit'); await flush();
+    expect(test.requests.some(r => r.path === '/api/assessments')).toBe(false);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it('switches to paid mint when the automatic fresh quote reports the phase transition, without supplying a ceiling', async () => {
+    let phase = 'free', now = Date.now();
+    const test = setup({ entry: true, pulseEntry: true, walletProved: true, now: () => now,
+      api: path => path.startsWith('/api/mints/options?') ? quote(phase, { validUntil: now + 10000 }) : undefined });
+    await flush();
+    const form = test.elements['[data-assessment-request]'];
+    phase = 'paid'; now += 10000;
+    await tick(test, 10000); await flush();
+    expect(form.children['input[name=pulse-mode]'].value).toBe('paid');
+    expect(form.children['[data-pulse-title]'].textContent).toBe('Mint price');
+    expect(form.children['[data-pulse-paid]'].hidden).toBe(false);
+    expect(form.children['[data-pulse-free]'].hidden).toBe(true);
+    expect(form.children['[data-pulse-refresh]'].hidden).toBe(false);
+    expect(form.children['input[name=pulse-max-eth]'].disabled).toBe(false);
+    expect(form.children['input[name=pulse-max-eth]'].value).toBe('');
+    expect(form.children['button[type=submit]'].disabled).toBe(true);
+    expect(test.requests.some(r => r.path === '/api/assessments')).toBe(false);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it('refreshes price without changing the user ceiling and withdraws the offer when it is insufficient', async () => {
+    let priceWei = '1000000000000000';
+    const test = setup({ entry: true, pulseEntry: true, walletProved: true,
+      api: path => path.startsWith('/api/mints/options?') ? quote('paid', { priceWei }) : undefined });
+    await flush();
+    const form = test.elements['[data-assessment-request]'], cap = form.children['input[name=pulse-max-eth]'];
+    cap.value = '0.002'; await cap.emit('input');
+    expect(form.children['button[type=submit]'].disabled).toBe(false);
+    priceWei = '3000000000000000';
+    await form.children['[data-pulse-check]'].emit('click'); await flush();
+    expect(cap.value).toBe('0.002');
+    expect(form.children['button[type=submit]'].disabled).toBe(true);
+    expect(test.elements['[data-pulse-feedback]'].textContent).toContain('0.003000000000000000 ETH');
+    expect(test.requests.some(r => r.path === '/api/assessments')).toBe(false);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it.each(['0', 'bad', '0.0001'])('disables the paid mint action for an invalid or insufficient explicit ceiling %s', async value => {
+    const test = setup({ entry: true, pulseEntry: true, walletProved: true,
+      api: path => path.startsWith('/api/mints/options?') ? quote('paid') : undefined });
+    await flush();
+    const form = test.elements['[data-assessment-request]'];
+    form.children['input[name=pulse-max-eth]'].value = value;
+    await form.children['input[name=pulse-max-eth]'].emit('input');
+    expect(form.children['button[type=submit]'].disabled).toBe(true);
+    await form.emit('submit'); await flush();
+    expect(test.requests.some(r => r.path === '/api/assessments')).toBe(false);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it.each([
+    { phase: 'unknown' }, { wallet: OTHER }, { handle: 'bob' }, { priceWei: '1' },
+    { availableSlots: ['-1'] }, { validUntil: 0 }, { phase: 'paused' },
+  ])('does not offer a mint when quote verification fails (%j)', async invalid => {
+    const test = setup({ entry: true, pulseEntry: true, walletProved: true,
+      api: path => path.startsWith('/api/mints/options?') ? quote('free', invalid) : undefined });
+    await flush();
+    const form = test.elements['[data-assessment-request]'];
+    expect(form.dataset.pulseQuote).toBeUndefined();
+    expect(form.children['input[name=pulse-mode]'].value).toBe('');
+    expect(form.children['[data-pulse-options]'].dataset.pulsePhase).toBe('unknown');
+    expect(form.children['[data-pulse-paid]'].hidden).toBe(true);
+    expect(form.children['[data-pulse-free]'].hidden).toBe(true);
+    expect(form.children['button[type=submit]'].disabled).toBe(true);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it('ignores a slow quote after the account changes and clears the internal mode immediately', async () => {
+    let resolve!: (value: unknown) => void;
+    const delayed = new Promise(done => { resolve = done; });
+    const test = setup({ entry: true, pulseEntry: true, walletProved: true,
+      api: path => path.startsWith('/api/mints/options?') ? delayed : undefined });
+    await flush();
+    const form = test.elements['[data-assessment-request]'];
+    expect(form.dataset.pulseChecking).toBe('true');
+    test.walletEvents.accountsChanged({});
+    resolve(quote()); await flush();
+    expect(form.dataset.pulseQuote).toBeUndefined();
+    expect(form.children['input[name=pulse-mode]'].value).toBe('');
+    expect(form.children['button[type=submit]'].disabled).toBe(true);
+    expect(test.elements['[data-pulse-feedback]'].textContent).toBe('Connect your wallet to check eligibility.');
+    expect(sends(test)).toEqual([]);
+  });
+
+  it('stops automatic eligibility checks when the verified browser session expires', async () => {
+    const test = setup({ entry: true, pulseEntry: true, walletProved: true,
+      api: path => path.startsWith('/api/mints/options?') ? { error: { code: 'WALLET_PROOF_REQUIRED', message: 'Connect and verify your wallet first.' } } : undefined });
+    await flush();
+    const form = test.elements['[data-assessment-request]'];
+    expect(form.dataset.pulseQuote).toBeUndefined();
+    expect(form.children['button[type=submit]'].disabled).toBe(true);
+    expect(test.elements['[data-pulse-feedback]'].textContent).toBe('Connect your wallet to check eligibility.');
+    expect(test.scheduled).toHaveLength(0);
+    expect(test.requests.filter(r => r.path.startsWith('/api/mints/options?'))).toHaveLength(1);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it('re-checks phase when readiness returns but never prepares or sends a mint automatically', async () => {
+    let phase = 'free';
+    const test = setup({ entry: true, pulseEntry: true, walletProved: true,
+      api: path => path.startsWith('/api/mints/options?') ? quote(phase) : undefined });
+    await flush(); phase = 'paid';
+    test.globalEvents['sg:readiness-changed']({ detail: { mintReady: true, saleStatus: { phase: 'paid' } } });
+    await flush();
+    const form = test.elements['[data-assessment-request]'];
+    expect(form.children['input[name=pulse-mode]'].value).toBe('paid');
+    expect(test.requests.filter(r => r.path.startsWith('/api/mints/options?'))).toHaveLength(2);
+    expect(test.requests.some(r => r.path === '/api/assessments')).toBe(false);
+    expect(sends(test)).toEqual([]);
+  });
+
+  it('uses the verified phase rather than a forged hidden mode for the submitted mint intent', async () => {
+    const test = setup({ entry: true, pulseEntry: true, walletProved: true,
+      api: path => path.startsWith('/api/mints/options?') ? quote() : undefined });
+    await flush();
+    const form = test.elements['[data-assessment-request]'];
+    form.children['input[name=pulse-mode]'].value = 'paid';
+    form.children['input[name=pulse-max-eth]'].value = '0.002';
+    await form.emit('submit'); await flush();
+    expect(test.requests.find(r => r.path === '/api/assessments')?.body.mintIntent).toEqual({ mode: 'free', maxPriceWei: '0' });
+    expect(sends(test)).toEqual([]);
+  });
+
+  it('cancels read-only quote renewal when leaving the page', async () => {
+    const test = setup({ entry: true, pulseEntry: true, walletProved: true,
+      api: path => path.startsWith('/api/mints/options?') ? quote() : undefined });
+    await flush();
+    expect(test.scheduled.some(timer => (timer.delay ?? 0) >= 2500)).toBe(true);
+    test.globalEvents.pagehide({}); await flush();
+    expect(test.scheduled).toHaveLength(0);
+    const reads = test.requests.length;
+    test.globalEvents.focus?.({}); await flush();
+    expect(test.requests).toHaveLength(reads);
+    expect(sends(test)).toEqual([]);
+  });
+});
+
 describe('durable generative wallet submission protocol', () => {
-  it.each(['free','paid'])('requires a read-only quote and explicit %s consent before preparation', async phase => {
+  it.each(['free','paid'])('automatically checks the %s phase but requires an explicit mint action before preparation', async phase => {
     const test=setup({entry:true,pulseEntry:true,walletProved:true,api:path => path.startsWith('/api/mints/options?') ? {version:'sg-pulse-mint-options-v1',wallet:WALLET,handle:'agent_art',phase,priceWei:phase==='paid' ? '1000000000000000' : '0',availableSlots:phase==='free' ? ['0','1'] : [],validUntil:Date.now()+10000} : undefined});
     await flush();
     const form=test.elements['[data-assessment-request]'];
-    expect(test.requests.some(r=>r.path.startsWith('/api/mints/options?'))).toBe(false);
-    await form.emit('submit'); await flush();
-    expect(test.requests.some(r=>r.path==='/api/assessments')).toBe(false);
-    await form.children['[data-pulse-check]'].emit('click'); await flush();
+    expect(test.requests.filter(r=>r.path.startsWith('/api/mints/options?'))).toHaveLength(1);
     expect(test.requests.some(r=>r.path==='/api/assessments')).toBe(false);
     expect(Object.values(form.children).some(e=>e.checked)).toBe(false);
-    await form.emit('submit'); await flush();
-    expect(test.requests.some(r=>r.path==='/api/assessments')).toBe(false);
-    form.children[`input[name=pulse-mode][value=${phase}]`].checked=true;
-    form.children['input[name=pulse-max-eth]'].value='0.002';
+    expect(form.children['input[name=pulse-mode]'].value).toBe(phase);
+    expect(form.children['[data-pulse-paid]'].hidden).toBe(phase !== 'paid');
+    expect(form.children['[data-pulse-free]'].hidden).toBe(phase !== 'free');
+    expect(form.children['[data-pulse-check]'].hidden).toBe(phase !== 'paid');
+    expect(form.children['input[name=pulse-max-eth]'].value).toBe('');
+    if (phase === 'paid') {
+      expect(form.children['button[type=submit]'].disabled).toBe(true);
+      await form.emit('submit'); await flush();
+      expect(test.requests.some(r=>r.path==='/api/assessments')).toBe(false);
+      form.children['input[name=pulse-max-eth]'].value='0.002';
+      await form.children['input[name=pulse-max-eth]'].emit('input');
+    }
+    expect(form.children['button[type=submit]'].disabled).toBe(false);
     await form.emit('submit'); await flush();
     expect(test.requests.find(r=>r.path==='/api/assessments')?.body.mintIntent).toEqual({mode:phase,maxPriceWei:phase==='paid' ? '2000000000000000' : '0'});
   });
-  it('invalidates a checked Pulse quote when the handle changes', async () => {
+  it('invalidates a checked Pulse quote when the handle changes and checks the new handle automatically', async () => {
     const test=setup({entry:true,pulseEntry:true,walletProved:true,api:path => path.startsWith('/api/mints/options?') ? {version:'sg-pulse-mint-options-v1',wallet:WALLET,handle:'agent_art',phase:'free',priceWei:'0',availableSlots:['0'],validUntil:Date.now()+10000} : undefined});
     await flush(); const form=test.elements['[data-assessment-request]'];
-    await form.children['[data-pulse-check]'].emit('click');
-    form.children['input[name=pulse-mode][value=free]'].checked=true;
     form.children['input[name=handle]'].value='Bob'; await form.children['input[name=handle]'].emit('input');
-    await form.emit('submit'); await flush();
+    expect(form.dataset.pulseQuote).toBeUndefined();
+    expect(form.children['button[type=submit]'].disabled).toBe(true);
+    await tick(test, 500); await flush();
     expect(test.requests.some(r=>r.path==='/api/assessments')).toBe(false);
+    expect(test.requests.some(r=>r.path==='/api/mints/options?handle=Bob')).toBe(true);
+    // The response was still bound to the old handle, so it cannot authorize Bob.
     expect(form.dataset.pulseQuote).toBeUndefined();
   });
   it('sends the exact saved Pulse ceiling, not zero or a response-selected amount', async () => {

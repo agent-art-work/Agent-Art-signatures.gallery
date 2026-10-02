@@ -69,7 +69,7 @@ describe("home gallery width", () => {
     expect(SITE_CSS).not.toContain("home-mint-cta");
     const home = homePage({}, [entry]);
     expect(home.match(/class="auth-action home-mint-cta"/g)).toHaveLength(1);
-    expect(home).toContain('<a class="auth-action home-mint-cta" href="/mint"><span>Mint a signature</span></a>');
+    expect(home).toContain('<a class="auth-action home-mint-cta" href="/mint" data-home-mint-cta aria-describedby="home-mint-status"><span data-home-mint-label>Mint a signature</span></a>');
     for (const html of [mbtiGalleryPage("INTJ", [entry]), collectionPage([entry])]) {
       expect(html).not.toContain("home-mint-cta");
     }

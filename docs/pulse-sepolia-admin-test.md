@@ -26,7 +26,7 @@ npm run pulse:sepolia:admin:dev
 ```
 
 Open `http://127.0.0.1:3007/mint`, connect the allowlisted wallet on Ethereum
-Sepolia, enter a new handle, and choose the free slot. A free mint costs zero
+Sepolia and enter a new handle. The page checks the wallet's free slot automatically. A free mint costs zero
 mint price, but requires Sepolia ETH for network gas. This origin uses a separate
 deployment and browser session from the previous RC1 frontend at port 3004.
 The site waits for deployment finality and full verification before admission;
@@ -64,6 +64,31 @@ commits the initial deployment settings; subsequent policy revisions have their
 own `FreeMintConfigured` event hash.
 
 ## Operator run
+
+### Admin page
+
+Open `/admin` on the separate RC2 frontend (normally
+`http://127.0.0.1:3007/admin`). Connect the contract's admin wallet on Ethereum
+Sepolia and sign the admin sign-in message. A normal minter wallet cannot read
+the private ordered allowlist or prepare admin changes.
+
+The page displays the live quota, successful free mints, slot capacity, phase,
+pause state and original deadline. Edit the full ordered wallet list and quota,
+then review the new Merkle root and change counts. Append new addresses without
+reordering existing slot IDs; repeating an address grants multiple slots.
+
+Each chain write needs a separate click and wallet approval: pause minting,
+apply the reviewed allowlist/quota, then resume minting. The server prepares
+validated calldata but never unlocks the funded admin key, signs or broadcasts
+these transactions. Configuration proofs are activated only after validating
+the matching successful receipt and resulting chain state. Unknown submissions
+stay recoverable by their transaction hash; they are never resent automatically.
+
+Setting quota equal to the already successful free-mint count permanently ends
+the free phase. The page requires an explicit acknowledgement for this change.
+The immutable deadline cannot be extended and a paid phase cannot be reopened.
+
+### Command-line alternative
 
 The approved funded deployer is
 `0x3e4fA9f09d8EDe66561145E1ef3bc127F80ED396`. The existing private Sepolia
@@ -171,6 +196,7 @@ These are test-ETH bounds, not a real-money mainnet spending authorization.
 
 ```sh
 node --import tsx --test contracts/tools/pulse-sepolia-admin-plan.node-test.mjs contracts/tools/pulse-sepolia-admin-execution.node-test.mjs
+node --import tsx --test contracts/tools/pulse-sepolia-admin-web-service.node-test.mjs contracts/tools/pulse-sepolia-admin-web-http.node-test.mjs contracts/tools/pulse-sepolia-admin-page.node-test.mjs contracts/tools/pulse-sepolia-admin-client.node-test.mjs
 forge test --root contracts --match-path test/SignaturesPulseMintV1RC2.t.sol
 ```
 
@@ -180,6 +206,14 @@ claimed-wallet protection, quota/phase bounds, exact journal recovery, fees,
 receipt integrity, pinned fallback reads and primary-only writes. Foundry covers
 the RC2 contract's authorization revision, admin roles, pause requirements,
 claimed bitmap, irreversible free-to-paid transition and paid economics.
+
+The admin-page checks cover wallet sign-in, current roles, origin/CSRF controls,
+bounded ordered lists, review invalidation, deliberate pause/apply/resume,
+claimed-slot protection, canonical receipts, pending recovery and superseded
+requests. All 71 focused tests passed. Desktop and mobile browser checks also
+passed using simulated wallet transactions. A separate read-only Sepolia check
+verified the finalized deployment, admin role and revision-two four-slot policy
+(one free mint used of quota four). No live admin transaction was submitted.
 
 The complete Vitest regression run passed 6,166 tests (625 opt-in/skipped tests).
 The Sepolia Node suite passed 360 tests with one PostgreSQL test skipped by
