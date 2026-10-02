@@ -198,8 +198,74 @@ jobs:
         run: npm run test:generative:staging-transport
       - name: Verify staging canonical URLs, private metadata and finalized-only PNG cards
         run: npm run test:generative:staging-sharing
+
+  mint:
+    runs-on: ubuntu-24.04
+    # The measured covered mint campaign gets its own fresh runner rather than
+    # consuming the runtime campaign's budget or extending application timers.
+    timeout-minutes: 15
+    env:
+      XAI_API_KEY: ''
+      OPEN_MINT_X_BEARER_TOKEN: ''
+      OPEN_MINT_TEST_HTTP: '1'
+      OPEN_MINT_TEST_POSTGRES: '1'
+      OPEN_MINT_TEST_POSTGRES_BIN: /usr/lib/postgresql/16/bin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: v1.5.1
+      - name: Install locked dependencies and isolated database binaries
+        run: |
+          npm ci
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16
+      - name: Build fresh offline contract prerequisites
+        working-directory: contracts
+        run: forge build --offline
+      - name: Check prerequisite release identity without generating a lock
+        run: node scripts/verify-generative-release.mjs
       - name: Verify future staging input authority and wallet fences locally without broadcast
         run: npm run test:generative:staging-mint
+
+  runtime:
+    runs-on: ubuntu-24.04
+    # Covered runtime, site and installed-package checks run independently of
+    # worker/mint campaigns, with no shared SQL, build output or private assets.
+    timeout-minutes: 20
+    env:
+      XAI_API_KEY: ''
+      OPEN_MINT_X_BEARER_TOKEN: ''
+      OPEN_MINT_TEST_HTTP: '1'
+      OPEN_MINT_TEST_POSTGRES: '1'
+      OPEN_MINT_TEST_POSTGRES_BIN: /usr/lib/postgresql/16/bin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: v1.5.1
+      - name: Install locked dependencies and isolated database binaries
+        run: |
+          npm ci
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16
+      - name: Build fresh offline contract prerequisites
+        working-directory: contracts
+        run: forge build --offline
+      - name: Check prerequisite release identity without generating a lock
+        run: node scripts/verify-generative-release.mjs
       - name: Verify private future staging runtime, site and verified reveal on loopback mocks
         run: npm run test:generative:staging-runtime
 

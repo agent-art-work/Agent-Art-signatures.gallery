@@ -8,7 +8,7 @@ production deployment is part of this work.
 
 | Item | Output | Verification |
 | --- | --- | --- |
-| CI selection | Separate bounded Pulse job plus independently bootstrapped core, admission, staging and recovery lanes; every inherited campaign command retained | Exact 44-command preservation guard, YAML validation, selected suite execution; hosted results recorded separately |
+| CI selection | Separate bounded Pulse job plus independently bootstrapped core, admission, worker/transport, mint, runtime/site and recovery lanes; every inherited campaign command retained | Exact 44-command preservation guard, YAML validation, selected suite execution; hosted results recorded separately |
 | RPC deadlines/fallback | Shared read budgets, browser fetch/body cancellation and validation-flight ownership fences | Slow-primary/healthy-secondary loopback HTTP and client regression; cancellation, stale completions, conflict and no-send guards |
 | Mobile/accessibility | Readable guidance, stacked narrow wallet controls, visually wrapped allowlist rows, accessible headings/phase/status | [48-case real Chrome evidence and scope](pulse-ui-accessibility.md) |
 | Documentation | Current RC2/port 3007/admin/relay/early-reveal summary; historical RC1 and R1–R5 evidence remain labelled | Updated development/readiness tables without declaring hosted release acceptance |
@@ -66,6 +66,12 @@ and closure policy plus paid Pulse configuration; do not manufacture them.
 - Future-staging controller/worker native-coverage campaign: **84 passed**,
   including eight test-harness regressions; **100% lines/functions and 99.34%
   branches**, with its existing 100/98/100 thresholds unchanged.
+- Future-staging runtime/site/installed-package campaign: **61 passed**,
+  **100% lines, 98.12% branches and 96.88% functions**, with its existing
+  100/94/95 thresholds unchanged. Isolated backup/restore campaign: **8 passed**.
+- Future-staging mint-controller native-coverage campaign: **39 passed**,
+  including five test-harness regressions; **100% lines, 98.82% branches and
+  97.96% functions**, with its existing 100/95/95 thresholds unchanged.
 
 Local evidence files are `/private/tmp/sg-hardening-final-coverage-20261002.json`,
 `coverage/coverage-summary.json`, and `/private/tmp/sg-ui-a11y-final/results.json`.
@@ -91,16 +97,36 @@ a diagnostic deadline, so an early refusal/completion cannot leave an
 unreachable callback waiting forever. Held mocks release in `finally`; close,
 drain and teardown also have test-only bounds. A fatal teardown timeout stops
 only the private cluster allocated by that suite and remains a test failure.
-No application timeout, assertion or coverage threshold changed.
+No application timeout, safety assertion or coverage threshold changed. The
+mint-controller suite has the same diagnostic safeguards around held signers;
+its earlier hosted run passed, so this is preventative, not a claim that the
+mint suite was observed hanging.
 
 All 44 inherited campaign commands now run exactly once across independent core
-(35 minutes), admission (20), staging (25) and recovery (20) jobs. Each fresh
+(35 minutes), admission (20), worker/transport (25), mint (15), runtime/site (20)
+and recovery (20) jobs. Each fresh
 lane installs locked dependencies, PostgreSQL 16 and offline contract
 prerequisites; no lane imports another lane's state or artifacts. The separate
 Pulse job retains its ten-minute ceiling. Serializing the two assessment test
 files was slower in a local benchmark, so their existing concurrency remains
-unchanged. Hosted execution of the partition must still be observed; it is not
-inferred from these local passes.
+unchanged. Hosted worker/transport/mint steps took about 15 minutes before the
+runtime/site command began; the complete local runtime/site command then took
+ten minutes. Keeping them in one 25-minute job would leave no credible margin.
+Partitioning gives each intact campaign its own bound instead of widening an
+application deadline or deleting coverage. Command guards recognize executable
+shell lines, not commented-out commands or echoes.
+
+Older restore and site regressions still expected a gallery empty until
+finality. They now verify immediate **Confirming** visibility only after owned
+RPC validation, exact token/transaction/input/renderer/inclusion identity,
+unchanged identity at **Minted** promotion, and removal after an unfinalized
+reorg. Reported-only, unobserved and invalid-source inclusion remain hidden;
+provider/signing effects are not repeated. Sharing metadata retains its separate
+finality restrictions.
+
+Hosted execution is checked separately; these local passes never substitute
+for it. [Branch workflow results](https://github.com/inshell-art/Agent-Art-signatures.gallery/actions?query=branch%3Acodex%2Fpolicy-independent-hardening)
+are distinct from acceptance of an installed staging environment.
 
 After the local restart, read-only `/health` reported `mintReady: true`,
 `galleryAvailable: true`, `observerHealthy: true`, no safety halt/conflict, and

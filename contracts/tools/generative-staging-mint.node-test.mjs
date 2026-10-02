@@ -15,10 +15,70 @@ import { GENERATIVE_MINT_ABI } from "../../src/openMint/generativeAuthorization.
 import { stagingRuntimeBinding } from "./generative-staging-assessment.mjs";
 import { certifyStagingMintBinding, prepareStagingMintAdmission } from "../../src/openMint/persistence/stagingMintAdmission.ts";
 
+async function expectCheckpoint(checkpoint, operation, label, timeoutMs = 20000) {
+  let timer;
+  try {
+    await Promise.race([checkpoint, operation.then(
+      result => { throw Error(`${label} completed before its checkpoint: ${JSON.stringify(result)}`); },
+      cause => { throw Error(`${label} rejected before its checkpoint`, { cause }); },
+    ), new Promise((_, reject) => { timer = setTimeout(() => reject(Error(`${label} checkpoint timed out`)), timeoutMs); })]);
+  } finally { clearTimeout(timer); }
+}
+class TestSettlementTimeout extends Error {}
+async function settleWithin(operation, label, timeoutMs = 20000) {
+  let timer;
+  try {
+    return await Promise.race([operation, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new TestSettlementTimeout(`${label} settlement timed out`)), timeoutMs);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+test("mint checkpoint reports early completion instead of waiting for an unreachable signer", async () => {
+  await assert.rejects(expectCheckpoint(new Promise(() => {}), Promise.resolve({ reused: true }), "mint signer"),
+    /completed before its checkpoint.*reused/);
+});
+test("mint checkpoint surfaces early refusal with its original cause", async () => {
+  const cause = Error("mock pre-signing refusal");
+  await assert.rejects(expectCheckpoint(new Promise(() => {}), Promise.reject(cause), "mint signer"), error => error.cause === cause);
+});
+test("mint checkpoint bounds an unreachable held signer", async () => {
+  await assert.rejects(expectCheckpoint(new Promise(() => {}), new Promise(() => {}), "mint signer", 5), /checkpoint timed out/);
+});
+test("mint close and drain have a visible test-only settlement bound", async () => {
+  await assert.rejects(settleWithin(new Promise(() => {}), "mint drain", 5), TestSettlementTimeout);
+});
+test("mint settlement preserves the original rejection", async () => {
+  const cause = Error("mock mint drain rejection");
+  await assert.rejects(settleWithin(Promise.reject(cause), "mint drain"), error => error === cause);
+});
+
 describe("future staging mint authority: disposable SQL, mocked assessment, public test signer, NO broadcast", { skip: process.env.OPEN_MINT_TEST_POSTGRES !== "1" }, () => {
   let cluster, admin, f, worker, controller, review, calls, hooks, signer, assessed;
+  const releases = new Set();
+  const hold = () => {
+    let resolve; const promise = new Promise(r => resolve = r);
+    const release = () => { releases.delete(release); resolve(); }; releases.add(release);
+    return { promise, release };
+  };
+  const settle = async (operation, label) => {
+    try { return await settleWithin(operation, label); }
+    catch (error) {
+      if (error instanceof TestSettlementTimeout) {
+        for (const release of releases) release(); controller?.halt(); worker?.halt(); f?.controller.halt();
+        // Query promises still reject. Quiet only idle socket error events
+        // after this already-fatal test timeout so they cannot mask its cause.
+        for (const client of [admin, f?.db, f?.runtime].filter(Boolean)) client.on("error", () => {});
+        // This cluster belongs solely to the test, never an active environment.
+        try { cluster?.stop(); } catch (cleanup) { throw new AggregateError([error, cleanup], label); }
+      }
+      throw error;
+    }
+  };
+  const closeController = () => settle(controller?.close(), "staging mint controller close");
+  const closeWorker = () => settle(worker?.close(), "staging mint assessment worker close");
   before(async () => { cluster = disposablePostgres(); admin = new Client(cluster.config); await admin.connect(); });
-  after(async () => { await admin?.end(); cluster?.stop(); });
+  after(async () => { try { await settle(admin?.end(), "mint administrator close"); } finally { cluster?.stop(); } });
   beforeEach(async () => {
     f = await stagingAssessmentFixture(cluster, admin, { claimed: false }); calls = { x: 0, grok: 0, sign: 0 }; hooks = {};
     // Fresh synthetic heads: exercise freshness without consuming almost the
@@ -31,7 +91,7 @@ describe("future staging mint authority: disposable SQL, mocked assessment, publ
         calls.grok++; execution.dispatch.assertCurrent("grok"); await execution.recordReceipt(receipt("grok", "1"));
         return { handle, mbti: "ENFP", model: f.input.assessmentPolicy.model, providerResponseId: "offline-mint", sourceUrls: ["https://x.com/ALIce"], xUserId: snapshot.userId }; } },
     });
-    assessed = await worker.run(await f.intent()); assert.equal(assessed.kind, "accepted"); await worker.close();
+    assessed = await worker.run(await f.intent()); assert.equal(assessed.kind, "accepted"); await closeWorker();
     await f.db.query("UPDATE open_mint.generative_issuance_profiles SET enabled=true");
     signer = { address: f.active.accounts.authorizer.address, async signTypedData(data, signal) {
       calls.sign++; assert.equal((await state()).authorization, "signing"); signal.throwIfAborted();
@@ -39,7 +99,16 @@ describe("future staging mint authority: disposable SQL, mocked assessment, publ
     } };
     open();
   });
-  afterEach(async () => { f.faults.afterQuery = undefined; await controller?.close(); await worker?.close(); await f?.close(); });
+  afterEach(async () => {
+    for (const release of releases) release();
+    if (f) f.faults.afterQuery = undefined; controller?.halt(); worker?.halt(); f?.controller.halt();
+    const failures = [];
+    for (const cleanup of [closeController, closeWorker, () => settle(f?.close(), "mint fixture close")]) {
+      try { await cleanup(); } catch (error) { failures.push(error); }
+    }
+    f = undefined; controller = undefined; worker = undefined;
+    if (failures.length) throw new AggregateError(failures, "Staging mint teardown failed");
+  });
   function open(patch = {}) {
     controller?.halt(); const candidate = createStagingMintController(f.input);
     review = stagingReviewFixture(candidate.scope, { operations: ["reuse", "sign", "wallet-submit"], ...patch }); candidate.halt();
@@ -76,7 +145,7 @@ describe("future staging mint authority: disposable SQL, mocked assessment, publ
     assert.deepEqual(calls, { x: 1, grok: 1, sign: 1 });
   });
   test("restart and disabled generation reuse exact signature without provider or signer calls", async () => {
-    const signed = await issue(); await controller.close(); await f.restart(); open();
+    const signed = await issue(); await closeController(); await settle(f.restart(), "mint fixture restart"); open();
     await f.db.query("UPDATE open_mint.budget_policies SET generation_enabled=false");
     hooks.sign = () => { throw Error("must not sign again"); };
     assert.deepEqual(await issue(), signed); assert.equal((await plan()).transaction.chainId, "0xaa36a7");
@@ -105,15 +174,19 @@ describe("future staging mint authority: disposable SQL, mocked assessment, publ
     await assert.rejects(controller.issue(v, signer, abort.signal)); assert.equal(calls.sign, 0); assert.equal((await state()).signatures, 0);
   });
   for (const failure of ["invalid", "timeout", "review-withdrawn", "cancelled"]) test(`signer ${failure} preserves uncertainty without signing twice`, async () => {
+    const held = hold();
     const abort = new AbortController(); hooks.sign = async data => {
       if (failure === "invalid") return "0x";
-      if (failure === "timeout") return new Promise(() => {});
+      if (failure === "timeout") await held.promise;
       if (failure === "review-withdrawn") review.withdraw();
       if (failure === "cancelled") abort.abort();
       return f.active.accounts.authorizer.signTypedData(data);
     };
-    await assert.rejects(controller.issue(await intent(), signer, abort.signal)); assert.equal((await state()).authorization, "unknown");
-    await controller.close(); await f.restart(); open(); hooks.sign = undefined;
+    const pending = controller.issue(await intent(), signer, abort.signal);
+    try { await settle(assert.rejects(pending), `signer ${failure} refusal`); }
+    finally { held.release(); abort.abort(); await settle(pending.catch(() => {}), `signer ${failure} drain`); }
+    assert.equal((await state()).authorization, "unknown");
+    await closeController(); await settle(f.restart(), "mint fixture restart"); open(); hooks.sign = undefined;
     await assert.rejects(issue()); assert.equal(calls.sign, 1); assert.equal((await state()).signatures, 0);
   });
   for (const kind of ["inputs", "reservation", "signing", "signature", "wallet"]) test(`lost ${kind} COMMIT acknowledgment never duplicates authority`, async () => {
@@ -122,7 +195,7 @@ describe("future staging mint authority: disposable SQL, mocked assessment, publ
       signing: "UPDATE open_mint.generative_authorizations SET state='signing'", signature: "INSERT INTO open_mint.generative_authorization_signatures", wallet: "INSERT INTO open_mint.wallet_mint_dispatches" }[kind];
     let armed = false; f.faults.afterQuery = sql => { if (sql.startsWith(prefix)) armed = true; if (armed && sql === "COMMIT") throw Error("Injected lost commit reply"); };
     await assert.rejects(kind === "wallet" ? controller.submit(await intent(), browser(), p) : issue()); f.faults.afterQuery = undefined;
-    const previous = { ...calls }; await controller.close(); await f.restart(); open();
+    const previous = { ...calls }; await closeController(); await settle(f.restart(), "mint fixture restart"); open();
     if (kind === "signing") { await assert.rejects(issue()); assert.equal((await state()).authorization, "signing"); }
     else if (kind === "wallet") { await assert.rejects(controller.submit(await intent(), browser(), p)); assert.equal((await state()).dispatches, 1); }
     else { await issue(); assert.equal(calls.sign, kind === "signature" ? previous.sign : 1); }
@@ -214,9 +287,16 @@ describe("future staging mint authority: disposable SQL, mocked assessment, publ
     assert.equal((await controller.submissionState(f.request.code, f.session.id)).blocked, true);
   });
   test("close cancels signing, drains cleanup, refuses concurrent and subsequent operations", async () => {
-    let entered; const ready = new Promise(r => entered = r); hooks.sign = async () => { entered(); return new Promise(() => {}); };
-    const pending = issue(); const rejected = assert.rejects(pending); await ready;
-    await assert.rejects(issue(), /already running/); await controller.close(); await rejected;
+    let entered; const ready = new Promise(r => entered = r), held = hold();
+    hooks.sign = async () => { entered(); await held.promise; return "0x"; };
+    const pending = issue();
+    try {
+      await expectCheckpoint(ready, pending, "close-cancels-signing signer");
+      await assert.rejects(issue(), /already running/); await closeController(); await settle(assert.rejects(pending), "closed signer refusal");
+    } finally {
+      held.release(); controller.halt();
+      await settle(pending.catch(() => {}), "closed signer operation drain"); await closeController();
+    }
     assert.equal((await state()).authorization, "unknown"); await assert.rejects(issue());
   });
   test("whole-controller deadline quarantines a delayed SQL preparation without authority", async () => {
@@ -228,8 +308,11 @@ describe("future staging mint authority: disposable SQL, mocked assessment, publ
     let delayed = false; f.faults.afterQuery = async sql => {
       if (!delayed && sql.startsWith("SELECT p.*,n.profile AS namespace_profile")) { delayed = true; await new Promise(r => setTimeout(r, 1500)); }
     };
-    await assert.rejects(controller.preflightNonce(await intent())); await assert.rejects(issue());
-    await f.writer.transaction(async () => {}); // drain only this test's delayed read
+    try { await assert.rejects(controller.preflightNonce(await intent())); await assert.rejects(issue()); }
+    finally {
+      f.faults.afterQuery = undefined;
+      await settle(f.writer.transaction(async () => {}), "delayed mint SQL read drain"); // only this test's delayed read
+    }
     assert.equal((await state()).authorization, null); assert.equal(calls.sign, 0);
   });
 });

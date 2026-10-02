@@ -32,8 +32,9 @@ const INHERITED_CAMPAIGNS = {
     'test:generative:readiness-http', 'test:generative:staging-readiness',
     'test:generative:staging-review', 'test:generative:staging-assessment',
     'test:generative:staging-transport', 'test:generative:staging-sharing',
-    'test:generative:staging-mint', 'test:generative:staging-runtime',
   ],
+  mint: ['test:generative:staging-mint'],
+  runtime: ['test:generative:staging-runtime'],
   recovery: [
     'test:generative:staging-restore', 'test:generative:staging-recovery-unit',
     'test:generative:staging-recovery-pg', 'test:generative:staging-recovery-flow',
@@ -48,11 +49,32 @@ const jobBlocks = workflow => {
   return Object.fromEntries(starts.map((match, i) =>
     [match[1], workflow.slice(match.index, starts[i + 1]?.index ?? workflow.length)]));
 };
-const npmCampaign = job => [...job.matchAll(/\bnpm run ([^\n]+)/g)].map(match => match[1].trim());
+const npmCampaign = job => {
+  const commands = [];
+  let shellBlock = false;
+  const executable = /^(?:OPEN_MINT_TEST_ORIGIN="\$OPEN_MINT_ORIGIN" )?npm run (.+)$/;
+  for (const line of job.split('\n')) {
+    const run = line.match(/^ {8}run: (.+)$/);
+    if (run) {
+      shellBlock = run[1] === '|';
+      const command = run[1].match(executable);
+      if (command) commands.push(command[1].trim());
+    } else if (shellBlock) {
+      // Only executable lines in this run block count. Comments, echo text
+      // and other YAML fields cannot stand in for a selected campaign.
+      if (line !== '' && !line.startsWith('          ')) shellBlock = false;
+      else {
+        const command = line.slice(10).match(executable);
+        if (command) commands.push(command[1].trim());
+      }
+    }
+  }
+  return commands;
+};
 function verifyInheritedLanes(workflow) {
   const jobs = jobBlocks(workflow);
-  assert.deepEqual(Object.keys(jobs), ['verify', 'admission', 'staging', 'recovery', 'pulse']);
-  const budgets = { verify: 35, admission: 20, staging: 25, recovery: 20, pulse: 10 };
+  assert.deepEqual(Object.keys(jobs), ['verify', 'admission', 'staging', 'mint', 'runtime', 'recovery', 'pulse']);
+  const budgets = { verify: 35, admission: 20, staging: 25, mint: 15, runtime: 20, recovery: 20, pulse: 10 };
   for (const [name, commands] of Object.entries(INHERITED_CAMPAIGNS)) {
     assert.deepEqual(npmCampaign(jobs[name]), commands, `Lost, duplicated, reordered or changed command in ${name}`);
   }
@@ -83,7 +105,7 @@ function verifyInheritedLanes(workflow) {
       'Lanes must be independently bootstrapped and must not hide test failures');
     if (name !== 'pulse') assert.doesNotMatch(job, /\n\s+if:|actions\/upload-artifact|include-hidden-files:/,
       'Do not skip inherited checks or upload private SQL, packages, logs or runtime state');
-    if (['admission', 'staging', 'recovery'].includes(name)) {
+    if (['admission', 'staging', 'mint', 'runtime', 'recovery'].includes(name)) {
       assert.match(job, /working-directory: contracts\n        run: forge build --offline\n/);
       const install = job.indexOf('npm ci'), compile = job.indexOf('forge build --offline');
       const lock = job.indexOf('node scripts/verify-generative-release.mjs');
@@ -124,6 +146,10 @@ test('lane guards reject omitted commands, duplicate campaigns, lost local-effec
   const workflow = read('../../.github/workflows/verify.yml');
   for (const changed of [
     workflow.replace('          npm run test:generative:staging-assessment\n', ''),
+    workflow.replace('          npm run test:generative:staging-assessment\n',
+      '          # npm run test:generative:staging-assessment\n'),
+    workflow.replace('        run: npm run test:generative:staging-mint',
+      '        run: echo npm run test:generative:staging-mint'),
     workflow.replace('        run: npm run test:generative:local-review',
       '        run: |\n          npm run test:generative:local-review\n          npm run test:generative:local-review'),
     workflow.replace('generative:deployment:rehearsal -- --execute-local-test-transactions', 'generative:deployment:rehearsal'),

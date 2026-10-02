@@ -94,6 +94,34 @@ async function request(site, fixture, path, body, cookie = fixture.sessions.cook
   });
 }
 
+async function assertVisibleIncludedMint(site, fixture, included, mintState = "confirming", owner = included.a.recipient.toLowerCase()) {
+  const lookup = await site.reads.lookup("alice");
+  assert.equal(lookup.state, mintState === "minted" ? "confirmed" : "confirming");
+  assert.deepEqual(lookup.item.inclusion, { number: BigInt(included.block.number).toString(), hash: included.block.hash });
+  assert.equal(lookup.item.authorizationDigest, included.digest);
+  const gallery = await request(site, fixture, "/api/gallery");
+  assert.equal(gallery.status, 200, gallery.text);
+  assert.equal(gallery.body.state, "confirmed"); // The read is verified; the token can still be Confirming.
+  assert.equal(gallery.body.items.length, 1);
+  const item = gallery.body.items[0];
+  assert.deepEqual(item, {
+    tokenId: BigInt(included.a.handleKey).toString(), availability: "available", handle: "alice", renderHandle: included.handle,
+    mbti: included.mbti, mintState, originalRecipient: included.a.recipient.toLowerCase(), currentOwner: owner,
+    assessmentDigest: included.a.assessmentDigest, inputDigest: included.a.inputDigest,
+    rendererIdentity: fixture.config.generativeRenderer.identity, transactionHash: included.hash,
+  });
+  assert.equal(lookup.item.transactionHash, item.transactionHash);
+  assert.equal(lookup.item.inputDigest, item.inputDigest);
+  const status = await request(site, fixture, "/api/signatures/alice/status");
+  assert.equal(status.status, 200, status.text);
+  assert.deepEqual(status.body, { handle: "alice", tokenId: item.tokenId, state: mintState,
+    inputDigest: item.inputDigest, rendererIdentity: item.rendererIdentity, transactionHash: item.transactionHash });
+  const detail = await site.artwork.detail("alice", new AbortController().signal);
+  assert.equal(detail.mint.state, mintState);
+  assert.equal(detail.mint.transactionHash, included.hash);
+  assert.equal(detail.inputDigest, included.a.inputDigest);
+}
+
 async function seedInterrupted(f) {
   const ns = f.ns.id, model = f.input.assessmentPolicy.profileVersion, epoch = f.writer.epoch;
   const attempts = [];
@@ -145,10 +173,16 @@ describe("R3 disposable RC1 backup and restore", { skip: process.env.OPEN_MINT_T
       const code = created.body.code;
       const mint = await request(site, f, "/api/mints/begin", { code, consent: true });
       assert.equal(mint.status, 200, mint.text);
-      const included = f.include(mint.body.transaction);
       assert.equal(await site.sync(), "observed");
-      assert.equal((await site.reads.lookup("alice")).state, "confirming");
-      assert.equal((await request(site, f, "/api/gallery")).body.items.length, 0);
+      assert.deepEqual((await request(site, f, "/api/gallery")).body.items, []);
+      assert.equal((await request(site, f, "/signatures/alice")).status, 503);
+      const included = f.include(mint.body.transaction);
+      // A candidate receipt is not enough: only the owned sync validates and
+      // persists canonical inclusion. No pre-sync phantom or private reveal.
+      assert.deepEqual((await request(site, f, "/api/gallery")).body.items, []);
+      assert.equal((await request(site, f, "/signatures/alice")).status, 503);
+      assert.equal(await site.sync(), "observed");
+      await assertVisibleIncludedMint(site, f, included);
       const reported = await request(site, f, "/api/mints/report", { code, permit: mint.body.permit, transactionHash: included.hash });
       assert.equal(reported.status, 200, reported.text);
       await site.close(); site = undefined;
@@ -180,13 +214,16 @@ describe("R3 disposable RC1 backup and restore", { skip: process.env.OPEN_MINT_T
       oldReview.halt(); freshController.halt();
       resumed = await createStagingSite(opened.input, deps);
       await new Promise(resolve => resumed.server.listen(0, "127.0.0.1", resolve));
-      assert.equal((await request(resumed, { ...f, sessions: opened.sessions }, "/api/gallery")).status, 503);
+      const restoredFixture = { ...f, sessions: opened.sessions };
+      const notObserved = await request(resumed, restoredFixture, "/api/gallery");
+      assert.equal(notObserved.status, 503); assert.deepEqual(notObserved.body.items, []);
+      assert.deepEqual(await resumed.reads.lookup("alice"), { state: "unknown" });
+      await assert.rejects(resumed.artwork.detail("alice", new AbortController().signal));
       assert.equal(await resumed.sync(), "observed");
-      assert.equal((await resumed.reads.lookup("alice")).state, "confirming");
-      assert.equal((await request(resumed, { ...f, sessions: opened.sessions }, "/api/gallery")).body.items.length, 0);
+      await assertVisibleIncludedMint(resumed, restoredFixture, included);
       const newOwner = transferAfterBackup(f, included); f.finalize();
       assert.equal(await resumed.sync(), "observed");
-      assert.equal((await request(resumed, { ...f, sessions: opened.sessions }, "/api/gallery")).body.items.length, 1);
+      await assertVisibleIncludedMint(resumed, restoredFixture, included, "minted", newOwner);
       const finalMint = await resumed.reads.lookup("alice");
       assert.equal(finalMint.item.originalRecipient, included.a.recipient.toLowerCase());
       assert.equal(finalMint.item.currentOwner, newOwner);
@@ -283,7 +320,7 @@ describe("R3 disposable RC1 backup and restore", { skip: process.env.OPEN_MINT_T
   for (const saved of ["reserved", "signing", "unknown", "wallet-unknown"]) test(`preserves ${saved} across restore and private reload without effects`, { timeout: 90000 }, async () => {
     const source = disposablePostgres(), destination = disposablePostgres();
     const admin = new Client(source.config); await admin.connect();
-    let f, site, restored, resumed;
+    let f, site, restored, resumed, included;
     try {
       f = await stagingSiteFixture(source, admin);
       if (saved === "unknown") f.deps.signer.signTypedData = async () => { f.counts.sign++; return "0x"; };
@@ -302,7 +339,7 @@ describe("R3 disposable RC1 backup and restore", { skip: process.env.OPEN_MINT_T
       f.faults.afterQuery = undefined;
       assert.equal(plan.status === 200, saved === "wallet-unknown", plan.text);
       assert.equal((await f.db.query("SELECT state FROM open_mint.generative_authorizations")).rows[0].state, saved === "wallet-unknown" ? "signed" : saved);
-      if (saved === "wallet-unknown") { f.include(plan.body.transaction); assert.equal(await site.sync(), "observed"); }
+      if (saved === "wallet-unknown") { included = f.include(plan.body.transaction); assert.equal(await site.sync(), "observed"); }
       await site.close(); site = undefined;
       await f.db.query("UPDATE open_mint.budget_policies SET generation_enabled=false");
       await f.db.query("UPDATE open_mint.generative_issuance_profiles SET enabled=false");
@@ -316,9 +353,11 @@ describe("R3 disposable RC1 backup and restore", { skip: process.env.OPEN_MINT_T
       const restoredFixture = { ...f, sessions: opened.sessions };
       if (saved === "wallet-unknown") {
         assert.equal(await resumed.sync(), "observed");
-        assert.equal((await resumed.reads.lookup("alice")).state, "confirming");
+        await assertVisibleIncludedMint(resumed, restoredFixture, included);
         f.reorg(); assert.equal(await resumed.sync(), "observed");
         assert.equal((await resumed.reads.lookup("alice")).state, "unknown");
+        const removed = await request(resumed, restoredFixture, "/api/gallery");
+        assert.equal(removed.status, 200, removed.text); assert.deepEqual(removed.body.items, []);
         assert.equal((await restored.db.query("SELECT count(*)::integer AS n FROM open_mint.projection_mints")).rows[0].n, 0);
         await assert.rejects(resumed.artwork.detail("alice", new AbortController().signal));
       }

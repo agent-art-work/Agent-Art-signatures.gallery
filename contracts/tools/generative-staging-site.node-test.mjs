@@ -34,6 +34,30 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
     return { code, ...plan.body };
   }
   const sync = async () => assert.equal(await site.sync(), "observed");
+  async function galleryMint(minted, mintState) {
+    const expected = { tokenId: BigInt(minted.a.handleKey).toString(), availability: "available", handle: "alice", mbti: minted.mbti,
+      mintState, originalRecipient: minted.a.recipient.toLowerCase(), currentOwner: minted.a.recipient.toLowerCase(),
+      assessmentDigest: minted.a.assessmentDigest, transactionHash: minted.hash, inputDigest: minted.a.inputDigest,
+      rendererIdentity: f.config.generativeRenderer.identity, renderHandle: minted.handle };
+    for (const path of ["/api/gallery", `/api/gallery?mbti=${minted.mbti}`, `/api/gallery?owner=${minted.a.recipient.toLowerCase()}`]) {
+      const result = await http(path); assert.equal(result.status, 200, path);
+      // A confirmed snapshot means verified canonical inclusion, not that
+      // every token in it has already reached finality.
+      assert.equal(result.body.state, "confirmed", path);
+      assert.deepEqual(result.body.snapshot, { number: BigInt(minted.block.number).toString(), hash: minted.block.hash }, path);
+      assert.deepEqual(result.body.items, [expected], path);
+      assert.doesNotMatch(result.text, /permit|authorizationDigest|providerResponseId|walletProof/);
+    }
+    assert.deepEqual((await http("/api/gallery?mbti=INTJ")).body.items, []);
+    for (const path of ["/", `/${minted.mbti}/`, "/me"]) {
+      const page = await http(path); assert.equal(page.status, 200, path);
+      assert.ok(page.text.includes(`<article class="gallery-item" data-mint-state="${mintState}">`), path);
+      assert.ok(page.text.includes(`/api/signatures/alice/artwork/${minted.a.inputDigest}/svg`), path);
+      assert.match(page.text, /Signature for @ALIce × ENFP/);
+      assert.ok(page.text.includes(mintState === "confirming" ? ">Confirming</span>" : ">Minted</a>"), path);
+      assert.doesNotMatch(page.text, new RegExp(`<article class="gallery-item" data-mint-state="${mintState === "confirming" ? "minted" : "confirming"}">`));
+    }
+  }
   async function until(read, description, timeout = 22000) {
     const end = performance.now() + timeout;
     while (performance.now() < end) { if (await read()) return; await new Promise(r => setTimeout(r, 50)); }
@@ -58,13 +82,16 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
   });
   test("scheduled observation survives transient RPC failure, reveals/finalizes, then closes admission on a finality contradiction", async () => {
     site = await createStagingSite(f.input, f.deps); await site.start(0);
-    const r = await prepare(); f.include(r.transaction);
+    const r = await prepare(), minted = f.include(r.transaction);
     f.controls.mutation = (v, method, params, source) => method === "eth_chainId" && source === 1 ? "0x1" : v;
     await until(() => site.snapshot().observer.state === "backing-off", "transient backoff");
-    assert.equal((await http("/api/gallery")).status, 503);
+    const unavailable = await http("/api/gallery"); assert.equal(unavailable.status, 503); assert.deepEqual(unavailable.body.items, []);
+    assert.equal((await http("/signatures/alice")).status, 503);
+    assert.equal((await http(`/api/signatures/alice/artwork/${minted.a.inputDigest}/svg`)).status, 503);
     f.controls.mutation = undefined;
     await until(async () => (await site.reads.lookup("alice")).state === "confirming", "automatic canonical observation");
     assert.equal((await http(`/api/mints/status/${r.code}`)).body.state, "confirming");
+    await galleryMint(minted, "confirming");
     f.finalize(); await until(async () => (await site.reads.lookup("alice")).state === "confirmed", "automatic finalized observation");
     assert.equal((await http("/api/gallery")).body.items.length, 1);
     f.reorg(); await until(() => site.snapshot().phase === "failed", "terminal observer halts admission");
@@ -156,14 +183,21 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
       assert.deepEqual(f.counts, { x: 0, grok: 0, sign: 0 });
     } finally { t.mock.timers.reset(); release?.(); }
   });
-  test("full HTTP preparation -> reported hash stays hidden -> canonical inclusion Confirming -> finalized home/MBTI/collection/media", async () => {
+  test("full HTTP preparation -> reported/unobserved inclusion stays hidden -> immediate Confirming gallery -> same canonical identity becomes Minted", async () => {
     await start(); await sync(); const r = await prepare();
     const pending = await http(`/mint/${r.code}`); assert.equal(pending.status, 200); assert.doesNotMatch(pending.text, /ALIce|ENFP|data:application\/json/);
     assert.doesNotMatch(pending.text.split("</head>")[0], /og:|twitter:|rel="canonical"/);
-    await http("/api/mints/report", { code: r.code, permit: r.permit, transactionHash: `0x${"9".repeat(64)}` });
+    const reported = await http("/api/mints/report", { code: r.code, permit: r.permit, transactionHash: `0x${"9".repeat(64)}` });
+    assert.equal(reported.status, 200, reported.text);
     assert.equal((await http(`/api/mints/status/${r.code}`)).body.state, "pending");
     assert.equal((await http("/signatures/alice")).status, 503); assert.deepEqual((await http("/api/gallery")).body.items, []);
-    const minted = f.include(r.transaction); await sync();
+    const minted = f.include(r.transaction);
+    // A wallet-reported hash or even fixture inclusion is not a projection
+    // witness. Public reads must not reveal before independent validation.
+    assert.equal((await http("/signatures/alice")).status, 503);
+    assert.deepEqual((await http("/api/gallery")).body.items, []);
+    assert.equal((await http(`/api/signatures/alice/artwork/${minted.a.inputDigest}/svg`)).status, 503);
+    await sync();
     const status = await http(`/api/assessments/${r.code}`); assert.equal(status.body.mint.state, "confirming"); assert.equal(status.body.canMint, false);
     assert.equal(status.body.mint.transactionHash, minted.hash); assert.doesNotMatch(status.text, /ENFP|assessmentDigest|permit|ALIce/);
     const redirect = await http(`/mint/${r.code}`); assert.equal(redirect.status, 303); assert.equal(redirect.headers.location, "/signatures/alice");
@@ -176,14 +210,14 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
     const sharingPath = `/sharing/signatures/alice/${minted.a.inputDigest}.png`;
     assert.equal((await http(sharingPath)).status, 503);
     assert.doesNotMatch((await http("/p/ALIce/ENFP")).text.split("</head>")[0], /og:|twitter:|rel="canonical"/);
-    assert.deepEqual((await http("/api/gallery")).body.items, []);
+    await galleryMint(minted, "confirming");
     const image = await http(`/api/signatures/alice/artwork/${minted.a.inputDigest}/svg`); assert.equal(image.text, minted.svg);
     const metadata = await http(`/api/signatures/alice/artwork/${minted.a.inputDigest}/metadata`); assert.deepEqual(metadata.body, minted.metadata);
     assert.equal((await http(`/api/signatures/alice/artwork/${minted.a.inputDigest}/png`)).bytes.subarray(1, 4).toString(), "PNG");
     assert.equal((await http("/p/ALIce/variations")).status, 200);
     f.finalize(); await sync();
     assert.equal((await http(`/api/mints/status/${r.code}`)).body.state, "minted");
-    assert.equal((await http("/api/gallery")).body.items.length, 1);
+    await galleryMint(minted, "minted");
     for (const path of ["/", "/ENFP/", "/me", "/signatures/alice"]) { const p = await http(path); assert.equal(p.status, 200, path); assert.match(p.text, /ALIce/); }
     const card = await http("/signatures/alice"), head = card.text.split("</head>")[0];
     assert.match(card.text, /Grok selected this MBTI/);
@@ -208,8 +242,17 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
   });
   test("unfinalized reorg withdraws reveal and media, retaining the pending dispatch and accepted assessment", async () => {
     await start(); const r = await prepare(), m = f.include(r.transaction); await sync();
-    assert.equal((await http(`/api/mints/status/${r.code}`)).body.state, "confirming"); f.reorg(); await sync();
+    assert.equal((await http(`/api/mints/status/${r.code}`)).body.state, "confirming"); await galleryMint(m, "confirming");
+    f.reorg(); await sync();
     assert.equal((await http(`/api/mints/status/${r.code}`)).body.state, "pending");
+    for (const path of ["/api/gallery", "/api/gallery?mbti=ENFP", `/api/gallery?owner=${m.a.recipient.toLowerCase()}`]) {
+      const gallery = await http(path); assert.equal(gallery.status, 200, path); assert.deepEqual(gallery.body.items, [], path);
+    }
+    for (const path of ["/", "/ENFP/", "/me"]) {
+      const page = await http(path); assert.equal(page.status, 200, path);
+      assert.doesNotMatch(page.text, /<article class="gallery-item"|Signature for @ALIce × ENFP/);
+      assert.ok(!page.text.includes(`/api/signatures/alice/artwork/${m.a.inputDigest}/svg`), path);
+    }
     assert.equal((await http("/signatures/alice")).status, 503);
     assert.equal((await http(`/api/signatures/alice/artwork/${m.a.inputDigest}/svg`)).status, 503);
     assert.equal((await http("/api/mints/begin", { code: r.code, consent: true })).status, 409); assert.deepEqual(f.counts, { x: 1, grok: 1, sign: 1 });
