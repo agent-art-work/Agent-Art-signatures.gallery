@@ -12,6 +12,7 @@ test('the CI selector includes every Pulse mock suite, including future files, w
   assert.deepEqual([...selected, ...LOCAL_EVM_SUITES].sort(), all);
   for (const name of ['pulse-ci.node-test.mjs', 'pulse-c7-browser.node-test.mjs',
     'pulse-ui-accessibility.node-test.mjs',
+    'pulse-sepolia-admin-verify.node-test.mjs',
     'pulse-sepolia-admin-client.node-test.mjs', 'pulse-sepolia-admin-page.node-test.mjs',
     'pulse-sepolia-admin-web-http.node-test.mjs', 'pulse-sepolia-admin-web-service.node-test.mjs',
     'pulse-sepolia-rpc-errors.node-test.mjs', 'pulse-sepolia-relay-store.node-test.mjs']) {

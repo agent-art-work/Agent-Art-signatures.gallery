@@ -43,18 +43,18 @@ next to the CTA. A timer is not evidence that an uncertain transaction failed.
 Mocked browser/RPC/PG and offline contract checks do not certify a hosted
 installation, actual wallet-extension matrix, manual screen-reader experience,
 live Grok attribution, production economics or independent security review.
-CI source wiring is not a claim that the newly changed job ran on GitHub.
+Hosted CI is a separate execution check, not acceptance of a staging deployment.
 R5–R10 remain paused. The next product inputs are the actual free-mint list/quota
 and closure policy plus paid Pulse configuration; do not manufacture them.
 
 ## Combined verification
 
-- Full application/HTTP/disposable PostgreSQL coverage campaign: **6,806 passed,
-  7 existing non-applicable skips, zero failures** across 6,813 tests.
+- Full application/HTTP/disposable PostgreSQL coverage campaign: **6,845 passed,
+  7 existing non-applicable skips, zero failures** across 6,852 tests.
 - Unchanged coverage ratchet passed: statements **94.69%**, branches **91.89%**,
   functions **97.71%** (minimums remain 93/87/97).
 - Offline Foundry campaign: **251 passed, zero failures/skips**.
-- Dynamically selected Pulse mock/disposable-PG regression: **493 passed,
+- Dynamically selected Pulse mock/disposable-PG regression: **495 passed,
   zero failures/skips**. Standalone C5 JavaScript/Anvil differential tests remain
   explicitly separate from this mock-only selector, not silently omitted.
 - Backup helper: **5 passed**. Full real historical extraction/content/permission
@@ -64,11 +64,21 @@ and closure policy plus paid Pulse configuration; do not manufacture them.
 - Build, typecheck, renderer/slogan locks, Core/RC1/RC2 integration locks,
   CI selection guards and whitespace checks passed.
 
-Local evidence files are `/private/tmp/sg-hardening-coverage-20261002.json`,
+Local evidence files are `/private/tmp/sg-hardening-final-coverage-20261002.json`,
 `coverage/coverage-summary.json`, and `/private/tmp/sg-ui-a11y-final/results.json`.
 Synthetic browser screenshots/results are the only evidence selected for the
 new CI artifact upload; private backup manifests and real-site screenshots
 are excluded. The archived backup and current dev runtime remain local.
+
+The first hosted run exposed two test-portability defects, both corrected without
+changing production rules or test thresholds. The RC2 verification fixture now
+uses independent, hash-checked offline compilation to resolve semantic immutable
+names instead of incidental compiler AST IDs; full runtime bytes and every
+reference group remain checked, including renumbering and drift regressions.
+Font/license HTTP checks now have separate per-asset cases with the original
+exact-byte/header assertions and default five-second limit, rather than putting
+all 16 subsets and artwork setup into one timing budget. The Pulse campaign also
+passed against a forced clean offline Foundry rebuild.
 
 After the local restart, read-only `/health` reported `mintReady: true`,
 `galleryAvailable: true`, `observerHealthy: true`, no safety halt/conflict, and

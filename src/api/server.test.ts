@@ -22,6 +22,8 @@ let store: MemorySignatureStore;
 let auth: MemoryAuthState;
 let mint: V2MintService | undefined;
 let baseUrl: string;
+const SELF_HOSTED_FONT_PATHS = [...SITE_FONT_CSS.matchAll(/url\(([^)]+)\)/g)].map(match => match[1]!);
+const SELF_HOSTED_FONT_ASSET_PATHS = [...SELF_HOSTED_FONT_PATHS, SELF_HOSTED_FONT_PATHS[0]!.replace(/[^/]+$/, "LICENSE.txt")];
 
 async function boot(seed = false, seedMint = false, mintEnabled = true, optionOverrides: Partial<AppOptions> = {}, seedGallery = false) {
   store = new MemorySignatureStore();
@@ -63,7 +65,15 @@ function postJson(path: string, body: Record<string, unknown>, cookie: string, c
 }
 
 function closeServer(): Promise<void> {
-  return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  const closing = server;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Test HTTP server teardown timed out.")), 2_000);
+    timer.unref();
+    closing.close(error => { clearTimeout(timer); error ? reject(error) : resolve(); });
+    // Tests may assert a refusal using headers only. Those response bodies must
+    // not keep an active connection alive after this isolated case is finished.
+    closing.closeAllConnections();
+  });
 }
 
 function post(path: string, body: URLSearchParams, cookie?: string) {
@@ -349,23 +359,21 @@ describe("V1 previews", () => {
     }
   });
 
-  it("serves the exact font bytes and license with GET/HEAD and immutable versioned caching", async () => {
-    const paths = [...SITE_FONT_CSS.matchAll(/url\(([^)]+)\)/g)].map((match) => match[1]);
-    paths.push(paths[0].replace(/[^/]+$/, "LICENSE.txt"));
-    for (const path of paths) {
-      const asset = siteFontAsset(path)!;
-      const get = await fetch(`${baseUrl}${path}`);
-      expect(get.status).toBe(200);
-      expect(get.headers.get("content-type")).toBe(asset.contentType);
-      expect(get.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
-      expect(get.headers.get("x-content-type-options")).toBe("nosniff");
-      expect(Buffer.from(await get.arrayBuffer())).toEqual(asset.bytes);
-      const head = await fetch(`${baseUrl}${path}`, { method: "HEAD" });
-      expect(head.status).toBe(200);
-      expect(head.headers.get("content-type")).toBe(asset.contentType);
-      expect(head.headers.get("cache-control")).toBe(get.headers.get("cache-control"));
-      expect(await head.text()).toBe("");
-    }
+  // One exact byte comparison per case: under coverage/parallel load, all 16
+  // subsets and their GET/HEAD responses must not share one five-second budget.
+  it.each(SELF_HOSTED_FONT_ASSET_PATHS)("serves exact GET/HEAD font asset with immutable caching: %s", async path => {
+    const asset = siteFontAsset(path)!;
+    const get = await fetch(`${baseUrl}${path}`, { signal: AbortSignal.timeout(2_000) });
+    expect(get.status).toBe(200);
+    expect(get.headers.get("content-type")).toBe(asset.contentType);
+    expect(get.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+    expect(get.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(Buffer.from(await get.arrayBuffer())).toEqual(asset.bytes);
+    const head = await fetch(`${baseUrl}${path}`, { method: "HEAD", signal: AbortSignal.timeout(2_000) });
+    expect(head.status).toBe(200);
+    expect(head.headers.get("content-type")).toBe(asset.contentType);
+    expect(head.headers.get("cache-control")).toBe(get.headers.get("cache-control"));
+    expect(await head.text()).toBe("");
   });
 
   it("does not turn the font route into a general package-file server or write endpoint", async () => {

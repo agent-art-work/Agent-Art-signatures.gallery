@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import solc from 'solc';
 import { decodeFunctionData, encodeAbiParameters, encodeEventTopics, encodeFunctionResult,
   keccak256, stringToHex } from 'viem';
 import { ROOT } from './pulse-candidate-lock.mjs';
@@ -29,9 +30,49 @@ const shortWord = text => {
   return '0x' + Buffer.from(bytes).toString('hex');
 };
 
-// Independent immutable substitution keyed to the frozen compiler's semantic
-// assignments, rather than reusing the verifier's byte-position table.
-function fixtureRuntime(p, deployedAt) {
+// Independently compile the hash-checked local sources with the pinned compiler.
+// AST IDs vary with the other files in a Foundry build; they are not contract
+// identity. The compiler's semantic declarations and reference groups are used
+// here, never the production verifier's reviewed byte-position table. Requesting
+// AST output does not change the frozen compiler settings or runtime template.
+function independentFixtureBuild(loadedArtifact) {
+  assert.equal(solc.version().split('.Emscripten')[0], loadedArtifact.metadata.compiler.version);
+  const sources = Object.fromEntries(Object.entries(loadedArtifact.metadata.sources).map(([path, source]) => {
+    assert.ok(/^src\/release\/(?:I?SignaturesPulseMintV1RC2|SignatureRendererV1RC1)\.sol$/.test(path) ||
+      path === 'vendor/pulse-core-v1.0.0/IPulseCore.sol' ||
+      /^\.\.\/node_modules\/@openzeppelin\/contracts\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+\.sol$/.test(path));
+    const content = readFileSync(resolve(ROOT, 'contracts', path), 'utf8');
+    assert.equal(keccak256(stringToHex(content)), source.keccak256, `Stale fixture source: ${path}`);
+    return [path, { content }];
+  }));
+  const { compilationTarget, ...settings } = structuredClone(loadedArtifact.metadata.settings);
+  const [[path, contract]] = Object.entries(compilationTarget);
+  assert.deepEqual(compilationTarget, { 'src/release/SignaturesPulseMintV1RC2.sol': 'SignaturesPulseMintV1RC2' });
+  settings.outputSelection = { '*': { '': ['ast'] }, [path]: { [contract]: ['evm.deployedBytecode'] } };
+  const output = JSON.parse(solc.compile(JSON.stringify({ language: 'Solidity', sources, settings })));
+  assert.deepEqual((output.errors ?? []).filter(error => error.severity === 'error'), []);
+  const bytecode = output.contracts[path][contract].evm.deployedBytecode;
+  const immutableNames = {};
+  function visit(node) {
+    if (!node || typeof node !== 'object') return;
+    if (node.nodeType === 'VariableDeclaration' && node.mutability === 'immutable') {
+      assert.equal(Object.hasOwn(immutableNames, node.id), false);
+      immutableNames[node.id] = node.name;
+    }
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) value.forEach(visit);
+      else if (value && typeof value === 'object') visit(value);
+    }
+  }
+  Object.values(output.sources).forEach(source => visit(source.ast));
+  assert.equal('0x' + bytecode.object, loadedArtifact.deployedBytecode.object, 'Independent runtime template drift');
+  return { runtimeTemplate: '0x' + bytecode.object, immutableReferences: bytecode.immutableReferences, immutableNames };
+}
+
+const independentBuild = independentFixtureBuild(artifact);
+const referenceGroup = refs => JSON.stringify(refs.map(({ start, length }) => [start, length]).sort((a, b) => a[0] - b[0]));
+
+function fixtureRuntime(p, deployedAt, loadedArtifact = artifact, compilerEvidence = independentBuild) {
   const separator = keccak256(encode(['bytes32', 'bytes32', 'bytes32', 'uint256', 'address'], [
     keccak256(stringToHex('EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)')),
     keccak256(stringToHex('SignaturesPulseMintRC2')), keccak256(stringToHex('1')),
@@ -43,18 +84,27 @@ function fixtureRuntime(p, deployedAt) {
     p.renderer.identity, p.sale.treasury, p.sale.freeMintRoot, BigInt(p.sale.freeSlotCount),
     BigInt(p.sale.freeMintQuota), BigInt(p.sale.freeDeadline), ...Object.values(p.sale.pulse).map(BigInt),
   ]));
-  const values = {
-    4083: separator, 4085: word(SEPOLIA), 4087: word(p.collection.address),
-    4089: keccak256(stringToHex('SignaturesPulseMintRC2')), 4091: keccak256(stringToHex('1')),
-    4094: shortWord('SignaturesPulseMintRC2'), 4097: shortWord('1'),
-    18192: word(p.renderer.address), 18194: p.renderer.identity, 18199: word(CORE),
-    18202: word(SEPOLIA), 18205: word(p.sale.treasury), 18220: word(p.sale.freeDeadline),
-    18223: word(deployedAt), 18226: saleHash, 18231: word(p.sale.pulse.k),
-    18233: word(p.sale.pulse.genesisPrice), 18235: word(p.sale.pulse.genesisFloor), 18237: word(p.sale.pulse.pts),
+  const semanticValues = {
+    _cachedDomainSeparator: separator, _cachedChainId: word(SEPOLIA), _cachedThis: word(p.collection.address),
+    _hashedName: keccak256(stringToHex('SignaturesPulseMintRC2')), _hashedVersion: keccak256(stringToHex('1')),
+    _name: shortWord('SignaturesPulseMintRC2'), _version: shortWord('1'),
+    renderer: word(p.renderer.address), rendererIdentity: p.renderer.identity, pulseCore: word(CORE),
+    boundChainId: word(SEPOLIA), treasury: word(p.sale.treasury), freeDeadline: word(p.sale.freeDeadline),
+    deployedAt: word(deployedAt), saleConfigHash: saleHash, _k: word(p.sale.pulse.k),
+    _genesisPrice: word(p.sale.pulse.genesisPrice), _genesisFloor: word(p.sale.pulse.genesisFloor), _pts: word(p.sale.pulse.pts),
   };
-  assert.deepEqual(Object.keys(values).sort(), Object.keys(artifact.deployedBytecode.immutableReferences).sort());
-  const bytes = Buffer.from(artifact.deployedBytecode.object.slice(2), 'hex');
-  for (const [id, refs] of Object.entries(artifact.deployedBytecode.immutableReferences)) {
+  assert.equal(compilerEvidence.runtimeTemplate, loadedArtifact.deployedBytecode.object, 'Independent runtime template drift');
+  assert.deepEqual(Object.keys(compilerEvidence.immutableNames).sort(), Object.keys(compilerEvidence.immutableReferences).sort());
+  assert.deepEqual(Object.values(compilerEvidence.immutableNames).sort(), Object.keys(semanticValues).sort());
+  const groups = new Map(Object.entries(compilerEvidence.immutableReferences).map(([id, refs]) =>
+    [referenceGroup(refs), compilerEvidence.immutableNames[id]]));
+  assert.equal(groups.size, Object.keys(semanticValues).length, 'Each semantic immutable must have its own reference group');
+  assert.deepEqual([...groups.keys()].sort(),
+    Object.values(loadedArtifact.deployedBytecode.immutableReferences).map(referenceGroup).sort(), 'Independent immutable layout drift');
+  const values = {}, bytes = Buffer.from(loadedArtifact.deployedBytecode.object.slice(2), 'hex');
+  for (const [id, refs] of Object.entries(loadedArtifact.deployedBytecode.immutableReferences)) {
+    values[id] = semanticValues[groups.get(referenceGroup(refs))];
+    assert.match(values[id], /^0x[0-9a-f]{64}$/i);
     for (const { start, length } of refs) {
       assert.equal(length, 32); assert.deepEqual(bytes.subarray(start, start + 32), Buffer.alloc(32));
       Buffer.from(values[id].slice(2), 'hex').copy(bytes, start);
@@ -146,6 +196,34 @@ test('RC2 frozen candidate and independent immutable substitution cover every co
     assert.notEqual(f.independent.runtime.slice(2 + start * 2, 2 + (start + 32) * 2), '0'.repeat(64));
   const drift = structuredClone(artifact); Object.values(drift.deployedBytecode.immutableReferences)[0][0].start++;
   assert.throws(() => expectedPulseAdminRuntime(f.p, BigInt(f.deployedAt), drift), /immutable layout drift/);
+});
+
+test('independent fixture accepts unrelated AST renumbering without IR or fixed compiler IDs', () => {
+  const f = fixture(), renumbered = structuredClone(artifact), evidence = structuredClone(independentBuild);
+  delete renumbered.ir;
+  renumbered.deployedBytecode.immutableReferences = Object.fromEntries(
+    Object.values(renumbered.deployedBytecode.immutableReferences).reverse().map((refs, i) => [String(100000 + i * 7), refs]));
+  const previousNames = evidence.immutableNames, previousReferences = evidence.immutableReferences;
+  evidence.immutableNames = {}; evidence.immutableReferences = {};
+  Object.keys(previousNames).reverse().forEach((id, i) => {
+    const next = String(300000 + i * 13);
+    evidence.immutableNames[next] = previousNames[id]; evidence.immutableReferences[next] = previousReferences[id];
+  });
+  assert.equal(fixtureRuntime(f.p, f.deployedAt, renumbered, evidence).runtime, f.independent.runtime);
+  assert.equal(expectedPulseAdminRuntime(f.p, BigInt(f.deployedAt), renumbered), f.independent.runtime);
+});
+
+test('independent fixture rejects missing or ambiguous semantics, layout and full template drift', () => {
+  const f = fixture(), first = Object.keys(independentBuild.immutableNames)[0];
+  const missing = structuredClone(independentBuild); delete missing.immutableNames[first];
+  assert.throws(() => fixtureRuntime(f.p, f.deployedAt, artifact, missing), assert.AssertionError);
+  const ambiguous = structuredClone(independentBuild);
+  ambiguous.immutableNames[first] = ambiguous.immutableNames[Object.keys(ambiguous.immutableNames)[1]];
+  assert.throws(() => fixtureRuntime(f.p, f.deployedAt, artifact, ambiguous), assert.AssertionError);
+  const layout = structuredClone(independentBuild); layout.immutableReferences[first][0].start++;
+  assert.throws(() => fixtureRuntime(f.p, f.deployedAt, artifact, layout), /Independent immutable layout drift/);
+  const template = structuredClone(independentBuild); template.runtimeTemplate += '00';
+  assert.throws(() => fixtureRuntime(f.p, f.deployedAt, artifact, template), /Independent runtime template drift/);
 });
 
 test('complete mocked CREATE receipt, RC2 events, domain and current getters produce a usable verified binding', async () => {

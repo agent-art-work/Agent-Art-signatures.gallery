@@ -29,6 +29,8 @@ import { SITE_FONT_CSS, SITE_FONT_PRELOAD, siteFontAsset } from "../v1/fonts.js"
 
 const servers: Server[] = [];
 const wallet = privateKeyToAccount(`0x${"7".repeat(64)}`);
+const SELF_HOSTED_FONT_PATHS = [...SITE_FONT_CSS.matchAll(/url\(([^)]+)\)/g)].map(match => match[1]!);
+const SELF_HOSTED_FONT_LICENSE_PATH = SELF_HOSTED_FONT_PATHS[0]!.replace(/[^/]+$/, "LICENSE.txt");
 interface RequestOptions { method?: string; body?: unknown; rawBody?: string; headers?: Record<string, string>; skipOrigin?: boolean; skipCsrf?: boolean; skipCookie?: boolean; followRedirects?: boolean }
 
 function expectProductionPresentation(html: string): void {
@@ -99,8 +101,12 @@ function expectPreviewNoticePolicy(html: string, state: "unminted" | "pending" |
 
 afterEach(async () => {
   for (const server of servers.splice(0)) {
-    server.closeAllConnections();
-    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Test HTTP server teardown timed out.")), 2_000);
+      timer.unref();
+      server.close(error => { clearTimeout(timer); error ? reject(error) : resolve(); });
+      server.closeAllConnections();
+    });
   }
   vi.restoreAllMocks();
 });
@@ -1058,22 +1064,25 @@ describe("open mint HTTP boundary", () => {
     expect(await test.store.entries("issuance:")).toEqual([]);
   });
 
-  it("serves exact PNG, metadata, favicon, and font bytes with immutable but session-free responses", async () => {
+  it.each([["png", "image/png"], ["json", "application/json"]] as const)("serves exact minted %s bytes with immutable but session-free responses", async (extension, type) => {
     const test = await fixture(); const owner = test.client(); await owner.init();
     await owner.assess("alice"); await test.mint("alice");
     const artifact = (await test.service.artifact("alice"))!;
     const visitor = test.client();
-    for (const [hash, extension, type] of [[artifact.pngSha256, "png", "image/png"], [artifact.metadataSha256, "json", "application/json"]] as const) {
-      const response = await visitor.request(`/artifacts/${hash}.${extension}`);
-      expect(response.status).toBe(200);
-      expect(response.headers.get("content-type")).toBe(type);
-      expect(sha256Hex(response.bytes)).toBe(hash);
-      expect(response.headers.get("set-cookie")).toBeNull();
-      expect(response.headers.get("cache-control")).toContain("immutable");
-      expect(response.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
-      if (extension === "png") expect(response.bytes.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
-      else expect(response.json).toHaveProperty("image");
-    }
+    const hash = extension === "png" ? artifact.pngSha256 : artifact.metadataSha256;
+    const response = await visitor.request(`/artifacts/${hash}.${extension}`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe(type);
+    expect(sha256Hex(response.bytes)).toBe(hash);
+    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(response.headers.get("cache-control")).toContain("immutable");
+    expect(response.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
+    if (extension === "png") expect(response.bytes.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    else expect(response.json).toHaveProperty("image");
+  });
+
+  it("links the self-hosted preload and session-free immutable favicon/font without assessment setup", async () => {
+    const test = await fixture({ offline: true }); const owner = test.client(); const visitor = test.client();
     const home = await owner.request("/");
     const icon = home.text.match(/<link rel="icon"[^>]*href="([^"]+)"/)![1]!;
     const font = home.text.match(/<link rel="preload"[^>]*href="([^"]+)"/)![1]!;
@@ -1087,19 +1096,46 @@ describe("open mint HTTP boundary", () => {
       expect(response.headers.get("cache-control")).toContain("immutable");
       expect(response.bytes.length).toBeGreaterThan(0);
     }
-    const fontPaths = [...SITE_FONT_CSS.matchAll(/url\(([^)]+)\)/g)].map(match => match[1]!);
-    expect(fontPaths).toHaveLength(16);
-    for (const path of fontPaths) {
-      const response = await visitor.request(path);
-      expect(response.status).toBe(200);
-      expect(response.headers.get("content-type")).toBe("font/woff2");
-      expect(response.bytes).toEqual(siteFontAsset(path)!.bytes);
-      expect(response.headers.get("set-cookie")).toBeNull();
-      expect(response.headers.get("cache-control")).toContain("immutable");
-    }
-    const licensePath = fontPaths[0]!.replace(/[^/]+$/, "LICENSE.txt");
-    expect((await visitor.request(licensePath)).text).toContain("Copyright 2023 The Playpen Sans Project Authors");
-    for (const path of [`/artifacts/${"0".repeat(64)}.png`, `/artifacts/${artifact.pngSha256}.svg`, `/assets/fonts/private.woff2`, "/assets/fonts/playpen-sans-5.3.0/playpen-sans-latin-wght-italic.woff2", "/assets/fonts/instrument-sans-5.3.0/instrument-sans-latin-wght-normal.woff2"]) {
+    expect(SELF_HOSTED_FONT_PATHS).toHaveLength(16);
+    expect(test.assess).not.toHaveBeenCalled();
+  });
+
+  // Each subset retains its exact Buffer equality and immutable/session-free
+  // checks, with an independent five-second test budget and no artwork work.
+  it.each(SELF_HOSTED_FONT_PATHS)("serves exact immutable session-free font bytes: %s", async path => {
+    const test = await fixture({ offline: true }); const visitor = test.client();
+    const response = await visitor.request(path);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("font/woff2");
+    expect(response.bytes).toEqual(siteFontAsset(path)!.bytes);
+    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(response.headers.get("cache-control")).toContain("immutable");
+    expect(test.assess).not.toHaveBeenCalled();
+  });
+
+  it("serves the Playpen Sans license without assessment or session creation", async () => {
+    const test = await fixture({ offline: true }); const visitor = test.client();
+    const response = await visitor.request(SELF_HOSTED_FONT_LICENSE_PATH);
+    expect(response.status).toBe(200);
+    expect(response.text).toContain("Copyright 2023 The Playpen Sans Project Authors");
+    expect(response.bytes).toEqual(siteFontAsset(SELF_HOSTED_FONT_LICENSE_PATH)!.bytes);
+    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(response.headers.get("cache-control")).toContain("immutable");
+    expect(test.assess).not.toHaveBeenCalled();
+  });
+
+  it.each(["/assets/fonts/private.woff2", "/assets/fonts/playpen-sans-5.3.0/playpen-sans-latin-wght-italic.woff2", "/assets/fonts/instrument-sans-5.3.0/instrument-sans-latin-wght-normal.woff2"])("refuses unlisted font assets without caching: %s", async path => {
+    const test = await fixture({ offline: true }); const visitor = test.client();
+    const missing = await visitor.request(path);
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("refuses absent or mismatched artwork hashes without caching", async () => {
+    const test = await fixture(); const owner = test.client(); await owner.init();
+    await owner.assess("alice"); await test.mint("alice");
+    const artifact = (await test.service.artifact("alice"))!; const visitor = test.client();
+    for (const path of [`/artifacts/${"0".repeat(64)}.png`, `/artifacts/${artifact.pngSha256}.svg`]) {
       const missing = await visitor.request(path);
       expect(missing.status).toBe(404);
       expect(missing.headers.get("cache-control")).toBe("no-store");
