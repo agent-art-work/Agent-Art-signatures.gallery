@@ -72,7 +72,10 @@ and closure policy plus paid Pulse configuration; do not manufacture them.
   100/94/95 thresholds unchanged. After that full run, five additional
   response/cleanup/native-timer helper regressions and the two affected real
   HTTP cases passed in a **12-case focused run**; the final complete hosted
-  campaign contains 71 cases. Isolated backup/restore campaign: **8 passed**.
+  candidate contained 71 cases. Subsequent exact policy-expiry, route-diagnostic
+  and four HTTP-body regressions bring the current complete campaign to 77
+  cases; its current full result is checked separately in hosted CI.
+  Isolated backup/restore campaign: **8 passed**.
 - Future-staging mint-controller native-coverage campaign: **39 passed**,
   including five test-harness regressions; **100% lines, 98.82% branches and
   97.96% functions**, with its existing 100/95/95 thresholds unchanged.
@@ -201,6 +204,16 @@ timer reset cannot silently discard the poller. Diagnostics identify the actual
 HTTP route, real elapsed time and original error cause/code. Targeted runtime
 checks passed five cases, the eleven runtime helpers passed independent review,
 and eight covered site/transport cases passed before the full campaign rerun.
+
+A later Pulse run passed 515 of 516 tests: an identity-rejection mock could
+spend its five-millisecond budget before entering its probe on a busy runner.
+The identity and related hung-probe cases now use a coherent test-local
+Date/timer clock and explicit real event-loop phases. Identity rejection is
+observed before expiry advances; a hung probe remains live at four milliseconds
+and is aborted at five, retaining the original failure cause. All 23 helpers
+and the 27-case helper/CI-selector check passed. The production ten-second
+Chrome startup bound, identity/endpoint assertions, separate real delayed-loop
+deadline regression and mandatory 48-case browser matrix are unchanged.
 
 Older restore and site regressions still expected a gallery empty until
 finality. They now verify immediate **Confirming** visibility only after owned

@@ -115,24 +115,44 @@ test('Chrome startup timeout retains bounded stdout/stderr diagnostics', async (
   } finally { await h.supervisor.close(); }
 });
 
-test('a hung DevTools HTTP probe is bounded and aborted even if the mock ignores cancellation', async () => {
+test('a hung DevTools HTTP probe is bounded and aborted even if the mock ignores cancellation', async t => {
+  // Enter the probe before spending its budget: runner scheduling is not the
+  // transport refusal under test. Keep the exact five-millisecond deadline.
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
   const h = browserFixture(); let probeSignal;
   try {
-    await assert.rejects(h.supervisor.ready({ timeoutMs: 5, pollMs: 1,
-      probe: async (_url, signal) => { probeSignal = signal; return new Promise(() => {}); } }),
+    const pending = h.supervisor.ready({ timeoutMs: 5, pollMs: 1,
+      probe: async (_url, signal) => { probeSignal = signal; return new Promise(() => {}); } });
+    pending.catch(() => {});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(probeSignal?.aborted, false);
+    t.mock.timers.tick(4); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(probeSignal.aborted, false);
+    t.mock.timers.tick(1); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(probeSignal.aborted, true);
+    t.mock.timers.tick(0); // Complete the expired readiness loop's final pause.
+    await assert.rejects(pending,
     error => /did not become ready/.test(error.message) && /HTTP readiness probe timed out/.test(error.cause?.message));
     assert.equal(probeSignal.aborted, true);
-  } finally { await h.supervisor.close(); }
+  } finally { t.mock.timers.reset(); await h.supervisor.close(); }
 });
 
-test('Chrome never accepts a different browser identity or external DevTools endpoint', async () => {
-  const h = browserFixture(), urls = [];
+test('Chrome never accepts a different browser identity or external DevTools endpoint', async t => {
+  // Identity rejection must precede startup expiry. A coherent clock keeps a
+  // busy runner from replacing the security failure with a pre-probe timeout.
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
+  const h = browserFixture(), urls = []; let probeSignal;
   try {
-    await assert.rejects(h.supervisor.ready({ timeoutMs: 5, pollMs: 1,
-      probe: async url => { urls.push(url); return version('ws://external.invalid:12345/devtools/browser/not-ours'); } }),
+    const pending = h.supervisor.ready({ timeoutMs: 5, pollMs: 1,
+      probe: async (url, signal) => { urls.push(url); probeSignal = signal; return version('ws://external.invalid:12345/devtools/browser/not-ours'); } });
+    pending.catch(() => {});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(probeSignal?.aborted, true, 'The mismatched identity is rejected before the startup deadline advances.');
+    t.mock.timers.tick(5);
+    await assert.rejects(pending,
     error => /differs from the spawned private browser/.test(error.cause?.message));
     assert.ok(urls.length > 0 && urls.every(url => url === 'http://127.0.0.1:12345/json/version'));
-  } finally { await h.supervisor.close(); }
+  } finally { t.mock.timers.reset(); await h.supervisor.close(); }
 });
 
 test('Chrome cleanup awaits actual close rather than a fixed sleep or only the exit event', async () => {
