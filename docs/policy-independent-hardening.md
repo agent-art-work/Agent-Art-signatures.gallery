@@ -73,8 +73,12 @@ and closure policy plus paid Pulse configuration; do not manufacture them.
   response/cleanup/native-timer helper regressions and the two affected real
   HTTP cases passed in a **12-case focused run**; the final complete hosted
   candidate contained 71 cases. Subsequent exact policy-expiry, route-diagnostic
-  and four HTTP-body regressions bring the current complete campaign to 77
-  cases; its current full result is checked separately in hosted CI.
+  and four HTTP-body regressions brought the campaign to 77
+  cases. That complete local rerun passed all 77 in 682 seconds with **100%
+  lines, 98.13% branches and 98.44% functions**, retaining 100/94/95 thresholds.
+  Hosted execution and the subsequent nominal-binding change remain separate
+  checks, not implied by that local result. The final nominal-budget option
+  guard brings the current complete campaign to 78 cases.
   Isolated backup/restore campaign: **8 passed**.
 - Future-staging mint-controller native-coverage campaign: **39 passed**,
   including five test-harness regressions; **100% lines, 98.82% branches and
@@ -111,7 +115,7 @@ its earlier hosted run passed, so this is preventative, not a claim that the
 mint suite was observed hanging.
 
 All 44 inherited campaign commands now run exactly once across independent core
-(35 minutes), admission (20), worker/transport (25), mint (20), runtime/site (25)
+(35 minutes), admission (20), worker/transport (25), mint (20), runtime/site (30)
 and recovery (20) jobs. Each fresh
 lane installs locked dependencies, PostgreSQL 16 and offline contract
 prerequisites; no lane imports another lane's state or artifacts. The separate
@@ -181,7 +185,10 @@ and 39 mint-controller cases, but the runtime/site lane reached its 20-minute
 job ceiling after reporting concrete HTTP/runtime failures. Covered Linux
 fixture setup took about 13 seconds per case, versus about five seconds locally;
 the runtime suite alone took 598 seconds and the site suite was still executing.
-Its CI-only ceiling is now 25 minutes to fit the entire retained campaign.
+The complete local rerun took 682 seconds, while the hosted runtime component
+alone was over twice its local duration. Its CI-only ceiling is now 30 minutes
+to cover the retained site/installation cases plus fresh runner setup with
+credible margin.
 This does not fix or waive the HTTP failures: those require separate transport
 and targeted fixture-clock regressions, with application, socket, body and
 coverage limits unchanged.
@@ -214,6 +221,26 @@ and is aborted at five, retaining the original failure cause. All 23 helpers
 and the 27-case helper/CI-selector check passed. The production ten-second
 Chrome startup bound, identity/endpoint assertions, separate real delayed-loop
 deadline regression and mandatory 48-case browser matrix are unchanged.
+
+Per-route hosted diagnostics then confirmed a separate native socket failure:
+`POST /api/mints/begin` was reset after 15,002 ms, while an initial direct begin
+took 16,002 ms and a same-transaction begin took 15,167 ms. The canonical
+operating-plan fixture already permits a nominal thirty-second request binding;
+the integrated assessment fixture had shortened it to fifteen seconds.
+Covered positive integration cases use that explicitly selected nominal test
+binding, constructed before configuration hashes and operation reviews. Other
+fixtures retain their fifteen-second default, and exact fifteen-second expiry,
+ten-second body, short v2 and cancellation regressions remain separate. Native
+request/socket bounds and real finite diagnostics are retained. No production
+configuration, supported maximum, provider budget, retry, authority or coverage
+policy is enlarged. This is covered-runner headroom, not evidence that a timed
+out production mint should be retried or allowed through.
+The final option guard and runtime helpers passed twelve cases; both nominal
+runtime flows plus the exact fifteen-second expiry counterpart passed in the
+15-case focused run. Eight covered site cases passed with the nominal binding
+and the original four short transport counterparts. These focused results and
+the earlier complete 77-case pass do not substitute for the final complete
+78-case campaign and hosted run.
 
 Older restore and site regressions still expected a gallery empty until
 finality. They now verify immediate **Confirming** visibility only after owned

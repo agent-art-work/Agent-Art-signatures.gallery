@@ -8,8 +8,8 @@ import { GENERATIVE_PROFILES } from "../../../src/openMint/generativeProfiles.ts
 
 /** Offline-only mint observation driven by the ACTUAL saved signed calldata.
  * Receipts/blocks/artwork are synthetic, not an EVM execution or real X/Grok. */
-export async function stagingSiteFixture(cluster, admin, { v2 = false } = {}) {
-  const f = await stagingAssessmentFixture(cluster, admin, { admitted: false, v2 });
+export async function stagingSiteFixture(cluster, admin, { v2 = false, requestTimeoutMs = 15000 } = {}) {
+  const f = await stagingAssessmentFixture(cluster, admin, { admitted: false, v2, requestTimeoutMs });
   const counts = { x: 0, grok: 0, sign: 0 }, calls = [], controls = { mutation: undefined };
   const headers = f.active.headers, q = n => `0x${BigInt(n).toString(16)}`, hash = n => `0x${BigInt(n).toString(16).padStart(64, "0")}`;
   for (const [i, h] of headers.entries()) h.timestamp = q(Math.floor(Date.now() / 1000) - 30 + i * 2);

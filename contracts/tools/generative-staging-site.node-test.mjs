@@ -14,10 +14,24 @@ import { controlledAssessmentTiming } from "./fixtures/generative-staging-assess
 // advanced in the narrowly scoped transport-deadline regressions below.
 const diagnosticSetTimeout = setTimeout, diagnosticClearTimeout = clearTimeout;
 const elapsedNow = performance.now.bind(performance);
-async function bounded(operation, label) {
+// Hosted coverage measured a successful begin at16s, independently of the
+// application-clock setup. Select the supported30s TEST binding before its
+// hashes/reviews are made, only for cases that need a signed prepared mint.
+// Exact transport/deadline and all other tests retain the original15s binding.
+const nominalPreparationCases = new Set([
+  "scheduled observation survives transient RPC failure, reveals/finalizes, then closes admission on a finality contradiction",
+  "full HTTP preparation -> reported/unobserved inclusion stays hidden -> immediate Confirming gallery -> same canonical identity becomes Minted",
+  "unfinalized reorg withdraws reveal and media, retaining the pending dispatch and accepted assessment",
+  "finalized contradiction safety-halts without rebuilding or disclosing saved artwork",
+  "progress is private and validates routes without automatic preparation or retries",
+  "mint navigation waits for short read contention rather than showing raw BUSY JSON",
+  "a restarted site requires fresh observation; persisted finalized rows alone never reveal",
+  ...["source", "receipt", "runtime", "metadata", "review", "cancel"].map(kind => `withdraws reads on ${kind} failure`),
+]);
+async function bounded(operation, label, timeoutMs = 20000) {
   let timer;
   try { return await Promise.race([operation, new Promise((_, reject) => {
-    timer = diagnosticSetTimeout(() => reject(Error(`${label} did not settle`)), 20000);
+    timer = diagnosticSetTimeout(() => reject(Error(`${label} did not settle`)), timeoutMs);
   })]); } finally { diagnosticClearTimeout(timer); }
 }
 async function checkpoint(reached, operation, label) {
@@ -31,7 +45,12 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
   let cluster, admin, f, site;
   before(async () => { cluster = disposablePostgres(); admin = new Client(cluster.config); await admin.connect(); });
   after(async () => { await admin?.end(); cluster?.stop(); });
-  beforeEach(async () => { f = await stagingSiteFixture(cluster, admin); });
+  beforeEach(async t => {
+    const requestTimeoutMs = nominalPreparationCases.has(t.name) ? 30000 : 15000;
+    f = await stagingSiteFixture(cluster, admin, { requestTimeoutMs });
+    assert.equal(JSON.parse(f.input.operatingJson).settings.hosting.requestTimeoutMs, requestTimeoutMs);
+    assert.equal(JSON.parse(f.input.operatingJson).settings.rpc.timeoutMs, 5000);
+  });
   afterEach(async () => { f.faults.afterQuery = undefined; await site?.close(); site = undefined; await f?.close(); });
   async function start() {
     // Keep the already supported injected runtime clock coherent during the
@@ -40,7 +59,7 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
     assert.equal(f.calls.length, 0); assert.deepEqual(f.counts, { x: 0, grok: 0, sign: 0 });
     await new Promise(r => site.server.listen(0, "127.0.0.1", r));
   }
-  async function http(path, body, headers = {}, method = body === undefined ? "GET" : "POST") {
+  async function http(path, body, headers = {}, method = body === undefined ? "GET" : "POST", timeoutMs = 20000) {
     const began = elapsedNow(); let request;
     const pending = new Promise((resolve, reject) => {
       const bytes = body === undefined ? undefined : JSON.stringify(body);
@@ -54,7 +73,7 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
         } catch (error) { reject(error); } });
       }); request.on("error", reject); request.end(bytes);
     });
-    try { return await bounded(pending, "site HTTP operation"); }
+    try { return await bounded(pending, "site HTTP operation", timeoutMs); }
     catch (cause) {
       request?.destroy();
       const route = path.replace(/[A-Za-z0-9_-]{43}/g, "[private-code]").split("?")[0];
@@ -64,16 +83,19 @@ describe("future-staging site/projection: disposable PG and synthetic chain, no 
   async function prepare(t) {
     // Only the covered, mocked assessment/signing setup is frozen. Restore
     // BEFORE any viewing, inclusion, reorg, finality or observer assertions.
-    // Native HTTP/socket timers and the harness's real20s bound still apply.
+    // Native30s HTTP/socket timers remain active; the real35s diagnostic is
+    // selected only inside this positive preparation, not later view checks.
     const clock = controlledAssessmentTiming(t, f);
     try {
-      assert.equal(JSON.parse(f.input.operatingJson).settings.hosting.requestTimeoutMs, 15000);
+      assert.ok(nominalPreparationCases.has(t.name));
+      assert.equal(JSON.parse(f.input.operatingJson).settings.hosting.requestTimeoutMs, 30000);
       assert.equal(JSON.parse(f.input.operatingJson).settings.rpc.timeoutMs, 5000);
-      const created = await http("/api/assessments", { handle: "Alice" }); assert.equal(created.status, 202, created.text);
-      await bounded(site.idle(), "site preparation drain");
-      const code = created.body.code, plan = await http("/api/mints/begin", { code, consent: true }); assert.equal(plan.status, 200, plan.text);
+      assert.equal(site.server.timeout, 30000); assert.equal(site.server.requestTimeout, 30000);
+      const created = await http("/api/assessments", { handle: "Alice" }, {}, "POST", 35000); assert.equal(created.status, 202, created.text);
+      await bounded(site.idle(), "site preparation drain", 35000);
+      const code = created.body.code, plan = await http("/api/mints/begin", { code, consent: true }, {}, "POST", 35000); assert.equal(plan.status, 200, plan.text);
       return { code, ...plan.body };
-    } finally { try { await bounded(site.idle(), "site preparation final drain"); } finally { clock.close(); } }
+    } finally { try { await bounded(site.idle(), "site preparation final drain", 35000); } finally { clock.close(); } }
   }
   const sync = async () => assert.equal(await site.sync(), "observed");
   async function galleryMint(minted, mintState) {

@@ -37,7 +37,11 @@ export function controlledAssessmentTiming(t, fixture) {
 
 // Entirely disposable database, public test wallet and fabricated active chain.
 // No provider credential, network transaction or operational approval exists.
-export async function stagingAssessmentFixture(cluster, admin, { claimed = true, admitted = true, v2 = false } = {}) {
+export async function stagingAssessmentFixture(cluster, admin, { claimed = true, admitted = true, v2 = false, requestTimeoutMs = 15000 } = {}) {
+  // Success-path transport fixtures may select the canonical nominal 30s
+  // operating-plan budget. Deadline/refusal cases retain the exact 15s default.
+  // Reject unsupported options before allocating a database or signing reviews.
+  if (![15000, 30000].includes(requestTimeoutMs)) throw TypeError("Unsupported assessment fixture request timeout");
   const f = await readinessDatabaseFixture(cluster, admin, { v2 }), active = await activeStateFixture(), now = Math.floor(Date.now() / 1000) * 1000;
   let writer, controller;
   try {
@@ -45,7 +49,7 @@ export async function stagingAssessmentFixture(cluster, admin, { claimed = true,
     active.advance(now - active.now());
     for (const [i, block] of active.headers.entries()) block.timestamp = "0x" + BigInt(Math.floor(now / 1000) - 120 + i * 4).toString(16);
     f.settings.assessment.validFrom = new Date(now - 1000).toISOString(); f.settings.assessment.validUntil = new Date(now + 3600000).toISOString();
-    f.settings.rpc.timeoutMs = 5000; f.settings.hosting.requestTimeoutMs = 15000; f.settings.hosting.drainTimeoutMs = 15000;
+    f.settings.rpc.timeoutMs = 5000; f.settings.hosting.requestTimeoutMs = requestTimeoutMs; f.settings.hosting.drainTimeoutMs = requestTimeoutMs;
     await f.db.query("BEGIN; SET LOCAL session_replication_role=replica");
     await f.db.query("UPDATE open_mint.budget_policies SET generation_enabled=true,valid_until=$1", [f.settings.assessment.validUntil]);
     await f.db.query("COMMIT");
