@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aboutPage, assessmentPage, canonicalPageHandle, collectionPage, errorPage, handoffPrompt, homePage, mbtiGalleryPage, mintPage, revealedSignature, OPEN_MINT_CSS, previewPage, previewVariationsPage, requestPage, type AssessmentPageModel, type GalleryEntry } from "./pages.js";
+import { aboutPage, assessmentPage, canonicalPageHandle, collectionPage, errorPage, explorePage, handoffPrompt, homePage, mbtiGalleryPage, mintPage, revealedSignature, OPEN_MINT_CSS, previewPage, previewVariationsPage, requestPage, type AssessmentPageModel, type GalleryEntry } from "./pages.js";
 import { MBTI_TYPES, RENDERER_VERSION } from "./identity.js";
 import { HOME_LINK } from "../v1/navigation.js";
 import { SITE_CSS, SITE_CSS_URL } from "../v1/siteCss.js";
@@ -18,6 +18,7 @@ const publicMint: PublicPreviewState = {
 
 it('shows the relay sale phase on home without making visitors select free or paid', () => {
   for (const [phase, label, notice] of [
+    ['prelaunch', 'Explore previews', 'Minting coming soon.'],
     ['free', 'Free Mint', 'Free mint open · 1/4 slots used.'],
     ['paid', 'Paid Mint', 'Paid mint open · Free mint ended.'],
     ['unknown', 'Mint a signature', 'Checking mint availability…'],
@@ -29,6 +30,166 @@ it('shows the relay sale phase on home without making visitors select free or pa
     expect(html).not.toContain('Warning</strong>');
   }
   expect(homePage({ pulseMint: true, pulseSaleStatus: { phase: 'free', paused: true } })).toContain('Minting is paused.');
+});
+
+it('pre-launch home leads to previews without claiming chain availability or an empty gallery', () => {
+  const html = homePage({ pulseMint: true, pulseSaleStatus: { phase: 'prelaunch', paused: false },
+    galleryPending: true, mintObservationNotice: 'Mint unavailable', pulseSaleNotice: 'Free mint open.' });
+  expect(html).toContain('href="/explore" data-home-mint-cta');
+  expect(html).toContain('Minting coming soon.');
+  expect(html).toContain('data-home-explore hidden');
+  expect(html).not.toMatch(/No signatures minted yet|Checking for minted signatures|Free mint open|data-connect-wallet|Warning<\/strong>/);
+});
+
+it.each(['free', 'paid', 'unknown'] as const)('keeps explicit exploration available in the %s phase, including maintenance', phase => {
+  for (const paused of [false, true]) {
+    const options = { pulseMint: true, pulseSaleStatus: { phase, paused } };
+    expect(homePage(options)).toContain('href="/explore" data-home-explore>Explore previews</a>');
+    expect(mintPage('Alice_Bob', options)).toContain('href="/explore?handle=Alice_Bob">Explore previews</a>');
+    expect(explorePage('Alice_Bob', options)).toContain('No wallet needed.');
+  }
+  expect(homePage()).not.toContain('href="/explore"');
+});
+
+it('pre-launch mint and exploration omit every wallet and mint-process capability even with an existing wallet', () => {
+  const options = { pulseMint: true, pulseSaleStatus: { phase: 'prelaunch' as const, paused: true },
+    wallet: '0x' + '1'.repeat(40), walletVerified: true, mintObservationNotice: 'RPC failed' };
+  expect(mintPage('@Alice_Bob', options)).toBe(explorePage('@Alice_Bob', options));
+  for (const page of [mintPage('@Alice_Bob', options), explorePage('@Alice_Bob', options)]) {
+    expect(page).toContain('data-preview-explorer');
+    expect(page).toContain('data-preview-explore-form method="get" action="/explore"');
+    expect(page).toContain('value="Alice_Bob"');
+    expect(page).toContain('Minting coming soon.');
+    expect(page).toContain('data-explorer-mint-link hidden');
+    expect(page).toContain(HOME_LINK);
+    expect(page).toContain('class="collection-shortcut" href="/me"');
+    expect(page).not.toMatch(/data-mint-process|data-mint-entry|data-assessment-request|data-wallet-controls|data-connect-wallet|data-pulse-options|data-request-submit|name="pulse-|data-mint-recovery|RPC failed/);
+  }
+});
+
+it('exploration keeps the selected handle controls, accessible validation and escaped drafts', () => {
+  const page = explorePage('"<script>bad', { pulseMint: true });
+  expect(page).toContain('value="&quot;&lt;script&gt;bad"');
+  expect(page).not.toContain('<script>bad');
+  expect(page).toContain('class="open-handle-input" id="explore-handle" name="handle"');
+  expect(page).toContain('pattern="@?[A-Za-z0-9_]{1,15}" required aria-describedby="handle-validation explore-explanation"');
+  expect(page).toContain('data-handle-validation role="status" aria-live="polite" hidden');
+  expect(page).toContain('class="auth-action" type="submit" data-explore-submit><span>Explore previews</span>');
+  expect(OPEN_MINT_CSS).toContain('.mint-entry-handle .open-handle-input{font-size:48px');
+});
+
+it('omits the explorer divider in every phase without changing mint, recovery or progress dividers', () => {
+  expect(OPEN_MINT_CSS).toContain('.open-mint [data-preview-explorer] .mint-entry-action{border-top:0}');
+  for (const selector of ['mint-entry-action', 'mint-entry-recovery', 'mint-progress-status']) {
+    expect(OPEN_MINT_CSS).toMatch(new RegExp(`\\.open-mint \\.${selector}\\{[^}]*border-top:1px dashed var\\(--line\\)`));
+  }
+  for (const phase of ['prelaunch', 'free', 'paid', 'unknown'] as const) for (const paused of [false, true]) {
+    const options = { pulseMint: true, pulseSaleStatus: { phase, paused } };
+    const html = explorePage('Alice_Bob', options);
+    expect(html).toContain('data-preview-explorer');
+    expect(html).toContain('data-explore-submit');
+    expect(html).not.toMatch(/data-connect-wallet|data-assessment-request|data-mint-process/);
+    if (phase !== 'prelaunch') expect(mintPage('Alice_Bob', options)).not.toContain('data-preview-explorer');
+  }
+});
+
+it('verified wallet presentation cannot pre-authorize Pulse minting and SSR maintenance remains explicit', () => {
+  for (const phase of ['free', 'paid', 'unknown'] as const) for (const paused of [false, true]) {
+    const html = mintPage('Alice', { pulseMint: true, wallet: '0x' + '1'.repeat(40), walletVerified: true, pulseSaleStatus: { phase, paused } });
+    expect(html).toContain(`data-pulse-phase="${phase}" data-pulse-paused="${paused}"`);
+    expect(html).toContain('data-request-submit disabled');
+    if (paused) expect(html).toContain('data-pulse-sale-status role="status" aria-atomic="true">Minting is paused.');
+    expect(html).not.toContain('data-preview-explorer');
+  }
+  expect(explorePage('', { pulseMint: true, pulseSaleStatus: { phase: 'free', paused: true } })).toContain('data-site-paused="true"');
+  expect(mintPage('Alice', { wallet: '0xwallet', walletVerified: true })).toContain('data-request-submit><span>Mint &amp; reveal');
+});
+
+it('About states the website lifecycle without dates, wallet requirements or fabricated availability', () => {
+  for (const [phase, paused, status] of [['prelaunch', false, 'Minting coming soon.'], ['free', false, 'Free mint open.'],
+    ['paid', false, 'Paid mint open · Free mint ended.'], ['free', true, 'Minting is paused.'], ['unknown', false, 'Checking mint availability…']] as const) {
+    const html = aboutPage({ pulseMint: true, pulseSaleStatus: { phase, paused } });
+    expect(html).toContain(`<p data-about-site-phase>${status} Previews are always available without a wallet.`);
+    expect(html).toContain('Allowlisted free slots are available during the free phase. Paid minting follows Pulse pricing afterward.');
+    expect(html).not.toContain('Minting opens with allowlisted free slots');
+    expect(html).not.toMatch(/data-connect-wallet|data-assessment-request|Warning<\/strong>/);
+  }
+  expect(aboutPage()).not.toContain('data-about-site-phase');
+});
+
+it.each(['prelaunch', 'unknown', 'free', 'paid'] as const)('preview and empty collection invitations honestly reflect %s', phase => {
+  for (const paused of [false, true]) {
+    const options = { pulseMint: true, pulseSaleStatus: { phase, paused } };
+    for (const page of [previewPage('Alice_Bob', 'INTJ', options), previewVariationsPage('Alice_Bob', options)]) {
+      expect(page).toContain('href="/explore">Explore another handle</a>');
+      const unavailable = phase === 'prelaunch' || phase === 'unknown' || paused;
+      expect(page).toContain(`data-preview-mint-link${unavailable ? ' hidden' : ''}><span>Mint for this handle →`);
+      expect(page).not.toContain('data-connect-wallet');
+    }
+    const collection = collectionPage([], options);
+    expect(collection).toContain(`href="${phase === 'prelaunch' ? '/explore' : '/mint'}" data-collection-mint-cta`);
+    expect(collection).toContain('data-collection-mint-label');
+    expect(collection).not.toContain('Warning</strong>');
+  }
+});
+
+it('empty pre-launch collection needs no wallet and does not discard existing open collection controls or reveal evidence', () => {
+  const prelaunch = { pulseMint: true, pulseSaleStatus: { phase: 'prelaunch' as const, paused: false } };
+  for (const wallet of [undefined, '0xwallet']) {
+    const html = collectionPage([], { ...prelaunch, wallet, galleryPending: true, mintObservationNotice: 'RPC unavailable' });
+    expect(html).toContain('Minting hasn’t opened yet. Explore previews for now.');
+    expect(html).toContain('href="/explore" data-collection-mint-cta');
+    expect(html).not.toMatch(/data-wallet-label|data-connect-wallet|data-disconnect-wallet|Checking your collection|This wallet has no minted signatures/);
+  }
+  for (const phase of ['free', 'paid', 'unknown'] as const) {
+    expect(collectionPage([], { pulseMint: true, pulseSaleStatus: { phase, paused: false } })).toContain('data-connect-wallet');
+  }
+  const existing = collectionPage([entry], prelaunch);
+  expect(existing).toContain('data-connect-wallet');
+  expect(existing).toContain('/art/test.svg');
+  expect(existing).not.toContain('Minting hasn’t opened yet.');
+});
+
+it.each(MBTI_TYPES)('the %s destination explains its minted-gallery purpose and why it is empty before launch', mbti => {
+  for (const paused of [false, true]) for (const galleryPending of [false, true]) {
+    const html = mbtiGalleryPage(mbti, [], { pulseMint: true, pulseSaleStatus: { phase: 'prelaunch', paused },
+      galleryPending, mintObservationNotice: 'RPC unavailable', wallet: '0xwallet', walletVerified: true });
+    expect(html).toContain(`<h1>Signatures × ${mbti}</h1>`);
+    expect(html).toContain('class="collection-empty signed-out-participation" data-mbti-empty="prelaunch"');
+    expect(html).toContain(`Minted signatures with ${mbti} appear here.`);
+    expect(html).toContain('Minting hasn’t opened yet.');
+    expect(html).toContain('Until then, explore previews for any X handle.');
+    expect(html).toContain('<a class="auth-action" href="/explore"><span>Explore previews</span></a>');
+    expect(html).not.toMatch(/data-mbti-preview|one of 16 artistic interpretations|Minting coming soon|Checking for minted|No signatures minted|data-connect-wallet|data-assessment-request|data-mint-process|RPC unavailable|data-mint-observation-warning/);
+  }
+});
+
+it.each(['free', 'paid', 'unknown'] as const)('keeps the %s MBTI destination a minted gallery, not a preview phase', phase => {
+  for (const paused of [false, true]) {
+    const options = { pulseMint: true, pulseSaleStatus: { phase, paused } };
+    const empty = mbtiGalleryPage('INTJ', [], options);
+    expect(empty).toContain('No signatures minted with INTJ yet.');
+    const pending = mbtiGalleryPage('INTJ', [], { ...options, galleryPending: true, mintObservationNotice: 'RPC unavailable' });
+    expect(pending).toContain('Checking for minted signatures…');
+    for (const html of [empty, pending]) {
+      expect(html).toContain('Minted signatures with INTJ appear here.');
+      expect(html).not.toMatch(/data-mbti-empty="prelaunch"|Minting hasn’t opened yet|data-mbti-preview|Minting coming soon|RPC unavailable|data-mint-observation-warning/);
+    }
+    const populated = mbtiGalleryPage('INTJ', [entry, { ...entry, mbti: 'ENFP' }], options);
+    expect(populated.match(/class="gallery-item"/g)).toHaveLength(1);
+    expect(populated).toContain('Minted signatures with INTJ appear here.');
+    expect(populated).not.toMatch(/data-mbti-preview|Until then, explore previews|href="\/explore"/);
+  }
+});
+
+it('does not hide already verified category artwork behind a prelaunch empty-state reason', () => {
+  for (const state of ['confirming', 'minted'] as const) {
+    const html = mbtiGalleryPage('INTJ', [{ ...entry, mint: { state } }], { pulseMint: true,
+      pulseSaleStatus: { phase: 'prelaunch', paused: false }, galleryPending: true });
+    expect(html).toContain('src="/art/test.svg"');
+    expect(html).toContain(state === 'confirming' ? '>Confirming</span>' : '>Minted</a>');
+    expect(html).not.toMatch(/data-mbti-empty="prelaunch"|Minting hasn’t opened yet|data-mbti-preview|Minting coming soon|Checking for minted/);
+  }
 });
 
 it('renders only the active phase controls and does not pre-authorize a wallet from public sale presentation', () => {
@@ -129,11 +290,12 @@ function expectHandleNavigation(html: string, handle: string, count?: number): v
 
 function expectArtworkIdentity(caption: string, handle: string, mbti: string, status?: "Minted" | "Preview"): void {
   expect(caption).toContain('class="artwork-identity"');
-  expect(caption).toContain(`@${handle}</a>`);
+  const handleLink = caption.match(/<a\b[^>]*class="gallery-handle(?: [^"]*)?"[^>]*>([\s\S]*?)<\/a>/);
+  expect(handleLink?.[1].replace(/<[^>]*>/g, "")).toBe(`@${handle}`);
   expectHandleNavigation(caption, handle, 1);
   expect(caption).toContain('<span class="artwork-personality-separator" aria-hidden="true">×</span>');
   expect(caption).toContain(`<a class="mbti-link" href="/${mbti}/">${mbti}</a>`);
-  expect(caption.indexOf(`@${handle}</a>`)).toBeLessThan(caption.indexOf('class="artwork-personality-separator"'));
+  expect(handleLink?.index).toBeLessThan(caption.indexOf('class="artwork-personality-separator"'));
   expect(caption.indexOf('class="artwork-personality-separator"')).toBeLessThan(caption.indexOf('class="mbti-link"'));
   const statusLabels = [...caption.matchAll(/<(a|span) class="[^"]*\bartwork-status\b[^"]*"([^>]*)>([^<]+)<\/\1>/g)];
   expect(statusLabels.map(match => match[3])).toEqual(status ? [status] : []);
@@ -192,9 +354,10 @@ describe("open mint pages", () => {
     const footers = html.match(/<footer>[\s\S]*?<\/footer>/g)!;
     expect(footers).toHaveLength(1);
     const footer = footers[0]!;
-    expect(footer).toContain('href="https://x.com/AgentArt_AA" target="_blank" rel="noopener noreferrer" aria-label="Agent Art on X (opens in a new tab)"');
+    expect(footer).toContain('href="https://x.com/AnAgentARTist" target="_blank" rel="noopener noreferrer" aria-label="AnAgentARTist on X (opens in a new tab)"');
+    expect(html).not.toContain("AgentArt_AA");
     expect(footer.match(/class="footer-x-icon"/g)).toHaveLength(1);
-    expect(footer).toMatch(/<svg class="footer-x-icon"[^>]*fill="currentColor"[^>]*aria-hidden="true" focusable="false"><path d="[^"]+"\/><\/svg><span>Agent Art<\/span><span aria-hidden="true">↗<\/span><\/a>/);
+    expect(footer).toMatch(/<svg class="footer-x-icon"[^>]*fill="currentColor"[^>]*aria-hidden="true" focusable="false"><path d="[^"]+"\/><\/svg><span>AnAgentARTist<\/span><span aria-hidden="true">↗<\/span><\/a>/);
     expect(footer).toContain('href="/about"');
   });
 
@@ -590,7 +753,7 @@ describe("open mint pages", () => {
     const disconnected = mintPage("Alice", { pulseMint: true });
     const connected = mintPage("Alice", { pulseMint: true, wallet: "0x123", walletVerified: true });
     expect(disconnected).toContain('data-request-submit disabled><span>Mint &amp; reveal</span>');
-    expect(connected).toContain('data-request-submit><span>Mint &amp; reveal</span>');
+    expect(connected).toContain('data-request-submit disabled><span>Mint &amp; reveal</span>');
     for (const html of [disconnected, connected]) {
       expect(html).toContain('data-assessment-request data-pulse-mint="true"');
       expect(html).toContain('data-connect-wallet><span>');
@@ -637,7 +800,7 @@ describe("open mint pages", () => {
     }
     expect(form).toContain('data-pulse-check><span>Refresh price</span>');
     expect(form).toContain('data-pulse-sale-status role="status" aria-atomic="true">Free mint ended · 2/2 slots used.');
-    expect(form).toContain('data-request-submit><span>Mint &amp; reveal</span>');
+    expect(form).toContain('data-request-submit disabled><span>Mint &amp; reveal</span>');
     expect(form).not.toMatch(/<details\b|<summary\b|checkbox/);
     expect(form).toContain('data-pulse-free hidden>No mint fee.');
   });
@@ -730,7 +893,7 @@ describe("open mint pages", () => {
       const caption = artworkCaptions(main).find(value => value.includes(`href="/${mbti}/"`));
       expect(caption).toBeDefined();
       expectArtworkIdentity(caption!, "Alice_Bob_Key", mbti, "Preview");
-      expect(caption).toContain('class="gallery-handle" href="/p/Alice_Bob_Key/variations"');
+      expect(caption).toContain('class="gallery-handle gallery-handle-compact" href="/p/Alice_Bob_Key/variations"');
     }
     expect(main.match(/class="mbti-link"/g)).toHaveLength(16);
     expect(main).not.toMatch(/<a\b[^>]*>(?:(?!<\/a>)[\s\S])*<a\b/);
@@ -1263,6 +1426,50 @@ describe("open mint pages", () => {
     expect(OPEN_MINT_CSS).toMatch(/\.open-mint \.artwork-status\{[^}]*margin-inline-start:auto/);
     expect(OPEN_MINT_CSS).toMatch(/\.open-mint \.artwork-identity\{[^}]*flex-wrap:wrap/);
     expect(OPEN_MINT_CSS).not.toMatch(/(?:\.mbti-link|\.artwork-status)[^{]*\{[^}]*\b(?:padding|border-radius):/);
+  });
+
+  it("keeps variation captions on one line and shortens only the handle in the middle", () => {
+    expect(OPEN_MINT_CSS).toContain('.open-mint .open-preview-caption{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:.35rem;padding-top:.6rem}');
+    expect(OPEN_MINT_CSS).toContain('.open-mint .open-preview-caption>.artwork-identity{flex-wrap:nowrap;gap:.35em}');
+    expect(OPEN_MINT_CSS).toContain('.open-mint .open-preview-caption .artwork-handle{flex:0 1 auto;white-space:nowrap}');
+    expect(OPEN_MINT_CSS).toContain('.open-mint .open-preview-caption .artwork-personality{flex:none}');
+    expect(OPEN_MINT_CSS).toContain('.open-mint .open-preview-caption .gallery-handle-start{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}');
+    expect(OPEN_MINT_CSS).toContain('.open-mint .open-preview-caption .gallery-handle-end{flex:none}');
+    expect(OPEN_MINT_CSS).toContain('.open-mint .open-preview-caption>.artwork-status{white-space:nowrap}');
+    expect(OPEN_MINT_CSS).not.toMatch(/\.open-preview-caption[^{}]*\{[^}]*grid-row:2/);
+    expect(OPEN_MINT_CSS).toContain('@media(max-width:900px){.open-mint .open-preview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}');
+    expect(OPEN_MINT_CSS).toContain('@media(max-width:460px){.open-mint .open-preview-grid{grid-template-columns:minmax(0,1fr)}}');
+    // Keep the full, navigable identity and unchanged status semantics in every phase.
+    for (const handle of ["TruthGundlach", "Long_Handle_123"]) {
+      const captions = artworkCaptions(previewVariationsPage(handle));
+      expect(captions).toHaveLength(16);
+      for (const [index, caption] of captions.entries()) {
+        expect(caption).toContain('class="artwork-caption open-preview-caption"');
+        expectArtworkIdentity(caption, handle, previewRows.flat()[index]!, "Preview");
+        expect(caption).toContain(`aria-label="@${handle}" title="@${handle}"`);
+        expect(caption).toContain('class="gallery-handle-start"');
+        expect(caption).toContain('class="gallery-handle-end"');
+        expect(caption).not.toMatch(/aria-hidden="true"[^>]*>Preview/);
+      }
+    }
+    for (const html of [previewPage("TruthGundlach", "INTJ"), homePage({}, [entry]), collectionPage([entry])]) {
+      expect(html).not.toContain('class="gallery-handle gallery-handle-compact"');
+    }
+  });
+
+  it("uses symmetric handle × MBTI spacing without an expanding handle track or duplicate spaces", () => {
+    const variationIdentity = OPEN_MINT_CSS.match(/\.open-mint \.open-preview-caption>\.artwork-identity\{([^}]*)\}/)![1]!;
+    expect(variationIdentity).toContain("gap:.35em");
+    expect(variationIdentity).not.toMatch(/display:grid|grid-template-columns|justify-content:space/);
+    expect(OPEN_MINT_CSS).toMatch(/\.open-mint \.artwork-identity\{[^}]*gap:\.2em \.35em/);
+    expect(OPEN_MINT_CSS).toMatch(/\.open-mint \.artwork-personality\{[^}]*gap:\.35em/);
+    for (const html of [previewVariationsPage("TruthGundlach"), previewPage("TruthGundlach", "ISTJ"),
+      homePage({}, [entry]), mbtiGalleryPage("INTJ", [entry]), collectionPage([entry]), assessmentPage(minted)]) {
+      for (const caption of artworkCaptions(html)) {
+        expect(caption).toMatch(/<\/(?:span|h1)><span class="artwork-personality">/);
+        expect(caption).toContain('aria-hidden="true">×</span><a class="mbti-link"');
+      }
+    }
   });
 
   it.each(["pending", "ready", "failed", "abstained"] as const)("withholds artwork and metadata for %s assessments until confirmed mint", status => {

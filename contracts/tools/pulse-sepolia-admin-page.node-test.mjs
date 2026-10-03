@@ -6,6 +6,16 @@ import { errorPage } from '../../src/openMint/pages.ts';
 const COLLECTION = '0x0000000000000000000000000000000000000002';
 const ADMIN = '0x0000000000000000000000000000000000000001';
 
+test('website launch presentation is separate from pause/resume and has no implicit launch transaction', () => {
+  const page = sepoliaAdminPage({ contract: COLLECTION, adminWallet: ADMIN,
+    pulseSaleStatus: { phase: 'prelaunch', paused: true } });
+  assert.match(page, /<dt>Website phase<\/dt><dd data-admin-site-state>Minting coming soon\.<\/dd>/);
+  assert.match(page, /<dt>Contract minting<\/dt><dd data-admin-contract-state>/);
+  assert.match(page, /Resuming the contract does not open the website\./);
+  assert.doesNotMatch(page, /data-admin-launch|Launch website|Open website/);
+  assert.match(page, /data-admin-unpause disabled><span>Resume minting<\/span>/);
+});
+
 test('admin page uses the shared shell, dedicated client, and scoped CSS', () => {
   const page = sepoliaAdminPage({ contract: COLLECTION, adminWallet: ADMIN });
   const shell = errorPage('example');

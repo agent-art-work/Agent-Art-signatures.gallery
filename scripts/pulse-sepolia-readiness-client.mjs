@@ -1,6 +1,7 @@
 /** Read-only progressive recovery. No wallet API, form submission, consent,
  * authorization, transaction or navigation is initiated by this monitor. */
-export function sepoliaReadinessClient() {
+import { sitePhasePresentation } from '../src/openMint/sitePhase.ts';
+export function sepoliaReadinessClient(phasePresentation) {
   let timer, stopped = false, revision, lastReady, lastSale, saleRevision, generation = 0, pollFailures = 0, pollFailureSince, readyUntil = 0;
   const $ = selector => document.querySelector(selector);
   const mintProcess = () => !!($('[data-mint-process]') || $('[data-mint-entry]') || $('[data-assessment-code]'));
@@ -34,14 +35,20 @@ export function sepoliaReadinessClient() {
     window.dispatchEvent(new CustomEvent('sg:readiness-changed', { detail: { mintReady: ready, saleStatus } }));
   }
   function salePresentation(sale) {
-    if (!sale || !['free', 'paid', 'unknown'].includes(sale.phase) || typeof sale.paused !== 'boolean') return undefined;
+    if (!sale || !['prelaunch', 'free', 'paid', 'unknown'].includes(sale.phase) || typeof sale.paused !== 'boolean') return undefined;
+    const presentation = phasePresentation(sale);
     const label = $('[data-home-mint-label]'), status = $('[data-home-mint-status]');
-    if (label) label.textContent = sale.phase === 'free' ? 'Free Mint' : sale.phase === 'paid' ? 'Paid Mint' : 'Mint a signature';
+    if (label) label.textContent = presentation.ctaLabel;
+    $('[data-home-mint-cta]')?.setAttribute('href', presentation.ctaHref);
+    const explore = $('[data-home-explore]'); if (explore) explore.hidden = presentation.prelaunch;
+    $('[data-collection-mint-cta]')?.setAttribute('href', presentation.ctaHref);
+    const collectionLabel = $('[data-collection-mint-label]'); if (collectionLabel) collectionLabel.textContent = presentation.ctaLabel;
+    const bridge = $('[data-preview-mint-link]');
+    if (bridge) bridge.hidden = presentation.prelaunch || presentation.paused || presentation.phase === 'unknown';
+    const previewStatus = $('[data-preview-sale-status]');
+    if (previewStatus) { previewStatus.hidden = !bridge?.hidden; previewStatus.textContent = bridge?.hidden ? presentation.status : ''; }
     if (status) {
-      const count = Number.isSafeInteger(sale.freeMinted) && sale.freeMinted >= 0 && Number.isSafeInteger(sale.freeMintQuota)
-        && sale.freeMintQuota >= sale.freeMinted ? ` · ${sale.freeMinted}/${sale.freeMintQuota} slots used.` : '.';
-      status.textContent = sale.paused ? 'Minting is paused.' : sale.phase === 'free' ? 'Free mint open' + count
-        : sale.phase === 'paid' ? 'Paid mint open · Free mint ended.' : 'Checking mint availability…';
+      status.textContent = presentation.status;
       status.hidden = false;
     }
     return sale;
@@ -61,7 +68,8 @@ export function sepoliaReadinessClient() {
       // Keep a recently verified readiness flag through a brief failed HTTP
       // poll, never beyond the backend's 90-second sale-evidence window.
       // Explicit pause, conflict, wrong chain or false readiness revoke it now.
-      const ready = state.mintReady && !state.safetyHalted && !['paused', 'halted'].includes(state.mintState);
+      const ready = state.mintReady && state.saleStatus?.phase !== 'prelaunch' && state.saleStatus?.paused !== true
+        && !state.safetyHalted && !['paused', 'halted'].includes(state.mintState);
       readyUntil = ready ? Math.min(now + 15000,
         typeof state.lastSaleCheckedAt === 'number' && Number.isFinite(state.lastSaleCheckedAt) ? state.lastSaleCheckedAt + 90000 : now + 15000) : 0;
       // Viewing is served by the relay: RPC refresh and ownership diagnostics
@@ -124,4 +132,4 @@ export function sepoliaReadinessClient() {
   if (!mintProcess()) notice(undefined);
   void update();
 }
-export const SEPOLIA_READINESS_CLIENT = `(${sepoliaReadinessClient.toString()})();`;
+export const SEPOLIA_READINESS_CLIENT = `(${sepoliaReadinessClient.toString()})(${sitePhasePresentation.toString()});`;

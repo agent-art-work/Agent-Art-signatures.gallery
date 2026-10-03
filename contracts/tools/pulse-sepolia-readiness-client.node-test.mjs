@@ -4,7 +4,7 @@ import { runInNewContext } from 'node:vm';
 import { SEPOLIA_READINESS_CLIENT } from '../../scripts/pulse-sepolia-readiness-client.mjs';
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
-function harness({ mintPage = false, collectionPage = false, progressPage = false, processPage = false, detailPage = false, mintedDetail = false, resultVisible = false, confirmationNotice = false } = {}) {
+function harness({ mintPage = false, collectionPage = false, previewPage = false, progressPage = false, processPage = false, detailPage = false, mintedDetail = false, resultVisible = false, confirmationNotice = false } = {}) {
   const calls = [], events = [], listeners = new Map(), timers = [], localFeedback = [];
   let now = 1000000;
   const warning = { hidden: false, dataset: confirmationNotice ? { noticeOwner: 'mint-confirmation' } : {} }, message = { textContent: confirmationNotice ? 'Confirmation status could not be checked.' : 'Unavailable' };
@@ -21,9 +21,15 @@ function harness({ mintPage = false, collectionPage = false, progressPage = fals
   if (collectionPage) { selectors.delete('.gallery-shell'); selectors.set('[data-collection-page]', root); }
   const input = { value: 'MyHandle' }, hero = { text: 'Anyone_Can_Sign_Anyone' };
   const mintLabel = { textContent: 'Mint a signature' }, mintStatus = { textContent: '', hidden: true };
+  const mintCta = { attributes: { href: '/mint' }, setAttribute(key, value) { this.attributes[key] = value; } };
+  const explore = { hidden: false }, collectionLabel = { textContent: 'Mint a signature' };
   if (!mintPage && !collectionPage && !detailPage) {
     selectors.set('[data-home-mint-label]', mintLabel); selectors.set('[data-home-mint-status]', mintStatus);
+    selectors.set('[data-home-mint-cta]', mintCta); selectors.set('[data-home-explore]', explore);
   }
+  if (collectionPage) { selectors.set('[data-collection-mint-cta]', mintCta); selectors.set('[data-collection-mint-label]', collectionLabel); }
+  const bridge = { hidden: false }, bridgeStatus = { hidden: true, textContent: '' };
+  if (previewPage) { selectors.set('[data-preview-mint-link]', bridge); selectors.set('[data-preview-sale-status]', bridgeStatus); }
   const context = {
     document: { hidden: false, querySelector: key => selectors.get(key), querySelectorAll: key => key === '[data-inline-warning-message]' ? localFeedback.filter(node => node.dataset.inlineWarningMessage !== undefined) : [] }, location: { pathname: '/', href: 'http://127.0.0.1:3004/', origin: 'http://127.0.0.1:3004' },
     window: { addEventListener: (name, fn) => listeners.set(name, fn), dispatchEvent: event => events.push(event) },
@@ -40,7 +46,7 @@ function harness({ mintPage = false, collectionPage = false, progressPage = fals
     },
   };
   runInNewContext(SEPOLIA_READINESS_CLIENT, context);
-  return { calls, events, listeners, timers, warning, message, root, input, hero, mintLabel, mintStatus,
+  return { calls, events, listeners, timers, warning, message, root, input, hero, mintLabel, mintStatus, mintCta, explore, collectionLabel, bridge, bridgeStatus,
     localWarning: (text, extra = {}) => {
       const node = { textContent: 'Warning ' + text, className: 'open-feedback preserved open-preview-notice open-preview-warning', dataset: { inlineWarningMessage: text, ...extra } };
       node.classList = { remove: (...names) => { node.className = node.className.split(/\s+/).filter(name => !names.includes(name)).join(' '); } };
@@ -50,6 +56,34 @@ function harness({ mintPage = false, collectionPage = false, progressPage = fals
     now: () => now,
     tick: async (elapsed = 5000) => { now += elapsed; timers.at(-1).fn(); await flush(); } };
 }
+
+test('prelaunch updates home href and copy but never opens minting from a contradictory true capability', async () => {
+  const h = harness(); await flush();
+  h.setState({ chainId: 11155111, mintReady: true, revision: 'same', saleStatus: { phase: 'prelaunch', paused: false } }); await h.tick();
+  assert.equal(h.mintCta.attributes.href, '/explore'); assert.equal(h.mintLabel.textContent, 'Explore previews');
+  assert.equal(h.mintStatus.textContent, 'Minting coming soon.'); assert.equal(h.explore.hidden, true);
+  assert.equal(h.events.at(-1).detail.mintReady, false); assert.equal(h.warning.hidden, true);
+  h.setState({ chainId: 11155111, mintReady: true, revision: 'same', saleStatus: { phase: 'free', paused: false } }); await h.tick();
+  assert.equal(h.mintCta.attributes.href, '/mint'); assert.equal(h.mintLabel.textContent, 'Free Mint');
+  assert.equal(h.explore.hidden, false); assert.equal(h.events.at(-1).detail.mintReady, true);
+  assert.ok(h.calls.every(call => call.method === 'GET')); assert.equal(h.input.value, 'MyHandle');
+});
+
+test('prelaunch, maintenance and unknown remain distinct on preview and collection invitations', async () => {
+  for (const options of [{ previewPage: true }, { collectionPage: true }]) {
+    const h = harness(options); await flush();
+    for (const [saleStatus, status] of [[{ phase: 'prelaunch', paused: false }, 'Minting coming soon.'],
+      [{ phase: 'free', paused: true }, 'Minting is paused.'], [{ phase: 'unknown', paused: false }, 'Checking mint availability…']]) {
+      h.setState({ chainId: 11155111, mintReady: false, revision: 'same', saleStatus }); await h.tick();
+      if (options.previewPage) { assert.equal(h.bridge.hidden, true); assert.equal(h.bridgeStatus.textContent, status); }
+      else assert.equal(h.mintCta.attributes.href, saleStatus.phase === 'prelaunch' ? '/explore' : '/mint');
+      assert.equal(h.warning.hidden, true);
+    }
+    h.setState({ chainId: 11155111, mintReady: true, revision: 'same', saleStatus: { phase: 'paid', paused: false } }); await h.tick();
+    if (options.previewPage) { assert.equal(h.bridge.hidden, false); assert.equal(h.bridgeStatus.hidden, true); }
+    else assert.equal(h.collectionLabel.textContent, 'Paid Mint');
+  }
+});
 
 test('home phase changes update CTA/status and notify clients even while readiness stays true', async () => {
   const h = harness(); await flush();

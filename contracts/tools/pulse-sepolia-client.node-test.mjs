@@ -14,6 +14,99 @@ const RESULT = { handle: 'somehandle', state: 'confirming', tokenId: '123', tran
   html: '<article class="signature-page" data-mint-state="confirming"><img src="/test-art/somehandle.svg"><span data-mint-state-label>Confirming</span></article>' };
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
+function explorerHarness({ phase = 'prelaunch', paused = false, handle = '', storage = new Map() } = {}) {
+  const nodes = new Map(), events = new Map(), calls = [], locations = [], storageReads = [];
+  for (const selector of ['[data-preview-explorer]', '[data-preview-explore-form]', '[name="handle"]',
+    '[data-explorer-mint-link]', '[data-explorer-mint-label]', '[data-explorer-sale-status]', '[data-explorer-mint-status]']) nodes.set(selector, element());
+  nodes.get('[data-preview-explorer]').dataset = { sitePhase: phase, sitePaused: String(paused) };
+  const input = nodes.get('[name="handle"]'); input.value = input.defaultValue = handle;
+  input.checkValidity = () => /^@?[A-Za-z0-9_]{1,15}$/.test(input.value);
+  const location = { set href(value) { locations.push(value); } };
+  runInNewContext(SEPOLIA_TEST_CLIENT, {
+    document: { querySelector: selector => nodes.get(selector) }, location,
+    window: { ethereum: { request(request) { calls.push(request.method); throw Error('Explorer cannot use a wallet'); } },
+      addEventListener(name, handler) { events.set(name, handler); }, dispatchEvent(event) { calls.push(event.type); } },
+    fetch: (...args) => { calls.push(args); throw Error('Explorer cannot fetch a session or paid operation'); },
+    sessionStorage: { getItem(key) { storageReads.push(key); return storage.get(key); }, setItem(key, value) { storage.set(key, value); } },
+  });
+  return { nodes, events, calls, locations, storage, storageReads, input,
+    update(value) { input.value = value; input.handlers.input(); },
+    submit() { nodes.get('[data-preview-explore-form]').handlers.submit({ preventDefault() {} }); } };
+}
+
+test('prelaunch explorer never restores wallet/session or reads a saved submission, even with malicious mint readiness', () => {
+  const h = explorerHarness({ handle: 'Alice_Bob', storage: new Map([['sg-sepolia-pending', '{bad'], ['sg-sepolia-reveal', '{bad']]) });
+  h.events.get('sg:readiness-changed')({ detail: { mintReady: true, saleStatus: { phase: 'prelaunch', paused: false } } });
+  assert.equal(h.nodes.get('[data-explorer-mint-link]').hidden, true);
+  assert.equal(h.nodes.get('[data-explorer-sale-status]').textContent, 'Minting coming soon.');
+  assert.deepEqual(h.calls, []); assert.deepEqual(h.locations, []);
+  assert.deepEqual(h.storageReads, ['sg-open:mint-handle-draft:v1']);
+});
+
+test('explicit explorer submit preserves handle spelling and navigates only to anonymous variations', () => {
+  const h = explorerHarness({ handle: '@Alice_Bob' }); h.submit();
+  assert.deepEqual(h.locations, ['/p/Alice_Bob/variations']); assert.deepEqual(h.calls, []);
+  assert.equal(JSON.parse(h.storage.get('sg-open:mint-handle-draft:v1')).value, '@Alice_Bob');
+});
+
+test('invalid programmatic exploration never navigates or enters wallet/mint work', () => {
+  for (const handle of ['', 'invalid-handle', 'abcdefghijklmnop', '"<script>', '@@Alice']) {
+    const h = explorerHarness({ handle }); h.submit();
+    assert.deepEqual(h.locations, []); assert.deepEqual(h.calls, []);
+  }
+});
+
+test('explorer restores the mint handle draft without overwriting it with an empty route', () => {
+  const key = 'sg-open:mint-handle-draft:v1';
+  const storage = new Map([[key, JSON.stringify({ version: 1, source: '', value: 'Mint_Draft' })]]);
+  const h = explorerHarness({ storage }); assert.equal(h.input.value, 'Mint_Draft');
+  assert.equal(JSON.parse(storage.get(key)).value, 'Mint_Draft');
+  h.update('@Another_Name'); h.submit(); assert.deepEqual(h.locations, ['/p/Another_Name/variations']);
+  const refreshed = explorerHarness({ storage }); assert.equal(refreshed.input.value, '@Another_Name');
+  const explicit = explorerHarness({ storage, handle: 'URL_Handle' }); assert.equal(explicit.input.value, 'URL_Handle');
+  assert.equal(JSON.parse(storage.get(key)).value, 'URL_Handle');
+});
+
+test('opening from prelaunch reveals only an explicit mint link, preserving exploration without wallet prompts', () => {
+  const h = explorerHarness({ handle: 'Alice_Bob' });
+  for (const [phase, label] of [['free', 'Free Mint'], ['paid', 'Paid Mint']]) {
+    h.events.get('sg:readiness-changed')({ detail: { mintReady: true, saleStatus: { phase, paused: false } } });
+    assert.equal(h.nodes.get('[data-explorer-mint-link]').hidden, false);
+    assert.equal(h.nodes.get('[data-explorer-mint-link]').attributes.href, '/mint?handle=Alice_Bob');
+    assert.equal(h.nodes.get('[data-explorer-mint-label]').textContent, label);
+  }
+  for (const saleStatus of [{ phase: 'free', paused: true }, { phase: 'unknown', paused: false }, { phase: 'prelaunch', paused: false }]) {
+    h.events.get('sg:readiness-changed')({ detail: { mintReady: true, saleStatus } });
+    assert.equal(h.nodes.get('[data-explorer-mint-link]').hidden, true);
+    assert.equal(h.input.value, 'Alice_Bob');
+  }
+  assert.deepEqual(h.calls, []); assert.deepEqual(h.locations, []);
+});
+
+test('public home and previews bind optional Grok copy without session or wallet discovery', async () => {
+  const calls = [], nodes = new Map([['[data-copy-handoff]', element()], ['[data-handoff-prompt]', { value: 'Preview prompt' }], ['[data-copy-feedback]', element()]]);
+  runInNewContext(SEPOLIA_TEST_CLIENT, {
+    document: { querySelector: selector => nodes.get(selector) },
+    window: { addEventListener() { throw Error('No public-view wallet listeners'); }, dispatchEvent() { throw Error('No wallet discovery'); } },
+    fetch() { throw Error('No viewer session request'); },
+    navigator: { clipboard: { async writeText(text) { calls.push(text); } } },
+  });
+  await nodes.get('[data-copy-handoff]').handlers.click();
+  assert.deepEqual(calls, ['Preview prompt']);
+  assert.equal(nodes.get('[data-copy-feedback]').textContent, 'Copied.');
+});
+
+test('prelaunch collection without wallet controls stays anonymous and does not read saved mint recovery', () => {
+  const nodes = new Map([['[data-collection-page]', element()], ['[data-collection-mint-cta]', element()]]);
+  runInNewContext(SEPOLIA_TEST_CLIENT, {
+    document: { querySelector: selector => nodes.get(selector) },
+    window: { addEventListener() { throw Error('No wallet listeners before launch'); }, dispatchEvent() { throw Error('No wallet discovery before launch'); } },
+    fetch() { throw Error('No prelaunch collection session request'); },
+    sessionStorage: { getItem() { throw Error('No saved mint recovery from a preview-only collection'); } },
+  });
+  assert.equal(nodes.get('[data-collection-page]').hidden, false);
+});
+
 function element(tag = 'p') {
   let text = '', children = [];
   const node = { tag, handlers: {}, dataset: {}, attributes: {}, hidden: false, className: '', disabled: false, value: '',
@@ -50,7 +143,7 @@ function assertWarning(node, message) {
 
 async function harness({ alteredPlan, rejectSend = false, sendError, restoredWallet = false, challengeError, challengeGate, optionsError, announceRabby = false,
   missingProvider = false, walletState = { accounts: [WALLET], chainId: '0xaa36a7' }, accountsGate, walletReadError, optionsGate, accountEventOnGrant = false,
-  prepareGate, prepareError, sendGate, reportGate, recoveryGate, recoveryError, recoveryValue, initialOptions, maximumETH = '0.0001', initialPhase = 'paid',
+  prepareGate, prepareError, beginGate, sendGate, reportGate, recoveryGate, recoveryError, recoveryValue, initialOptions, maximumETH = '0.0001', initialPhase = 'paid',
   storage = new Map(), storageFault, fetchOverride, initialHandle = 'SomeHandle', status = RESULT, statusError, reportError,
   surface = 'entry', initialWarning = '', sessionError, readBudgets = SEPOLIA_READ_BUDGETS, realTimers = false } = {}) {
   const calls = [], nodes = new Map(), locations = [], timers = [], statusResponses = [], optionsResponses = [], optionsSignals = [];
@@ -154,6 +247,7 @@ async function harness({ alteredPlan, rejectSend = false, sendError, restoredWal
       if (queued) return { ok: true, json: async () => queued.value };
     }
     if (path === '/api/test/prepare' && prepareGate) await prepareGate;
+    if (path === '/api/test/begin' && beginGate) await beginGate;
     if (path === '/api/test/prepare' && prepareError) return { ok: false, json: async () => prepareError };
     if (path === '/api/test/report') { reportMarkers.push(storage.get('sg-sepolia-pending')); if (reportGate) await reportGate; }
     if (path === '/api/test/session' && sessionError) return { ok: false, json: async () => ({ error: sessionError }) };
@@ -615,6 +709,65 @@ test('paused public phase invalidates eligibility without switching to paid or a
   assert.equal(h.nodes.get('[data-connect-wallet]').disabled, false);
   await h.mint();
   for (const forbidden of ['/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
+});
+
+test('prelaunch blocks malicious readiness and late old quotes without erasing the handle or wallet proof', async () => {
+  const h = await harness({ restoredWallet: true, initialOptions: freeOptions(), initialPhase: 'free' });
+  let release;
+  h.queueOptions(freeOptions(), new Promise(resolve => { release = resolve; }));
+  const quote = h.nodes.get('[data-pulse-check]').handlers.click();
+  h.windowEvents.get('sg:readiness-changed')({ detail: { mintReady: true, saleStatus: { phase: 'prelaunch', paused: false } } });
+  const optionCount = h.calls.filter(call => call === '/api/test/options').length;
+  assert.equal(h.nodes.get('[data-pulse-options]').dataset.pulsePhase, 'prelaunch');
+  assert.equal(h.nodes.get('[data-pulse-title]').textContent, 'Minting coming soon');
+  assert.equal(h.nodes.get('[name="pulse-mode"]').value, '');
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+  release(); await quote; await h.mint();
+  assert.equal(h.nodes.get('[data-pulse-options]').dataset.pulsePhase, 'prelaunch');
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+  assert.equal(h.nodes.get('[name="handle"]').value, 'SomeHandle');
+  assert.equal(h.nodes.get('[data-wallet-label]').textContent, WALLET);
+  assert.equal(h.calls.filter(call => call === '/api/test/options').length, optionCount);
+  for (const forbidden of ['personal_sign', '/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
+  h.windowEvents.get('sg:readiness-changed')({ detail: { mintReady: true, saleStatus: freeOptions().saleStatus } }); await flush();
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, false);
+  assert.equal(h.nodes.get('[name="pulse-mode"]').value, 'free');
+});
+
+test('prelaunch arriving during wallet verification prevents a later signature prompt', async () => {
+  let release;
+  const h = await harness({ initialOptions: freeOptions(), initialPhase: 'free', challengeGate: new Promise(resolve => { release = resolve; }) });
+  await h.connect(); assert.ok(h.calls.includes('/api/test/challenge'));
+  h.windowEvents.get('sg:readiness-changed')({ detail: { mintReady: true, saleStatus: { phase: 'prelaunch', paused: false } } });
+  release(); await flush();
+  for (const forbidden of ['personal_sign', '/api/test/prepare', '/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+});
+
+test('prelaunch arriving during preparation fences begin and wallet send', async () => {
+  let release;
+  const h = await harness({ restoredWallet: true, initialOptions: freeOptions(), initialPhase: 'free', prepareGate: new Promise(resolve => { release = resolve; }) });
+  const mint = h.mint(); await flush(); assert.ok(h.calls.includes('/api/test/prepare'));
+  h.windowEvents.get('sg:readiness-changed')({ detail: { mintReady: true, saleStatus: { phase: 'prelaunch', paused: false } } });
+  release(); await mint;
+  for (const forbidden of ['/api/test/begin', 'eth_sendTransaction']) assert.ok(!h.calls.includes(forbidden));
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+  assert.equal(h.nodes.get('[name="handle"]').value, 'SomeHandle');
+});
+
+test('a begun mint is kept for explicit recovery if launch closes before the wallet submission', async () => {
+  let release;
+  const h = await harness({ restoredWallet: true, initialOptions: freeOptions(), initialPhase: 'free', beginGate: new Promise(resolve => { release = resolve; }) });
+  const mint = h.mint(); await flush(); assert.ok(h.calls.includes('/api/test/begin'));
+  h.windowEvents.get('sg:readiness-changed')({ detail: { mintReady: true, saleStatus: { phase: 'prelaunch', paused: false } } });
+  release(); await mint;
+  assert.ok(!h.calls.includes('eth_sendTransaction')); assert.ok(!h.calls.includes('/api/test/report'));
+  assert.equal(JSON.parse(h.storage.get('sg-sepolia-pending')).handle, 'somehandle');
+  assert.equal(h.nodes.get('[data-mint-recovery]').hidden, false);
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true);
+  assert.match(h.nodes.get('[data-request-feedback]').textContent, /no transaction was sent/);
+  h.windowEvents.get('sg:readiness-changed')({ detail: { mintReady: true, saleStatus: freeOptions().saleStatus } }); await flush();
+  assert.equal(h.nodes.get('[data-request-submit]').disabled, true, 'Opening again cannot discard the unresolved begun request');
 });
 
 test('allowlist revision changes fence old eligibility responses without changing the sale phase or quota', async () => {

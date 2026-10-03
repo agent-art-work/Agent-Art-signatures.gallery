@@ -36,6 +36,69 @@ This disposable frontend uses a deterministic assessment fixture, not live Grok.
 The real contract, allowlist proof, revision-bound authorization and transaction
 receipt are verified. No paid X or Grok requests are made by this test run.
 
+## Website launch phases
+
+The website has **Pre-launch, Free mint and Paid mint** phases. These do not add
+a third economic state to RC2. An explicit server launch gate selects
+pre-launch; after opening, verified contract state selects free or paid. Pause
+and read availability are separate overlays, never evidence of pre-launch.
+
+| Website phase | Visitor experience |
+| --- | --- |
+| Pre-launch | Home invites Explore previews. `/explore` and `/mint` offer a wallet-free handle input leading to sixteen variations. No mint quote, assessment, authorization or new submission is issued. |
+| Free mint | Home says Free Mint. Connected wallets are checked automatically for unused allowlist slots; mint price is zero and gas remains payable. |
+| Paid mint | Home says Paid Mint. A fresh Pulse quote and an explicit price ceiling are required; unused payment is refunded and gas is additional. |
+
+Exploration remains available in every phase. A preview does not disclose the
+eventual minted signature. Canonical inclusion still reveals immediately as
+Confirming in the mint flow and gallery; finalization promotes it to Minted.
+Existing transaction status, reports and recovery remain available when new
+mint issuance is closed. Passive viewers do not receive RPC outage warnings.
+
+The current RC2 test remains open. For a **new, not-yet-opened deployment**, set
+`PULSE_SITE_LAUNCH_MODE=prelaunch` before starting its loopback site. When policy
+and contract state are ready, restart with `PULSE_SITE_LAUNCH_MODE=open` (the
+compatibility default). The private deployment-bound first-open record prevents
+later maintenance from being relabelled pre-launch. Invalid launch values refuse
+startup; browser query strings, storage and request bodies cannot set this gate.
+This record describes website activation, not an on-chain launch timestamp.
+It is stored as private `site-launch.json` under the deployment's owned process
+lock, after successful listener startup. A failed startup does not mark opening;
+a malformed or differently bound record refuses rather than being repaired.
+
+To explore before a deployment exists, the read-only frontend supports:
+
+```sh
+PULSE_SITE_LAUNCH_MODE=prelaunch PORT=3008 npm run pulse:sepolia:fe
+```
+
+It needs no deployment plan, relay, RPC or signing key. This is an intentional
+preview-only mode, not an automatic RPC fallback and not a production launch.
+The existing test-only and loopback restrictions remain in force.
+If a preview frontend is explicitly bound to a collection, its exact plan and
+deployment directory are required; an opening record or known mint activity
+prevents that collection from being presented as pre-launch.
+
+To open a new deployment, first finalize its reviewed allowlist/quota and Pulse
+configuration, check the absolute deadline and contract pause state, then restart
+the website with `open`. Website opening does not send a contract transaction.
+Pause/resume through `/admin` still requires a deliberate admin-wallet approval.
+Once open, the backend follows the current contract phase automatically; the
+browser replaces its labels and invalidates stale quotes without prompting a
+wallet, navigating, preparing or sending a mint. A fresh wallet-specific read and
+explicit user action are still required for minting.
+
+RC2's absolute free deadline continues while the contract is paused or the site
+is pre-launch. Opening after expiry follows the actual paid phase; it does not
+restart a free window. Website gating cannot revoke an already-signed voucher.
+Use contract pause to guarantee no on-chain mint before opening. This work
+does not change or submit that pause, select launch dates, or change economics.
+If later verified activity reveals that a pre-launch setting is inconsistent,
+new mint admission stays closed and health records `SITE_ALREADY_OPEN`. Admin
+status explicitly explains the website configuration conflict without inventing
+an on-chain integrity halt; authenticated maintenance remains available. Views
+stay quiet, and no admin action or mint is submitted automatically.
+
 ## Policy
 
 The admin may change the Merkle allowlist root, slot capacity and successful

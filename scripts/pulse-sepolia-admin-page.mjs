@@ -1,4 +1,5 @@
 import { errorPage } from '../src/openMint/pages.ts';
+import { sitePhasePresentation } from '../src/openMint/sitePhase.ts';
 
 const escape = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#x27;');
 const button = (label, name) => `<button class="auth-action" type="button" data-admin-${name} disabled><span>${label}</span></button>`;
@@ -34,6 +35,7 @@ export const SEPOLIA_ADMIN_CSS = `
 
 export function sepoliaAdminPage(options = {}) {
   const contract = options.collection ?? options.contract ?? '';
+  const website = sitePhasePresentation(options.pulseSaleStatus);
   const body = `<section class="auth-page sepolia-admin" data-admin-page data-admin-collection="${escape(contract)}"><div class="auth-sheet">
 <div class="admin-heading"><h1>Free mint admin</h1><span class="signature-tag" data-admin-state role="status" aria-live="polite" aria-atomic="true">Sign in to check policy</span></div>
 <p class="admin-note">Ethereum Sepolia · RC2. Each change is signed and sent by your admin wallet.</p>
@@ -42,7 +44,7 @@ export function sepoliaAdminPage(options = {}) {
 <div class="admin-wallet"><div>${options.adminWallet ? `<p class="admin-note">Collection admin: ${escape(options.adminWallet)}</p>` : ''}<p data-admin-wallet-label>Connect the admin wallet to manage this collection.</p></div><div class="auth-actions">${button('Connect admin wallet', 'connect')}${button('Sign out', 'logout')}</div></div>
 <p class="admin-feedback open-feedback" data-admin-wallet-feedback role="status" aria-live="polite"></p></section>
 <section class="admin-section" aria-labelledby="admin-policy-title"><h2 id="admin-policy-title">Current policy</h2>
-<dl class="admin-facts"><div><dt>Free mints used / quota</dt><dd data-admin-used>—</dd></div><div><dt>Allowlist slots</dt><dd data-admin-slots>—</dd></div><div><dt>Free deadline</dt><dd data-admin-deadline>—</dd></div><div><dt>Revision</dt><dd data-admin-revision>—</dd></div><div class="admin-wide"><dt>Merkle root</dt><dd data-admin-root>—</dd></div></dl>
+<dl class="admin-facts"><div><dt>Website phase</dt><dd data-admin-site-state>${escape(website.status)}</dd></div><div><dt>Contract minting</dt><dd data-admin-contract-state>Sign in to check policy</dd></div><div><dt>Free mints used / quota</dt><dd data-admin-used>—</dd></div><div><dt>Allowlist slots</dt><dd data-admin-slots>—</dd></div><div><dt>Free deadline</dt><dd data-admin-deadline>—</dd></div><div><dt>Revision</dt><dd data-admin-revision>—</dd></div><div class="admin-wide"><dt>Merkle root</dt><dd data-admin-root>—</dd></div></dl>
 <div class="auth-actions">${button('Refresh policy', 'refresh')}</div><p class="admin-feedback open-feedback" data-admin-feedback role="status" aria-live="polite"></p></section>
 <section class="admin-section" aria-labelledby="admin-edit-title"><h2 id="admin-edit-title">Allowlist &amp; free quota</h2>
 <p>One address per row. Row order defines slot IDs; a repeated address grants multiple slots. Append new rows to preserve existing slots. Claimed slots cannot be reassigned.</p>
@@ -54,7 +56,7 @@ export function sepoliaAdminPage(options = {}) {
 <p class="open-preview-notice open-preview-warning" data-admin-end-warning hidden><strong class="open-preview-notice-label">Warning</strong> Applying a quota equal to free mints already used permanently ends the free phase. Raising the quota later cannot reopen it.</p>
 <label class="admin-ack" data-admin-end-ack-label hidden><input type="checkbox" data-admin-end-ack><span>I understand that this change permanently ends free minting.</span></label></div>
 <p class="admin-feedback open-feedback" data-admin-review-feedback role="status" aria-live="polite"></p></section>
-<section class="admin-section" aria-labelledby="admin-action-title"><h2 id="admin-action-title">Minting controls</h2><p>Pause minting before applying the reviewed allowlist and quota. Resume only when the current policy is ready.</p>
+<section class="admin-section" aria-labelledby="admin-action-title"><h2 id="admin-action-title">Minting controls</h2><p>Pause minting before applying the reviewed allowlist and quota. Resume only when the current policy is ready.</p><p class="admin-note">Website launch is managed separately. Resuming the contract does not open the website.</p>
 <div class="admin-actions">${button('Pause minting', 'pause')}${button('Apply allowlist &amp; quota', 'configure')}${button('Resume minting', 'unpause')}</div>
 <p class="admin-feedback open-feedback" data-admin-action-feedback role="status" aria-live="polite"></p></section>
 <section class="admin-section admin-pending" data-admin-pending hidden aria-labelledby="admin-pending-title"><h2 id="admin-pending-title">Pending admin transaction</h2><p data-admin-pending-summary></p><p class="admin-pending-hash" data-admin-pending-hash></p>

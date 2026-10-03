@@ -103,6 +103,7 @@ describe("saved assessment provenance", () => {
 
   it("preserves the About publisher link separately from artwork-handle navigation", () => {
     const about = aboutPage().match(/<article class="about-page">([\s\S]*?)<\/article>/)![1]!;
-    expect(about).toContain('<a href="https://x.com/AgentArt_AA" target="_blank" rel="noopener noreferrer">Agent Art ↗</a>');
+    expect(about).toContain('<a href="https://x.com/AnAgentARTist" target="_blank" rel="noopener noreferrer">AnAgentARTist ↗</a>');
+    expect(about).not.toContain("AgentArt_AA");
   });
 });

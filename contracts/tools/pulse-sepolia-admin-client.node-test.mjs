@@ -30,7 +30,7 @@ async function harness(options = {}) {
   const nodes = new Map(), calls = [], timers = new Map(), events = new Map(), storage = options.storage || new Map();
   const names = ['page', 'connect', 'logout', 'refresh', 'review', 'pause', 'configure', 'unpause', 'reconcile', 'wallets', 'quota', 'wallet-label',
     'wallet-feedback', 'feedback', 'review-feedback', 'action-feedback', 'pending-feedback', 'pending', 'pending-summary', 'pending-hash', 'reconcile-hash',
-    'state', 'used', 'slots', 'deadline', 'revision', 'root', 'review-summary', 'review-quota', 'review-slots', 'review-changes', 'review-root',
+    'state', 'site-state', 'contract-state', 'used', 'slots', 'deadline', 'revision', 'root', 'review-summary', 'review-quota', 'review-slots', 'review-changes', 'review-root',
     'end-warning', 'end-ack-label', 'end-ack'];
   for (const name of names) nodes.set('[data-admin-' + name + ']', node());
   nodes.set('[data-admin-connect] > span', node('span'));
@@ -121,6 +121,69 @@ test('passive restoration reads permissions and policy without signing or prepar
   assert.equal(h.node('state').textContent, 'Live Free'); assert.equal(h.node('used').textContent, '1 / 4');
   assert.equal(h.node('wallets').value, ADMIN); assert.equal(h.node('pause').disabled, false);
   assert.equal(h.node('configure').disabled, true); assert.equal(h.storage.size, 0);
+});
+
+test('admin displays prelaunch separately from the actual free contract and keeps launch out of wallet actions', async () => {
+  const h = await harness({ status: { siteLaunchMode: 'prelaunch', siteSaleStatus: { phase: 'prelaunch', paused: false } } });
+  assert.equal(h.node('state').textContent, 'Pre-launch');
+  assert.equal(h.node('site-state').textContent, 'Minting coming soon.');
+  assert.equal(h.node('contract-state').textContent, 'Live Free');
+  assert.equal(h.node('review').disabled, false, 'Website presentation does not alter contract-admin permissions');
+  assert.ok(!h.calls.some(call => call.method === 'personal_sign' || call.method === 'eth_sendTransaction' || call.path === '/api/test/admin/action'));
+});
+
+test('admin distinguishes prelaunch, maintenance and unknown availability without inventing a launch action', async () => {
+  for (const [siteLaunchMode, siteSaleStatus, expected] of [['prelaunch', { phase: 'prelaunch', paused: true }, 'Minting coming soon.'],
+    ['open', { phase: 'free', paused: true }, 'Minting is paused.'], ['open', { phase: 'unknown', paused: false }, 'Checking mint availability…']]) {
+    const h = await harness({ policy: { paused: true }, status: { siteLaunchMode, siteSaleStatus } });
+    assert.equal(h.node('site-state').textContent, expected);
+    assert.equal(h.node('contract-state').textContent, 'Paused');
+    assert.equal(h.node('unpause').disabled, false);
+    assert.ok(!h.calls.some(call => call.method === 'personal_sign' || call.method === 'eth_sendTransaction'));
+  }
+});
+
+test('documented prelaunch activity latch shows a styled config warning while retaining explicit admin maintenance', async () => {
+  for (const paused of [false, true]) {
+    const h = await harness({ policy: { paused }, status: { siteLaunchMode: 'prelaunch',
+      siteSaleStatus: { phase: 'unknown', paused }, siteLaunchError: 'SITE_ALREADY_OPEN' } });
+    assert.equal(h.node('state').textContent, 'Launch configuration blocked');
+    assert.equal(h.node('site-state').textContent, 'Opening blocked: verified mint activity already exists.');
+    assert.equal(h.node('contract-state').textContent, paused ? 'Paused' : 'Live Free');
+    assert.match(h.node('feedback').textContent, /^Warning Website launch configuration needs review: verified mint activity already exists\./);
+    assert.equal(h.node('feedback').children[0].className, 'open-preview-notice-label');
+    assert.match(h.node('feedback').className, /open-preview-warning/);
+    assert.equal(h.node('pause').disabled, paused);
+    assert.equal(h.node('unpause').disabled, !paused);
+    assert.equal(h.node('review').disabled, false);
+    assert.ok(!h.calls.some(call => call.method === 'personal_sign' || call.method === 'eth_sendTransaction'
+      || call.path === '/api/test/admin/action' || call.path === '/api/test/admin/review'));
+    assert.equal(h.storage.size, 0);
+  }
+  const nonAdmin = await harness({ status: { admin: OTHER, siteLaunchMode: 'prelaunch',
+    siteSaleStatus: { phase: 'unknown', paused: false }, siteLaunchError: 'SITE_ALREADY_OPEN' } });
+  assert.equal(nonAdmin.node('pause').disabled, true);
+  await nonAdmin.client.act('pause');
+  assert.equal(apiCalls(nonAdmin, '/api/test/admin/action').length, 0);
+});
+
+test('contradictory website phase metadata cannot bypass admin policy binding', async () => {
+  for (const status of [{ siteLaunchMode: 'open', siteSaleStatus: { phase: 'prelaunch', paused: false } },
+    { siteLaunchMode: 'prelaunch', siteSaleStatus: { phase: 'free', paused: false } },
+    { siteLaunchMode: 'preview', siteSaleStatus: { phase: 'prelaunch', paused: false } },
+    { siteSaleStatus: { phase: 'free', paused: 'true' } },
+    { siteLaunchMode: 'prelaunch', siteSaleStatus: { phase: 'unknown', paused: false } },
+    { siteLaunchMode: 'prelaunch', siteSaleStatus: { phase: 'unknown', paused: false }, siteLaunchError: 'UNRECOGNIZED' },
+    { siteLaunchMode: 'prelaunch', siteSaleStatus: { phase: 'prelaunch', paused: false }, siteLaunchError: 'SITE_ALREADY_OPEN' },
+    { siteLaunchMode: 'prelaunch', siteSaleStatus: { phase: 'free', paused: false }, siteLaunchError: 'SITE_ALREADY_OPEN' },
+    { siteLaunchMode: 'open', siteSaleStatus: { phase: 'unknown', paused: false }, siteLaunchError: 'SITE_ALREADY_OPEN' },
+    { siteSaleStatus: { phase: 'unknown', paused: false }, siteLaunchError: 'SITE_ALREADY_OPEN' },
+    { siteLaunchError: 'SITE_ALREADY_OPEN' }]) {
+    const h = await harness({ status });
+    assert.equal(h.node('review').disabled, true); assert.equal(h.node('pause').disabled, true);
+    assert.match(h.node('feedback').textContent, /policy binding could not be verified/);
+    assert.ok(!h.calls.some(call => call.method === 'eth_sendTransaction'));
+  }
 });
 
 test('explicit connect chooses announced Rabby and switches Sepolia before admin sign-in', async () => {

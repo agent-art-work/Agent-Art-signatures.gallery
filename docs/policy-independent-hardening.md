@@ -79,6 +79,9 @@ and closure policy plus paid Pulse configuration; do not manufacture them.
   Hosted execution and the subsequent nominal-binding change remain separate
   checks, not implied by that local result. The final nominal-budget option
   guard brings the current complete campaign to 78 cases.
+  The final nominal-binding complete run passed **78/78** locally and in hosted
+  CI, with zero failures/cancellations/skips and **100% lines, 98.13% branches,
+  98.44% functions**, retaining the same 100/94/95 thresholds.
   Isolated backup/restore campaign: **8 passed**.
 - Future-staging mint-controller native-coverage campaign: **39 passed**,
   including five test-harness regressions; **100% lines, 98.82% branches and
@@ -90,6 +93,11 @@ Local evidence files are `/private/tmp/sg-hardening-final-coverage-20261002.json
 Synthetic browser screenshots/results are the only evidence selected for the
 new CI artifact upload; private backup manifests and real-site screenshots
 are excluded. The archived backup and current dev runtime remain local.
+
+Final hardening commit `68b6b74` passed all seven hosted lanes in
+[run 37034667223](https://github.com/inshell-art/Agent-Art-signatures.gallery/actions/runs/37034667223).
+This verifies that exact hardening candidate, not a later website-phase change,
+production launch or actual-wallet/provider acceptance.
 
 The first hosted run exposed two test-portability defects, both corrected without
 changing production rules or test thresholds. The RC2 verification fixture now

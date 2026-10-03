@@ -430,7 +430,7 @@ describe("V1 previews", () => {
     expect(html.match(/<g transform="translate\([^)]*\) scale\(1\)">/g)).toHaveLength(2);
     expect(html).not.toContain("matrix(");
     expect(html).toContain('aria-hidden="true"');
-    expect(html).toContain('href="https://x.com/AgentArt_AA"');
+    expect(html).toContain('href="https://x.com/AnAgentARTist"');
     expect(html).not.toContain("data-theme-value");
     expect(html).not.toContain("Color theme");
     expect(html).not.toContain('<script src="/assets/theme.js"></script>');
@@ -860,7 +860,7 @@ describe("fixture account and claim flow", () => {
       expect(html).not.toContain("data-fixture-environment");
       expect(html).not.toContain('class="fixture-banner"');
       expect(html).toContain('<meta name="robots" content="noindex">');
-      expect(html).toContain('<div class="footer-credit">by <a class="footer-agent" href="https://x.com/AgentArt_AA" target="_blank" rel="noopener noreferrer" aria-label="Agent Art on X (opens in a new tab)"><svg class="footer-x-icon"');
+      expect(html).toContain('<div class="footer-credit">by <a class="footer-agent" href="https://x.com/AnAgentARTist" target="_blank" rel="noopener noreferrer" aria-label="AnAgentARTist on X (opens in a new tab)"><svg class="footer-x-icon"');
       expect(html).toContain('class="footer-x-icon"');
       expect(html).toContain('class="footer-about" href="/about"');
       if (disclosure) expect(html).toContain(disclosure);

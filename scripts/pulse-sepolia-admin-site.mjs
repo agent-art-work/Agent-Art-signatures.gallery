@@ -8,6 +8,7 @@ import { verifyPulseAdminDeployment } from './pulse-sepolia-admin-verify.mjs';
 import { readFailureDiagnostic } from './pulse-sepolia-recovery.mjs';
 import { rpcTransport, retrySafeReads, boundedReadSource } from './pulse-sepolia.mjs';
 import { requireRpcData, unavailableRpcData } from './pulse-sepolia-rpc.mjs';
+import { parseSiteLaunchMode } from './pulse-site-launch.mjs';
 
 export async function verifyFinalizedAdminBinding(c, p, j, verify = verifyPulseAdminDeployment) {
   const finalized = requireRpcData(await c.rpc('eth_getBlockByNumber', ['finalized', false]));
@@ -23,6 +24,7 @@ export async function verifyFinalizedAdminBinding(c, p, j, verify = verifyPulseA
  * Existing relay schema supports independently pinned deployment IDs. */
 export async function startAdminSepoliaSite(port = 3007) {
   assert.notEqual(process.env.NODE_ENV, 'production');
+  const siteLaunchMode = parseSiteLaunchMode(process.env.PULSE_SITE_LAUNCH_MODE ?? 'open');
   const plan = loadAdminPlan(), journal = loadAdminJournal(DIR, plan);
   if (!process.env.PULSE_RELAY_DATABASE_URL) {
     const socket = resolve(DIR, '../pulse-relay/socket');
@@ -37,7 +39,7 @@ export async function startAdminSepoliaSite(port = 3007) {
   assert.notEqual(primary.hostname, secondary.hostname);
   const context = { rpc: retrySafeReads(boundedReadSource(rpcTransport(primary.href))),
     second: retrySafeReads(boundedReadSource(rpcTransport(secondary.href))) };
-  return startSepoliaTestSite(port, { plan, journal, directory: DIR, context, adminWeb: true,
+  return startSepoliaTestSite(port, { plan, journal, directory: DIR, context, adminWeb: true, siteLaunchMode,
     // A pending CREATE is expected, not a permanently blocked assertion lane.
     verifyDeployment: verifyFinalizedAdminBinding,
     allowlistProvider: () => {

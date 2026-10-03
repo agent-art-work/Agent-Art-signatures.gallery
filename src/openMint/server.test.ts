@@ -60,7 +60,10 @@ function expectArtworkCaptionPolicy(html: string, count: number, mintedCount: nu
   for (const caption of captions) {
     expect(caption).toContain('class="artwork-identity"');
     expect(caption).toContain('<span class="artwork-personality-separator" aria-hidden="true">×</span>');
-    expect(caption).toMatch(/@[A-Za-z0-9_]+<\/a>[\s\S]*artwork-personality-separator[\s\S]*class="mbti-link"/);
+    const handleLink = caption.match(/<a\b[^>]*class="gallery-handle(?: [^"]*)?"[^>]*>([\s\S]*?)<\/a>/);
+    expect(handleLink?.[1].replace(/<[^>]*>/g, "")).toMatch(/^@[A-Za-z0-9_]{1,15}$/);
+    expect(handleLink?.index).toBeLessThan(caption.indexOf('artwork-personality-separator'));
+    expect(caption.indexOf('artwork-personality-separator')).toBeLessThan(caption.indexOf('class="mbti-link"'));
     expectHandleNavigation(caption, undefined, 1);
     expect(caption).not.toMatch(/<img\b|<a\b[^>]*>(?:(?!<\/a>)[\s\S])*<a\b/);
   }

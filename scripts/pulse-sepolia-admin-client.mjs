@@ -1,7 +1,8 @@
 import { renderInlineFeedback } from '../src/openMint/inlineFeedback.ts';
+import { sitePhasePresentation } from '../src/openMint/sitePhase.ts';
 
 /** Browser factory is serialized below; all dependencies remain explicit. */
-export function sepoliaAdminClient(renderFeedback = renderInlineFeedback) {
+export function sepoliaAdminClient(renderFeedback = renderInlineFeedback, phasePresentation = sitePhasePresentation) {
   const $ = selector => document.querySelector(selector);
   const page = $('[data-admin-page]');
   if (!page) return;
@@ -126,10 +127,18 @@ export function sepoliaAdminClient(renderFeedback = renderInlineFeedback) {
   }
   function validateStatus(value) {
     const p = value.policy;
+    const launchConflict = value.siteLaunchMode === 'prelaunch' && value.siteSaleStatus?.phase === 'unknown'
+      && value.siteLaunchError === 'SITE_ALREADY_OPEN';
     if (value.collection?.toLowerCase() !== collection || value.chainId !== 11155111 || !address(value.admin)
       || value.admin.toLowerCase() !== wallet?.toLowerCase() || !p || ![0, 1].includes(p.phase) || typeof p.paused !== 'boolean' || !hash(p.root)
       || !['slotCount', 'quota', 'revision', 'freeMinted', 'freeDeadline'].every(key => decimal(p[key]))
       || !Array.isArray(value.wallets) || !value.wallets.every(address)
+      || value.siteLaunchMode !== undefined && !['prelaunch', 'open'].includes(value.siteLaunchMode)
+      || value.siteLaunchError !== undefined && !launchConflict
+      || value.siteSaleStatus !== undefined && (!['prelaunch', 'free', 'paid', 'unknown'].includes(value.siteSaleStatus?.phase)
+        || typeof value.siteSaleStatus.paused !== 'boolean'
+        || value.siteLaunchMode === 'prelaunch' && value.siteSaleStatus.phase !== 'prelaunch' && !launchConflict
+        || value.siteLaunchMode === 'open' && value.siteSaleStatus.phase === 'prelaunch')
       || value.pending && (!identifier(value.pending.intentId) || !['pause', 'configure', 'unpause'].includes(value.pending.action)
         || value.pending.transactionHash !== undefined && !hash(value.pending.transactionHash)
         || value.pending.hashValidated !== undefined && typeof value.pending.hashValidated !== 'boolean')) throw Error('Admin policy binding could not be verified.');
@@ -150,7 +159,12 @@ export function sepoliaAdminClient(renderFeedback = renderInlineFeedback) {
       if (status && fingerprint(status) !== fingerprint(value)) invalidateReview('Policy changed. Review the draft again before applying it.');
       status = value;
       if (!draftLoaded) { $('[data-admin-wallets]').value = value.wallets.join('\n'); $('[data-admin-quota]').value = String(value.policy.quota); draftLoaded = true; }
-      for (const [name, text] of [['state', value.policy.paused ? 'Paused' : value.policy.phase === 0 ? 'Live Free' : 'Paid'],
+      const contractState = value.policy.paused ? 'Paused' : value.policy.phase === 0 ? 'Live Free' : 'Paid';
+      const website = phasePresentation(value.siteSaleStatus);
+      const launchWarning = value.siteLaunchError === 'SITE_ALREADY_OPEN'
+        ? 'Website launch configuration needs review: verified mint activity already exists. Website minting remains closed until the pre-launch setting is resolved.' : '';
+      for (const [name, text] of [['state', launchWarning ? 'Launch configuration blocked' : website.prelaunch ? 'Pre-launch' : contractState],
+        ['site-state', launchWarning ? 'Opening blocked: verified mint activity already exists.' : website.status], ['contract-state', contractState],
         ['used', value.policy.freeMinted + ' / ' + value.policy.quota], ['slots', value.policy.slotCount], ['revision', value.policy.revision], ['root', value.policy.root]]) {
         const node = $('[data-admin-' + name + ']'); if (node) node.textContent = String(text);
       }
@@ -168,7 +182,7 @@ export function sepoliaAdminClient(renderFeedback = renderInlineFeedback) {
         savePending(undefined); stopPolling(); if (resolved.action === 'configure') invalidateReview();
         feedback('action', 'Previous admin request is ' + resolved.state + '. Current policy refreshed.', resolved.state === 'reverted');
       }
-      renderFeedback($('[data-admin-feedback]'), value.configurationError || '', !!value.configurationError); render();
+      renderFeedback($('[data-admin-feedback]'), [launchWarning, value.configurationError].filter(Boolean).join(' '), !!(launchWarning || value.configurationError)); render();
       if (pending?.transactionHash) void startPolling();
     } catch (error) {
       if (generation === epoch && request === statusEpoch) {
@@ -359,4 +373,4 @@ export function sepoliaAdminClient(renderFeedback = renderInlineFeedback) {
   return { initialized, connect, refresh: refreshPolicy, review: reviewChanges, act, reconcile, logout };
 }
 
-export const SEPOLIA_ADMIN_CLIENT = `(${sepoliaAdminClient.toString()})(${renderInlineFeedback.toString()});`;
+export const SEPOLIA_ADMIN_CLIENT = `(${sepoliaAdminClient.toString()})(${renderInlineFeedback.toString()}, ${sitePhasePresentation.toString()});`;

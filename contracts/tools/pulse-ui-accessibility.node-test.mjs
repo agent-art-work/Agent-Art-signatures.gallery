@@ -5,16 +5,26 @@ import { PassThrough } from 'node:stream';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { accessibilityFixture, auditTargetEndpoint, connectCdp, launchAccessibilityChrome, runAccessibilityAudit, UI_ACCESSIBILITY_MATRIX } from '../../scripts/pulse-ui-accessibility.mjs';
+import { accessibilityFixture, accessibilityFixtureOptions, assertPhaseSurface, expectedExplorerRedirect, createAccessibilityFixtureServer, auditTargetEndpoint, connectCdp, launchAccessibilityChrome, runAccessibilityAudit, UI_ACCESSIBILITY_MATRIX } from '../../scripts/pulse-ui-accessibility.mjs';
 import { OPEN_MINT_CSS } from '../../src/openMint/pages.ts';
 import { SEPOLIA_ADMIN_CSS } from '../../scripts/pulse-sepolia-admin-page.mjs';
 
 test('offline browser audit covers mobile widths, zoom reflow, themes and sale phases', () => {
-  assert.equal(UI_ACCESSIBILITY_MATRIX.length, 48);
-  for (const page of ['home', 'mint', 'admin']) for (const theme of ['light', 'dark']) for (const width of [320, 375, 390, 640])
+  const original = ['home', 'mint', 'admin'].flatMap(page =>
+    (page === 'admin' ? ['free'] : page === 'mint' ? ['free', 'paid', 'unknown'] : ['free', 'paid']).flatMap(phase =>
+      ['light', 'dark'].flatMap(theme => [320, 375, 390, 640].map(width => ({ page, phase, theme, width, zoom:width === 640 ? 2 : 1 })))));
+  assert.deepEqual(UI_ACCESSIBILITY_MATRIX.slice(0, 48), original, 'The mandatory original 48 cases were changed or removed.');
+  assert.equal(UI_ACCESSIBILITY_MATRIX.length, 128);
+  assert.equal(new Set(UI_ACCESSIBILITY_MATRIX.map(entry => JSON.stringify(entry))).size, 128, 'Duplicate matrix cases hide missing coverage.');
+  assert.ok(Object.isFrozen(UI_ACCESSIBILITY_MATRIX) && UI_ACCESSIBILITY_MATRIX.every(Object.isFrozen));
+  for (const page of ['home', 'mint', 'admin', 'explore']) for (const theme of ['light', 'dark']) for (const width of [320, 375, 390, 640])
     assert.ok(UI_ACCESSIBILITY_MATRIX.some(entry => entry.page === page && entry.theme === theme && entry.width === width));
   assert.ok(UI_ACCESSIBILITY_MATRIX.filter(entry => entry.width === 640).every(entry => entry.zoom === 2));
-  assert.deepEqual([...new Set(UI_ACCESSIBILITY_MATRIX.filter(entry => entry.page === 'mint').map(entry => entry.phase))], ['free', 'paid', 'unknown']);
+  for (const page of ['home', 'mint']) for (const theme of ['light', 'dark']) for (const width of [320, 375, 390, 640]) {
+    assert.equal(UI_ACCESSIBILITY_MATRIX.filter(entry => entry.page === page && entry.phase === 'prelaunch' && entry.theme === theme && entry.width === width).length, 1);
+    for (const phase of ['free', 'paid']) assert.equal(UI_ACCESSIBILITY_MATRIX.filter(entry => entry.page === page && entry.phase === phase && entry.paused && entry.theme === theme && entry.width === width).length, 1);
+  }
+  for (const phase of ['prelaunch', 'free', 'paid', 'unknown']) assert.equal(UI_ACCESSIBILITY_MATRIX.filter(entry => entry.page === 'explore' && entry.phase === phase).length, 8);
 });
 
 test('home guidance wraps at readable size and mobile wallet layout preserves address width', () => {
@@ -37,13 +47,133 @@ test('real mint/admin templates expose named headings and atomic status updates 
 });
 
 test('fixture pages have synthetic data only and load no production wallet/RPC client', () => {
-  for (const page of ['home', 'mint', 'admin']) {
+  for (const page of ['home', 'mint', 'admin', 'explore']) {
     const html = accessibilityFixture(page);
     assert.match(html, /src="\/assets\/qa\.js"/);
     assert.doesNotMatch(html, /src="\/assets\/(?:sepolia(?:-admin|-readiness)?|open-mint)\.js"/);
     assert.doesNotMatch(html, /PRIVATE_KEY|eth_sendTransaction|personal_sign|https:\/\/[^" ]+\.rpc/);
   }
   assert.throws(() => accessibilityFixture('unknown'), /Unknown accessibility fixture/);
+});
+
+test('fixture launch is explicit while unknown and maintenance retain the underlying sale identity', () => {
+  assert.deepEqual(accessibilityFixtureOptions('prelaunch').pulseSaleStatus, { phase:'prelaunch', paused:false });
+  assert.equal(accessibilityFixtureOptions('prelaunch').siteLaunchMode, 'prelaunch');
+  assert.equal(accessibilityFixtureOptions('prelaunch').walletVerified, false);
+  assert.equal(accessibilityFixtureOptions('prelaunch').wallet, null);
+  for (const phase of ['free', 'paid', 'unknown']) for (const paused of [false, true]) {
+    const options = accessibilityFixtureOptions(phase, paused);
+    assert.equal(options.siteLaunchMode, 'open'); assert.deepEqual(options.pulseSaleStatus, { phase, paused });
+  }
+  for (const phase of ['paused', '', 'FREE', null]) assert.throws(() => accessibilityFixtureOptions(phase), /Unknown accessibility fixture phase/);
+  assert.throws(() => accessibilityFixtureOptions('paid', 'true'), /maintenance state must be explicit/);
+});
+
+test('pre-launch SSR uses exploration only without wallet, paid or mint submission controls', () => {
+  for (const page of ['home', 'mint', 'explore']) for (const paused of [false, true]) {
+    const html = accessibilityFixture(page, 'prelaunch', paused);
+    assert.match(html, /Minting coming soon/);
+    assert.doesNotMatch(html, /data-wallet-controls|data-connect-wallet|data-assessment-request|data-request-submit|data-mint-process|data-pulse-options|name="pulse-max-eth"/);
+    for (const link of html.match(/<a\b[^>]*href="\/mint(?:"|\?)[^>]*>/g) ?? []) assert.match(link, /\shidden(?:\s|>)/, 'Pre-launch contains visible mint navigation.');
+    assert.doesNotMatch(html, /Free mint coming soon|Minting is paused|<strong[^>]*>Warning<\/strong>/);
+    if (page === 'home') assert.match(html, /href="\/explore" data-home-mint-cta[^>]*>[\s\S]*?<span data-home-mint-label>Explore previews<\/span>/);
+    else {
+      assert.match(html, /data-preview-explorer data-site-phase="prelaunch"/);
+      assert.match(html, /data-preview-explore-form method="get" action="\/explore"/);
+      assert.match(html, /id="explore-handle"[^>]*aria-describedby="handle-validation explore-explanation"/);
+      assert.match(html, /data-explore-submit><span>Explore previews<\/span>/);
+    }
+  }
+});
+
+test('anonymous explorer remains wallet-free in every phase and never loads production wallet/RPC code', () => {
+  for (const phase of ['prelaunch', 'free', 'paid', 'unknown']) for (const paused of [false, true]) {
+    const html = accessibilityFixture('explore', phase, paused);
+    assert.match(html, new RegExp(`data-preview-explorer data-site-phase="${phase}"`));
+    assert.match(html, /data-preview-explore-form method="get" action="\/explore"/);
+    assert.doesNotMatch(html, /data-wallet-controls|data-assessment-request|data-request-submit|name="pulse-max-eth"|src="\/assets\/(?:sepolia|open-mint)\.js"/);
+    const mintLink = html.match(/<a\b[^>]*data-explorer-mint-link[^>]*>/)?.[0]; assert.ok(mintLink);
+    assert.equal(/\shidden(?:\s|>)/.test(mintLink), phase === 'prelaunch' || phase === 'unknown' || paused);
+  }
+});
+
+test('a maintenance overlay preserves free/paid labels and never impersonates pre-launch', () => {
+  for (const phase of ['free', 'paid']) {
+    const home = accessibilityFixture('home', phase, true), mint = accessibilityFixture('mint', phase, true);
+    assert.match(home, /Minting is paused\./);
+    assert.match(home, new RegExp(`<span data-home-mint-label>${phase === 'free' ? 'Free Mint' : 'Paid Mint'}<\\/span>`));
+    assert.match(mint, new RegExp(`data-pulse-phase="${phase}"`));
+    assert.match(mint, /Minting is paused\. You can still explore previews\./);
+    assert.doesNotMatch(home + mint, /Minting coming soon|data-preview-explorer/);
+  }
+});
+
+const explorerSurface = () => ({ visibleWarnings:[],walletAccesses:0,walletControls:0,paidFields:0,mintMarkers:[],visibleMintLinks:[],
+  phaseStatus:'Minting coming soon.',explorerPhase:'prelaunch',explorerForm:{method:'get',action:'/explore',submit:'Explore previews'},
+  explorerMintLink:{visible:false,label:'Explore previews',href:'/mint'} });
+test('browser phase assertions reject unsafe pre-launch UI even when the template looks otherwise valid', () => {
+  const entry = { page:'explore',phase:'prelaunch' }, base = explorerSurface();
+  assert.doesNotThrow(() => assertPhaseSurface(entry, base));
+  for (const patch of [{visibleWarnings:['RPC unavailable']},{walletAccesses:1},{walletControls:1},{paidFields:1},{mintMarkers:['[data-request-submit]']},
+    {visibleMintLinks:['/mint']},{phaseStatus:'Minting is paused.'},{explorerPhase:'paid'},
+    {explorerForm:{...base.explorerForm,method:'post'}},{explorerForm:{...base.explorerForm,action:'/api/mint'}},
+    {explorerForm:{...base.explorerForm,submit:'Mint & reveal'}},{explorerMintLink:{...base.explorerMintLink,visible:true}}]) {
+    assert.throws(() => assertPhaseSurface(entry, { ...base,...patch }));
+  }
+});
+
+test('browser home and explorer phase assertions reject stale labels, destinations and maintenance gates', () => {
+  for (const phase of ['prelaunch', 'free', 'paid', 'unknown']) for (const paused of [false, true]) {
+    const surface = explorerSurface(), label = {prelaunch:'Explore previews',free:'Free Mint',paid:'Paid Mint',unknown:'Mint a signature'}[phase];
+    Object.assign(surface,{phaseStatus:phase === 'prelaunch' ? 'Minting coming soon.' : paused ? 'Minting is paused.' : '',
+      primary:{label,href:phase === 'prelaunch' ? '/explore' : '/mint'}});
+    assert.doesNotThrow(() => assertPhaseSurface({page:'home',phase,paused}, surface));
+    assert.throws(() => assertPhaseSurface({page:'home',phase,paused}, {...surface,primary:{...surface.primary,href:'/wrong'}}));
+    assert.throws(() => assertPhaseSurface({page:'home',phase,paused}, {...surface,primary:{...surface.primary,label:'Stale phase'}}));
+    Object.assign(surface,{explorerPhase:phase,explorerMintLink:{visible:['free','paid'].includes(phase) && !paused,label,href:'/mint'}});
+    assert.doesNotThrow(() => assertPhaseSurface({page:'explore',phase,paused}, surface));
+    assert.throws(() => assertPhaseSurface({page:'explore',phase,paused}, {...surface,explorerMintLink:{...surface.explorerMintLink,visible:!surface.explorerMintLink.visible}}));
+  }
+});
+
+test('browser mint assertions preserve phase, maintenance and fresh-quote admission before enabling CTA', () => {
+  for (const phase of ['free', 'paid', 'unknown']) for (const paused of [false, true]) {
+    const entry = {page:'mint',phase,paused}, surface = {...explorerSurface(),mintPhase:phase,mintPaused:paused,submitDisabled:true,paidInputDisabled:true};
+    assert.doesNotThrow(() => assertPhaseSurface(entry, surface));
+    for (const patch of [{mintPhase:'prelaunch'},{mintPaused:!paused},{submitDisabled:false},...(paused ? [{paidInputDisabled:false}] : [])])
+      assert.throws(() => assertPhaseSurface(entry, {...surface,...patch}));
+  }
+});
+
+test('only the exact anonymous explorer same-origin redirect is exempt from failed-request assertions', () => {
+  const origin = 'http://127.0.0.1:45678';
+  const request = { url:origin+'/explore?handle=%40Artist_QA',method:'GET',status:302,redirect:'/p/Artist_QA/variations' };
+  assert.equal(expectedExplorerRedirect(request, origin), true);
+  for (const patch of [{status:200},{status:307},{method:'POST'},{url:origin+'/api/mint?handle=Artist_QA'},
+    {url:'http://outside.invalid/explore?handle=Artist_QA'},{url:origin+'/explore?handle=not%20valid'},
+    {redirect:'http://outside.invalid/p/Artist_QA/variations'},{redirect:'/p/SomeoneElse/variations'},
+    {redirect:'/p/Artist_QA/variations?mint=true'},{redirect:'/p/Artist_QA/variations#mint'}, {redirect:'http://['}])
+    assert.equal(expectedExplorerRedirect({...request,...patch}, origin), false);
+});
+
+test('offline explorer supports anonymous GET fallback and locally serves all16 previews without API routes', async () => {
+  const fixture = await createAccessibilityFixtureServer();
+  const fetchLocal = path => fetch(fixture.origin + path, { redirect:'manual',signal:AbortSignal.timeout(10000) });
+  try {
+    const entry = await fetchLocal('/explore?phase=prelaunch'); assert.equal(entry.status, 200);
+    assert.match(await entry.text(), /data-preview-explorer data-site-phase="prelaunch"/);
+    const navigation = await fetchLocal('/explore?handle=%40Artist_QA'); assert.equal(navigation.status, 302);
+    assert.equal(navigation.headers.get('location'), '/p/Artist_QA/variations');
+    const previews = await fetchLocal(navigation.headers.get('location')); assert.equal(previews.status, 200);
+    const html = await previews.text(); assert.equal((html.match(/class="open-preview-card"/g) ?? []).length, 16);
+    assert.doesNotMatch(html, /data-wallet-controls|data-assessment-request|data-request-submit/);
+    for (const link of html.match(/<a\b[^>]*href="\/mint(?:"|\?)[^>]*>/g) ?? []) assert.match(link, /\shidden(?:\s|>)/);
+    for (const source of [...html.matchAll(/<img\b[^>]*src="([^"]+)"/g)].map(match=>match[1])) {
+      const image = await fetchLocal(source.replaceAll('&amp;', '&')); assert.equal(image.status, 200); assert.equal(image.headers.get('content-type'), 'image/svg+xml');
+    }
+    assert.equal((await fetchLocal('/api/mint')).status, 404);
+    assert.equal((await fetch(fixture.origin+'/api/mint', {method:'POST',signal:AbortSignal.timeout(10000)})).status, 405);
+  } finally { await fixture.close(); }
 });
 
 const endpoint = 'ws://127.0.0.1:12345/devtools/browser/offline-test';
@@ -161,6 +291,28 @@ test('Chrome cleanup awaits actual close rather than a fixed sleep or only the e
   const cleanup = h.supervisor.close(); let settled = false; cleanup.then(() => settled = true);
   await new Promise(accept => setImmediate(accept)); assert.equal(settled, false); assert.equal(h.supervisor.diagnostics().closed, false);
   close(); await cleanup; assert.equal(h.supervisor.diagnostics().closed, true); assert.deepEqual(h.signals, ['SIGTERM']);
+});
+
+test('Chrome cleanup releases only owned inherited pipes after verified exit and still awaits actual child close', async () => {
+  let finish;
+  const h = browserFixture({onKill(signal) { h.child.emit('exit', 0, signal); finish=()=>h.child.emit('close', 0, signal); }});
+  assert.equal(h.child.stdout.destroyed, false); assert.equal(h.child.stderr.destroyed, false);
+  const cleanup = h.supervisor.close(); let settled = false; cleanup.then(()=>settled=true);
+  await new Promise(accept=>setImmediate(accept));
+  assert.equal(h.child.stdout.destroyed, true); assert.equal(h.child.stderr.destroyed, true);
+  assert.equal(h.supervisor.diagnostics().exited, true); assert.equal(h.supervisor.diagnostics().closed, false);
+  assert.equal(settled, false, 'Destroyed pipes are not a substitute for actual child close.');
+  assert.deepEqual(h.signals, ['SIGTERM']); finish(); await cleanup;
+  assert.equal(h.supervisor.diagnostics().closed, true);
+});
+
+test('Chrome cleanup never signals an already exited PID when a descendant retains its pipes', async () => {
+  const h = browserFixture(); h.child.exitCode = 0; h.child.emit('exit',0,null);
+  assert.equal(h.child.stdout.destroyed, false); assert.equal(h.child.stderr.destroyed, false);
+  const pipesClosed = Promise.all([new Promise(accept=>h.child.stdout.once('close',accept)),new Promise(accept=>h.child.stderr.once('close',accept))]);
+  pipesClosed.then(()=>h.child.emit('close',0,null));
+  await h.supervisor.close();
+  assert.deepEqual(h.signals, []); assert.equal(h.supervisor.diagnostics().closed, true);
 });
 
 test('Chrome cleanup force-stops only its owned child after a bounded graceful shutdown', async () => {

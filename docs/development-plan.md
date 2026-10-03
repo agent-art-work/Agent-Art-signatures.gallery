@@ -1,10 +1,114 @@
 # Development execution plan
 
-## Current checkpoint — October 2, 2026
+## Website phases — October 3, 2026
+
+The user authorized comprehensive implementation of three website phases:
+**Pre-launch → Free mint → Paid mint**. “Paid mint” is the public term.
+The website launch gate is distinct from the contract's immutable Free/Paid
+economics, its maintenance pause, RPC readiness and transaction confirmation.
+No launch date, actual allowlist, paid pricing, provider spend or public-chain
+write is selected by this implementation. The current disposable RC2 sale
+remains open; do not put it back into pre-launch.
+
+| Phase | Home / entry | Mint behavior | Transition authority |
+| --- | --- | --- | --- |
+| Pre-launch | Explore previews; Minting coming soon. `/explore` and `/mint` offer anonymous handle exploration | No wallet, eligibility quote, assessment, authorization or new submission | Explicit operator website opening; never inferred from pause or unavailable RPC |
+| Free mint | Free Mint with verified quota status; exploration remains available | Automatically check the connected wallet's unused allowlist slots; zero mint price, network gas remains payable; no free/paid selector | Existing contract successful-free-mint quota or immutable deadline, whichever comes first |
+| Paid mint | Paid Mint; exploration remains available | Verified Pulse quote and explicit spending ceiling; unused payment refunded; gas additional; no overall paid supply cap | Existing irreversible contract phase, not browser state |
+
+### Execution order and acceptance
+
+1. **Shared policy:** one server/browser presentation vocabulary, explicit
+   pre-launch gate and separate maintenance/unknown overlays. Default-open
+   compatibility preserves the current test. A deployment-bound first-open
+   record prevents later maintenance being relabelled pre-launch.
+2. **Explore:** introduce `/explore` using the chosen underlined handle input
+   and pill controls. Route to the existing sixteen-variation previews, preserve
+   handle spelling/drafts, and require no wallet, mint backend or paid lookup.
+3. **Phase surfaces:** align home CTA/status, direct `/mint`, preview invitation,
+   collection empty invitation, About and admin phase explanations. Opening or
+   free-to-paid updates replace presentation, invalidate stale quotes, and never
+   navigate, sign, prepare, spend or submit automatically.
+4. **Server fences:** refuse new options/preparation/begin in pre-launch before
+   effects and recheck after awaits. Public views, admin, already-issued
+   transaction reporting, status and safe recovery remain available.
+5. **Verification:** test explicit configuration, monotonic opening, maintenance,
+   unavailable/conflicting reads, free quota/deadline transition, stale responses,
+   wallet changes, explicit paid consent, existing attempts and anonymous routes.
+   Extend the existing real-Chrome matrix without removing its original cases.
+   Keep renderer, contract, coverage and production-admission locks unchanged.
+
+The existing `freeDeadline` is absolute and keeps advancing while paused or
+while the website is pre-launch. Opening after it must show the actual paid
+phase; this work does not restart free minting. A free window measured from
+launch would require a separate contract/configuration decision. Website closure
+also cannot revoke an already-signed on-chain authorization: use the contract's
+pause control when guaranteeing no mint on chain before launch.
+
+The requested stable development checkpoint is
+`stable-website-phases-2026-10-03`, prepared on `codex/website-launch-phases`
+for a fast-forward merge to `main`. It includes the fully verified hardening
+commit `68b6b74`, the three website phases and the subsequent UI refinements:
+roomier Grok prompt controls, one-line variation captions with handle-only
+middle truncation and compact separators, shared `AnAgentARTist` attribution,
+factual MBTI gallery empty states with an Explore CTA, and an explorer-only
+divider removal. Renderer output and immutable artwork identity are unchanged.
+
+Final local verification of the checkpoint:
+
+- Full disposable PostgreSQL/HTTP application campaign: **6,921 passed**, seven
+  intentional skips across 209 files; coverage **94.70% statements/lines,
+  91.95% branches, 97.71% functions**, with existing gates unchanged.
+- Offline Pulse campaign: **571 passed**; the separate local-EVM differential
+  campaign is not part of this mocked suite.
+  Launch/recovery coverage: **130/130 passed**, **92.53% lines / 91.40% branches /
+  90.24% functions**, above the unchanged 88/85/90 gates.
+- Shared phase policy: **31/31**, 100% statement/branch/function/line coverage.
+  Private launch-record helper: 100% lines/functions and 93.94% branches.
+- Actual Chrome: **128/128** light/dark/mobile/200%-zoom cases, retaining all
+  original 48, including 40 anonymous keyboard-to-16-preview flows. No failed or
+  external page requests or JavaScript errors. Representative home, mint and
+  variation screenshots were inspected. Earlier additional mobile admin
+  launch-conflict warning checks also passed; that state does not block
+  authenticated maintenance or initiate a transaction.
+- Typecheck, build, renderer/slogan locks and RC1/RC2 contract candidate locks
+  pass. All **251 Foundry contract tests** pass offline. No Solidity, deployment,
+  paid provider or public-chain write changed.
+
+Final campaigns are captured under
+`/private/tmp/sg-stable-website-app-20261003.sr4l0w`,
+`/private/tmp/sg-stable-website-pulse-20261003.YptgiH` and
+`/private/tmp/sg-stable-website-recovery-20261003.nyGXwJ`; browser evidence is
+`/private/tmp/sg-stable-website-browser-20261003.Jr0M6p/results.json`.
+The overlapping HTTP fixture campaigns must run sequentially because they reuse
+owned test ports. Earlier concurrent attempts were discarded as port contention,
+not attributed to the live site or RPC policy.
+
+The current open RC2 local site remains `http://127.0.0.1:3007` with the existing
+free configuration (revision two, one of four slots used). A separate anonymous
+pre-launch demo runs at `http://127.0.0.1:3008`, without a deployment plan, relay,
+RPC or signing key. Actual browser checks confirm the correct CTAs, no overflow,
+and no wallet/mint controls on the pre-launch entry. Read-only live Sepolia
+readiness passed with the relay enabled and no integrity halt.
+
+Hosted CI acceptance of this new checkpoint is separate from the local checks
+above. All seven hosted **baseline hardening** lanes passed at `68b6b74`; that
+result is not relabelled as acceptance of this new work. Production launch policy, actual
+allowlist/allocation and paid Pulse configuration still require the user's
+separate decisions; release work R5–R10 remains paused.
+
+**Next requested work: About the work.** Start its content/design discussion
+after this Git checkpoint; no new About claims or content are implemented by
+the checkpoint. The existing E12 research and unresolved claim scope remain
+inputs, not already-approved public wording. This development tag is not a
+production launch approval.
+
+## Previous checkpoint — October 2, 2026
 
 The accumulated development was committed, fast-forwarded into `main`, and
-pushed as `33fb02f`. Policy-independent hardening continues separately on
-`codex/policy-independent-hardening`; free-mint allocation/policy and paid Pulse
+pushed as `33fb02f`. Policy-independent hardening completed separately as
+`68b6b74` on `codex/policy-independent-hardening`, with all seven hosted CI lanes
+passing. Free-mint allocation/policy and paid Pulse
 configuration are waiting for the user. Do not invent launch values or reopen
 the paid phase while that decision is pending.
 

@@ -93,14 +93,30 @@ describe("home gallery width", () => {
   it("separates expanded preview instructions while retaining a visible keyboard focus for the disclosure", () => {
     const currentRules = rules(OPEN_MINT_CSS);
     expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff-content")?.declarations)
-      .toBe("margin-top:1rem;padding-top:1rem;border-top:1px solid var(--line)");
-    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff-content>p:first-child")?.declarations)
-      .toBe("margin-top:0");
+      .toBe("display:grid;gap:1.5rem;margin-top:1.5rem;padding-top:1.5rem;border-top:1px solid var(--line)");
+    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff-content>p")?.declarations)
+      .toBe("margin:0");
     const focus = currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff>summary:focus-visible")?.declarations;
     expect(focus).toContain("outline:2px solid var(--blue)");
     expect(focus).toMatch(/outline-offset:\s*[1-9]/);
     expect(rules(SITE_CSS).find(rule => rule.selector === ".auth-disclosure p")?.declarations)
       .toContain("color:var(--muted)");
+  });
+
+  it("gives the expanded Grok prompt and wrapped actions breathing room without altering shared controls", () => {
+    const currentRules = rules(OPEN_MINT_CSS);
+    // A grid gap survives the shared field and disclosure action margin resets.
+    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff-content")?.declarations)
+      .toContain("display:grid;gap:1.5rem");
+    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff-content>.grok-prompt")?.declarations)
+      .toBe("min-height:14rem;margin:0;line-height:1.6");
+    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff-content>.auth-actions")?.declarations)
+      .toBe("margin:0;gap:1rem");
+    // An empty live region must not add a spare grid row; populated feedback remains visible.
+    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff-content>.open-feedback:empty")?.declarations)
+      .toBe("display:none");
+    expect(currentRules.filter(rule => rule.selector.includes(".open-handoff-content"))
+      .every(rule => rule.selector.startsWith(".open-mint .home-grid "))).toBe(true);
   });
 
   it("lowers only the current homepage slogan by 24px while preserving its padded height and 896px width", () => {

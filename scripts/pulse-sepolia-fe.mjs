@@ -4,7 +4,9 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DIR, loadPlan } from './pulse-sepolia.mjs';
 import { createSepoliaGalleryCache } from './pulse-sepolia-cache.mjs';
-import { homePage, mintPage, assessmentPage, previewPage, previewVariationsPage, mbtiGalleryPage, collectionPage, aboutPage, errorPage, OPEN_MINT_CSS } from '../src/openMint/pages.ts';
+import { homePage, mintPage, explorePage, assessmentPage, previewPage, previewVariationsPage, mbtiGalleryPage, collectionPage, aboutPage, errorPage, OPEN_MINT_CSS } from '../src/openMint/pages.ts';
+import { siteSaleStatus } from '../src/openMint/sitePhase.ts';
+import { hasKnownMintActivity, parseSiteLaunchMode, assertSitePrelaunchAllowed } from './pulse-site-launch.mjs';
 import { isMbti, preservedHandle } from '../src/openMint/identity.ts';
 import { renderSignatureSvg } from '../src/algorithmV2/index.ts';
 import { SITE_CSS } from '../src/v1/siteCss.ts';
@@ -13,38 +15,56 @@ import { FAVICON_URL, FAVICON_SVG } from '../src/brand/favicon.ts';
 import { SLOGAN_MBTI_HERO_SCRIPT_URL, SLOGAN_MBTI_HERO_SCRIPT } from '../src/brand/sloganMbtiHero.ts';
 import { SLOGAN_TOOLTIP_SCRIPT_URL, SLOGAN_TOOLTIP_SCRIPT } from '../src/brand/sloganTooltipScript.ts';
 import { SEPOLIA_TEST_CLIENT } from './pulse-sepolia-client.mjs';
+import { SEPOLIA_READINESS_CLIENT } from './pulse-sepolia-readiness-client.mjs';
 
 // A separate, explicitly read-only frontend for RPC outages. It never starts
 // the mint backend, reads an authorizer/key/session/request database, or calls
 // any RPC. An optional public-data cache is historical presentation only.
-export async function startSepoliaFrontend({ port = 3004, collection, plan, cache } = {}) {
-  plan ??= collection ? undefined : loadPlan(); collection ??= plan.collection.address;
-  cache ??= plan ? createSepoliaGalleryCache(plan, DIR) : undefined;
+export async function startSepoliaFrontend({ port = 3004, collection, plan, cache, directory,
+  siteLaunchMode = process.env.PULSE_SITE_LAUNCH_MODE ?? 'open' } = {}) {
+  siteLaunchMode = parseSiteLaunchMode(siteLaunchMode);
+  // An explicitly preview-only prelaunch needs no deployment, wallet or RPC.
+  // Default outage fallback remains open/unknown, never relabeled prelaunch.
+  plan ??= collection || siteLaunchMode === 'prelaunch' ? undefined : loadPlan(); collection ??= plan?.collection.address;
+  if (siteLaunchMode === 'prelaunch' && (collection || plan)) {
+    assert.ok(plan && typeof directory === 'string', 'Deployment-bound prelaunch previews require an exact plan and directory.');
+    assert.equal(collection.toLowerCase(), plan.collection.address.toLowerCase());
+    assertSitePrelaunchAllowed({ plan, directory });
+  }
+  cache ??= plan ? createSepoliaGalleryCache(plan, directory ?? DIR) : undefined;
   const history = cache?.presentation(), artworks = cache?.artworks() ?? new Map();
+  assert.ok(siteLaunchMode !== 'prelaunch' || !hasKnownMintActivity(history), 'A previously minted collection cannot be presented as prelaunch.');
   if (history?.mints.size) { assert.ok(plan); assert.equal(collection.toLowerCase(), plan.collection.address.toLowerCase()); }
   const entries = [...(history?.mints.values() ?? [])].map(mint => ({ ...mint, code: '', mintObservationUnavailable: true,
     mintEvidenceInvalidated: history.invalidated, imageUrl: `/test-art/${mint.handle}.svg`, url: `/signatures/${mint.handle}`,
     mint: { state: mint.state, tokenId: mint.tokenId, transactionHash: mint.transactionHash } }));
   assert.notEqual(process.env.NODE_ENV, 'production');
   assert.ok(Number.isSafeInteger(port) && port >= 1024 && port <= 65535);
-  assert.match(collection, /^0x[a-fA-F0-9]{40}$/);
+  if (collection !== undefined || siteLaunchMode === 'open') assert.match(collection, /^0x[a-fA-F0-9]{40}$/);
   const origin = `http://127.0.0.1:${port}`;
   const unavailable = { code: 'OBSERVATION_UNAVAILABLE', error: 'Minting is temporarily unavailable. You can still explore previews.' };
   const options = { publicOrigin: origin, stylesheetUrl: '/assets/sepolia.css', clientScriptUrl: '/assets/sepolia.js',
     chainId: '11155111', chainName: 'Ethereum Sepolia', contract: collection, generativeArtwork: true, pulseMint: true,
-    assessmentSource: 'sample', mintObservationNotice: 'Mint availability cannot be checked right now. Please try again shortly.' };
+    assessmentSource: 'sample', siteLaunchMode, pulseSaleStatus: siteSaleStatus(siteLaunchMode),
+    ...(siteLaunchMode === 'open' ? { mintObservationNotice: 'Mint availability cannot be checked right now. Please try again shortly.' } : {}) };
   const assets = new Map([
     ['/assets/sepolia.css', [SITE_FONT_CSS + SITE_CSS + OPEN_MINT_CSS, 'text/css']],
     ['/assets/sepolia.js', [SEPOLIA_TEST_CLIENT, 'text/javascript']], [FAVICON_URL, [FAVICON_SVG, 'image/svg+xml']],
+    ...(siteLaunchMode === 'prelaunch' ? [['/assets/sepolia-readiness.js', [SEPOLIA_READINESS_CLIENT, 'text/javascript']]] : []),
     [SLOGAN_MBTI_HERO_SCRIPT_URL, [SLOGAN_MBTI_HERO_SCRIPT, 'text/javascript']],
     [SLOGAN_TOOLTIP_SCRIPT_URL, [SLOGAN_TOOLTIP_SCRIPT, 'text/javascript']],
   ].map(([url, value]) => [new URL(url, origin).pathname, value]));
   const state = { live: true, galleryAvailable: !!history, mintReady: false, observerHealthy: false,
-    galleryState: 'unavailable', mintState: 'unavailable',
+    galleryState: 'unavailable', mintState: siteLaunchMode === 'prelaunch' ? 'prelaunch' : 'unavailable',
+    siteLaunchMode, saleStatus: siteSaleStatus(siteLaunchMode),
     safetyHalted: cache?.state().safetyHalted === true };
   const galleryOptions = { ...options, galleryPending: !history, mintObservationManaged: true };
   const server = createServer((req, res) => {
-    const send = (status, value, type = 'text/html; charset=utf-8') => { res.writeHead(status, { 'Content-Type': type }); res.end(value); };
+    const send = (status, value, type = 'text/html; charset=utf-8') => {
+      if (siteLaunchMode === 'prelaunch' && type.startsWith('text/html'))
+        value = value.replace('</body>', '<script src="/assets/sepolia-readiness.js" defer></script></body>');
+      res.writeHead(status, { 'Content-Type': type }); res.end(value);
+    };
     const json = (status, value) => send(status, JSON.stringify(value), 'application/json');
     res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer');
@@ -55,14 +75,25 @@ export async function startSepoliaFrontend({ port = 3004, collection, plan, cach
       assert.equal(url.origin, origin);
       // Every API, including session/challenge/verify and saved submissions,
       // fails closed. This cannot obtain a signature or issue a mint voucher.
-      if (path.startsWith('/api/')) return json(503, unavailable);
+      if (req.method === 'GET' && path === '/api/test/capabilities' && siteLaunchMode === 'prelaunch')
+        return json(200, { chainId: 11155111, frontendOnly: true, testOnly: true, ...state, revision: 'prelaunch-preview-only' });
+      if (path.startsWith('/api/')) return json(siteLaunchMode === 'prelaunch' && ['/api/test/options', '/api/test/prepare', '/api/test/begin'].includes(path) ? 409 : 503,
+        siteLaunchMode === 'prelaunch' && ['/api/test/options', '/api/test/prepare', '/api/test/begin'].includes(path)
+          ? { code: 'SITE_NOT_OPEN', error: 'Minting has not opened yet. Explore previews for now.' } : unavailable);
       if (req.method !== 'GET') return send(405, 'Method not allowed.', 'text/plain');
       const asset = assets.get(path), font = siteFontAsset(path);
       if (asset) return send(200, asset[0], asset[1]); if (font) return send(200, font.bytes, font.contentType);
       if (path === '/robots.txt') return send(200, 'User-agent: *\nDisallow: /\n', 'text/plain');
-      if (['/health', '/health/live', '/health/ready'].includes(path)) return json(path === '/health/ready' ? 503 : 200,
+      if (['/health', '/health/live', '/health/ready'].includes(path)) return json(path === '/health/ready' && siteLaunchMode === 'open' ? 503 : 200,
         { chainId: 11155111, collection, testOnly: true, frontendOnly: true, ...state });
       if (path === '/') return send(200, homePage(galleryOptions, entries));
+      if (path === '/explore') {
+        const handle = url.searchParams.get('handle') ?? '';
+        if (handle) {
+          try { res.setHeader('Location', `/p/${preservedHandle(handle.trim())}/variations`); return send(302, ''); } catch {}
+        }
+        return send(200, explorePage(handle, options));
+      }
       if (path === '/mint') return send(200, mintPage(url.searchParams.get('handle') ?? '', options));
       if (path === '/about') return send(200, aboutPage(options));
       if (path === '/me') return send(200, collectionPage([], galleryOptions));
@@ -99,7 +130,7 @@ export async function startSepoliaFrontend({ port = 3004, collection, plan, cach
   server.requestTimeout = 30000; server.headersTimeout = 10000;
   await new Promise((accept, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', accept); });
   const close = () => new Promise((accept, reject) => server.close(error => error ? reject(error) : accept()));
-  console.log(JSON.stringify({ origin, chainId: 11155111, collection, frontendOnly: true, mintingEnabled: false, signingKeysLoaded: false }));
+  console.log(JSON.stringify({ origin, chainId: 11155111, collection, siteLaunchMode, frontendOnly: true, mintingEnabled: false, signingKeysLoaded: false }));
   return { server, close, origin };
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

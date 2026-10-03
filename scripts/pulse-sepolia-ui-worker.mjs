@@ -14,7 +14,7 @@ import { SEPOLIA_ADMIN_CLIENT } from './pulse-sepolia-admin-client.mjs';
 
 // This render-only child has no inherited credentials, signer, RPC, sessions,
 // request journal or state writer. Replacing it cannot restart the backend.
-const names = ['homePage', 'mintPage', 'assessmentPage', 'revealedSignature', 'previewPage', 'previewVariationsPage',
+const names = ['homePage', 'mintPage', 'explorePage', 'assessmentPage', 'revealedSignature', 'previewPage', 'previewVariationsPage',
   'mbtiGalleryPage', 'collectionPage', 'aboutPage', 'errorPage'];
 const assets = new Map([
   ['/assets/sepolia.css', [SITE_FONT_CSS + SITE_CSS + pages.OPEN_MINT_CSS, 'text/css']],

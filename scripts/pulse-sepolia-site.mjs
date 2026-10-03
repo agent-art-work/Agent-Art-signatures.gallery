@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFileSync, existsSync, openSync, closeSync, writeFileSync, unlinkSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, openSync, closeSync, writeFileSync, statSync, fstatSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { encodeEventTopics, decodeEventLog, decodeFunctionData, encodeFunctionData, getAddress, keccak256, stringToHex, parseEther, formatEther } from 'viem';
@@ -17,7 +17,9 @@ import { verifyAllowlistArtifacts } from '../contracts/tools/pulse-allowlist.mjs
 import { WalletSessions, opaqueCode, fields, PublicError } from '../src/openMint/security.ts';
 import { canonicalHandle, preservedHandle, isMbti, MBTI_TYPES, RENDERER_VERSION } from '../src/openMint/identity.ts';
 import { openMintHandleKey } from '../src/openMint/authorization.ts';
-import { homePage, mintPage, assessmentPage, revealedSignature, previewPage, previewVariationsPage, mbtiGalleryPage, collectionPage, aboutPage, errorPage, OPEN_MINT_CSS } from '../src/openMint/pages.ts';
+import { homePage, mintPage, explorePage, assessmentPage, revealedSignature, previewPage, previewVariationsPage, mbtiGalleryPage, collectionPage, aboutPage, errorPage, OPEN_MINT_CSS } from '../src/openMint/pages.ts';
+import { siteSaleStatus } from '../src/openMint/sitePhase.ts';
+import { createSiteLaunchGate, hasKnownMintActivity, parseSiteLaunchMode, releaseOwnedSiteLock } from './pulse-site-launch.mjs';
 import { SITE_CSS } from '../src/v1/siteCss.ts';
 import { SITE_FONT_CSS, siteFontAsset } from '../src/v1/fonts.ts';
 import { FAVICON_URL, FAVICON_SVG } from '../src/brand/favicon.ts';
@@ -447,6 +449,8 @@ export function presentedSepoliaMints(snapshot, refreshError, immediateMints, in
 
 export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
   assert.notEqual(process.env.NODE_ENV, 'production'); assert.ok(Number.isSafeInteger(port) && port >= 1024 && port <= 65535);
+  // Invalid operator configuration refuses before loading any deployment state.
+  const siteLaunchMode = parseSiteLaunchMode(dependencies.siteLaunchMode ?? process.env.PULSE_SITE_LAUNCH_MODE ?? 'open');
   const origin = `http://127.0.0.1:${port}`, p = dependencies.plan ?? loadPlan(), j = dependencies.journal ?? loadJournal();
   const intervalMs = dependencies.intervalMs ?? 15000;
   const directory = dependencies.directory ?? DIR, records = resolve(directory, 'web-records.json');
@@ -454,7 +458,9 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
   // The PostgreSQL projection is optional for this disposable rehearsal. Its
   // schema is installed separately; a bad binding must refuse startup rather
   // than silently serving another deployment's public data.
-  let relayPool, relayStore = dependencies.relayStore, relayWriteError;
+  let relayPool, relayStore = dependencies.relayStore, relayWriteError, ui, server, lockIdentity;
+  const lock = resolve(directory, 'site.lock');
+  try {
   if (!relayStore && process.env.PULSE_RELAY_DATABASE_URL) {
     const { Pool } = await import('pg');
     relayPool = new Pool({ connectionString: process.env.PULSE_RELAY_DATABASE_URL, max: 4 });
@@ -515,12 +521,17 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
   // startup cannot leave a stale owner claim behind.
   const db = existsSync(records) ? JSON.parse(readFileSync(records, 'utf8')) : { planDigest: p.digest, requests: {} };
   assert.equal(db.planDigest, p.digest);
-  const lock = resolve(directory, 'site.lock'), fd = openSync(lock, 'wx', 0o600); writeFileSync(fd, String(process.pid)); closeSync(fd);
+  const fd = openSync(lock, 'wx', 0o600); lockIdentity = fstatSync(fd);
+  try { writeFileSync(fd, String(process.pid)); } finally { closeSync(fd); }
+  const launch = createSiteLaunchGate({ mode: siteLaunchMode, plan: p, directory, lockIdentity,
+    // Durable requests also demonstrate prior website use; uncertain attempts
+    // remain intact and recoverable, never interpreted as a new free phase.
+    knownMintActivity: hasKnownMintActivity(history) || Object.keys(db.requests).length > 0 });
   const saveRecords = dependencies.saveRecords ?? (() => save('web-records.json', db, directory));
-  try { if (!existsSync(records)) saveRecords(); } catch (error) { unlinkSync(lock); throw error; }
+  if (!existsSync(records)) saveRecords();
   let snapshot, observerCheckpoint, running = true, serial = Promise.resolve(), lastRefreshMs, cacheWriteError, relay;
-  const ui = dependencies.ui === false ? undefined : dependencies.ui ?? createSepoliaUiRenderer();
-  const pageFunctions = { homePage, mintPage, assessmentPage, revealedSignature, previewPage, previewVariationsPage,
+  ui = dependencies.ui === false ? undefined : dependencies.ui ?? createSepoliaUiRenderer();
+  const pageFunctions = { homePage, mintPage, explorePage, assessmentPage, revealedSignature, previewPage, previewVariationsPage,
     mbtiGalleryPage, collectionPage, aboutPage, errorPage, mintControlStudyPage, sepoliaAdminPage, previewSvg: renderSignatureSvg };
   const render = async (name, ...args) => {
     if (ui) { try { return await ui.call(name, ...args); } catch {} }
@@ -543,9 +554,14 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
     const galleryFailureSince = failures.length && failures.every(([error, at]) =>
       (error === 'RPC_DATA_UNAVAILABLE' || readUnavailable(error)) && Number.isSafeInteger(at))
       ? Math.min(...failures.map(([, at]) => at)) : undefined;
-    return capabilityHealth({ binding, snapshot, history, sale, saleError, bootstrapError,
+    const capabilities = capabilityHealth({ binding, snapshot, history, sale, saleError, bootstrapError,
       observerError: refreshError, relayError, galleryFailureSince, conflict: conflict() });
+    const launchConflict = launch.state().activityConflict;
+    return { ...capabilities, siteLaunchMode,
+      ...(siteLaunchMode === 'prelaunch' ? { mintReady: false, mintState: launchConflict ? 'closed' : 'prelaunch' } : {}),
+      ...(launchConflict ? { siteLaunchError: 'SITE_ALREADY_OPEN' } : {}) };
   };
+  const requireLaunchOpen = () => launch.assertMintOpen();
   const requireBinding = () => requireForUser(binding && !conflict(), 'OBSERVATION_UNAVAILABLE',
     'Mint availability cannot be checked right now. Please try again shortly.');
   const requireActive = () => { requireBinding(); requireForUser(running, 'OBSERVATION_UNAVAILABLE',
@@ -612,7 +628,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
   const fresh = () => requireFreshMintSnapshot(snapshot, refreshError);
   // A sale check completed by an explicit action supersedes a background pass
   // that started earlier. Its late result/error cannot revoke newer evidence.
-  const publishSale = value => { sale = value; saleError = undefined; saleRevision++; };
+  const publishSale = value => { launch.observeMintActivity(value); sale = value; saleError = undefined; saleRevision++; };
   const includedMints = (includeHistorical = false) => presentedSepoliaMints(snapshot ?? history,
     conflict() ? new PublicError(409, evidenceConflict, 'Previously verified mints need to be checked before minting can continue.')
       : snapshot ? refreshError : unavailableRpcData(), immediateMints, includeHistorical);
@@ -665,6 +681,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
     const value = await withSepoliaReadSource(c, source => observe(source, binding, snapshot ?? observerCheckpoint),
       { signal, sourceTimeoutMs: 45000, readPriority: 'background' });
     signal.throwIfAborted(); const covered = supersededReceiptHints(value, immediateMints);
+    launch.observeMintActivity(value);
     if (relayStore) try { await relayStore.publish(value, svgBytes); relayWriteError = undefined; persisted = value; }
       catch (error) { relayWriteError = error?.code === evidenceConflict ? evidenceConflict : 'RELAY_WRITE_UNAVAILABLE';
         if (error?.code === evidenceConflict) throw error; }
@@ -776,11 +793,16 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
   }
   // The relay's last verified phase remains useful presentation while a new
   // admission lease is obtained. It never replaces prepare/begin's fresh reads.
-  const currentSaleStatus = () => publicSaleStatus(binding && !conflict() ? sale?.sale : undefined);
-  const currentSaleNotice = () => currentSaleStatus().phase !== 'unknown' ? saleNotice(sale.sale) : 'Checking mint availability…';
+  const contractSaleStatus = () => publicSaleStatus(binding && !conflict() ? sale?.sale : undefined);
+  // Website-only projection. The numeric Solidity sale and wallet quotes
+  // above and below remain Free/Paid; prelaunch grants no mint authority.
+  const currentSaleStatus = () => launch.state().activityConflict ? { phase: 'unknown', paused: sale?.sale?.paused === true }
+    : siteSaleStatus(siteLaunchMode, contractSaleStatus());
+  const currentSaleNotice = () => currentSaleStatus().phase === 'prelaunch' ? 'Minting coming soon.'
+    : currentSaleStatus().phase !== 'unknown' ? saleNotice(sale.sale) : 'Checking mint availability…';
   const options = session => ({ publicOrigin: origin, stylesheetUrl: '/assets/sepolia.css', clientScriptUrl: '/assets/sepolia.js',
     chainId: '11155111', chainName: 'Ethereum Sepolia', contract: at, generativeArtwork: true, pulseMint: true,
-    assessmentSource: 'sample', pulseSaleNotice: currentSaleNotice(), pulseSaleStatus: currentSaleStatus(),
+    assessmentSource: 'sample', siteLaunchMode, pulseSaleNotice: currentSaleNotice(), pulseSaleStatus: currentSaleStatus(),
     mintObservationManaged: true, galleryPending: !health().galleryAvailable,
     ...(session ? { csrfToken: session.csrf, wallet: session.wallet, walletVerified: !!session.walletProof && session.walletProof.expiresAt > Date.now() } : {}) });
   const entries = () => [...includedMints(true).values()].map(m => ({ ...m, code: '', imageUrl: `/test-art/${m.handle}.svg`, url: `/signatures/${m.handle}`, mint: { state: m.state, tokenId: m.tokenId, transactionHash: m.transactionHash } }));
@@ -798,13 +820,14 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
   }
   function verified(session) { requireForUser(session.wallet && session.walletProof?.wallet === session.wallet && session.walletProof.expiresAt > Date.now(), 'CONNECT_WALLET', 'Connect and verify your Sepolia wallet.'); return session.wallet; }
   async function mintOptions(wallet) {
-    requireBinding();
+    requireLaunchOpen(); requireBinding();
     let state;
     try { state = await readMintState(c, binding, p, { wallet }, { signal: AbortSignal.timeout(SEPOLIA_READ_BUDGETS.semanticMs) }); }
     catch (error) {
       if (readUnavailable(error)) throw new PublicError(503, 'OBSERVATION_UNAVAILABLE', 'Mint availability cannot be checked right now. Please try again shortly.');
       throw error;
     }
+    requireLaunchOpen();
     requireForUser(!state.sale.paused, 'MINT_PAUSED', 'Minting is paused.');
     publishSale(state);
     const saleStatus = publicSaleStatus(state.sale);
@@ -816,9 +839,11 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
       priceWei: state.priceWei, priceETH: state.priceETH };
   }
   async function prepare(body, session) {
+    requireLaunchOpen();
     const wallet = verified(session), generation = session.generation, consent = testConsent(body);
     requireBinding();
     const economic = await readMintState(c, binding, p, { wallet, handle: consent.handle }, { signal: AbortSignal.timeout(SEPOLIA_READ_BUDGETS.semanticMs) });
+    requireLaunchOpen();
     const head = economic.head;
     assert.equal(session.generation, generation); assert.equal(verified(session), wallet);
     requireForUser(!economic.sale.paused, 'MINT_PAUSED', 'Minting is paused.');
@@ -853,7 +878,9 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
       nonce: keccak256(stringToHex(code)), issuedAt: now, deadline, mintMode: consent.mode === 'free' ? 0 : 1,
       slotId: consent.mode === 'free' ? BigInt(economic.slot) : PULSE_PAID_SLOT, maxPrice: consent.cap,
       ...(admin ? { freeConfigRevision: consent.mode === 'free' ? BigInt(economic.freeConfigRevision) : 0n } : {}) };
+    requireLaunchOpen();
     const signature = await signingAccount().signTypedData((admin ? pulseAdminMintTypedData : pulseMintTypedData)({ chainId: 11155111, verifyingContract: at }, a));
+    requireLaunchOpen();
     const proof = consent.mode === 'free' ? admin ? economic.proof : p.allowlist.proofs.find(row => BigInt(row.slotId) === a.slotId
       && getAddress(row.wallet) === getAddress(wallet)).siblings : undefined;
     if (consent.mode === 'free') assert.ok(Array.isArray(proof));
@@ -861,7 +888,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
       ? [consent.renderHandle, mbti, a, signature, proof] : [consent.renderHandle, mbti, a, signature] });
     const gas = BigInt(await withSepoliaReadSource(c, source => source.rpc('eth_estimateGas',
       [{ from: wallet, to: at, data, value: qty(consent.cap) }]), { signal: AbortSignal.timeout(SEPOLIA_READ_BUDGETS.semanticMs) }));
-    requireActive();
+    requireLaunchOpen(); requireActive();
     assert.equal(session.generation, generation); assert.equal(verified(session), wallet);
     const transaction = { from: wallet, to: at, chainId: '0xaa36a7', data, value: qty(consent.cap), gas: qty(gas * 12n / 10n + 1n) };
     // Do not select a browser nonce. The installed wallet owns its public-chain
@@ -916,7 +943,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
     [MINT_CONTROL_STUDY_CSS_PATH, [MINT_CONTROL_STUDY_CSS, 'text/css']],
     [MINT_CONTROL_STUDY_SCRIPT_PATH, [MINT_CONTROL_STUDY_SCRIPT, 'text/javascript']],
   ].map(([url, value]) => [new URL(url, origin).pathname, value]));
-  const server = createServer(async (req, res) => {
+  server = createServer(async (req, res) => {
     const send = (status, value, type = 'text/html; charset=utf-8', readiness = true) => {
       if (readiness && type.startsWith('text/html')) value = value.replace('</body>', '<script src="/assets/sepolia-readiness.js" defer></script></body>');
       res.writeHead(status, { 'Content-Type': type }); res.end(value);
@@ -928,6 +955,8 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
       assert.equal(req.headers.host, new URL(origin).host); assert.ok((req.url?.length ?? 0) <= 2048);
       const url = new URL(req.url, origin), path = url.pathname;
       assert.equal(url.origin, origin);
+      if ((req.method === 'GET' && path === '/api/test/options')
+        || (req.method === 'POST' && ['/api/test/prepare', '/api/test/begin'].includes(path))) requireLaunchOpen();
       if (req.method === 'GET') {
         const asset = assets.get(path), font = siteFontAsset(path);
         if (ui && (path.startsWith('/assets/') || path === new URL(FAVICON_URL, origin).pathname) && !font) {
@@ -948,15 +977,18 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
             ? 'Ownership history needs to be checked. This collection reflects the last verified ownership.'
             : 'Ownership updates could not be checked. This collection reflects the last verified ownership.' : undefined,
           collectionRevision: JSON.stringify([ownership?.head.hash, !!ownershipError, snapshot?.head.hash]),
-          cacheWriteError, uiRevision: ui?.revision?.() ?? 0, relay: relay.state(), mintNotice: mintAvailabilityNotice(capabilities), saleStatus: currentSaleStatus(),
+          cacheWriteError, uiRevision: ui?.revision?.() ?? 0, relay: relay.state(),
+          mintNotice: siteLaunchMode === 'prelaunch' ? undefined : mintAvailabilityNotice(capabilities),
+          saleStatus: currentSaleStatus(), contractSaleStatus: contractSaleStatus(),
           relayStore: { configured: !!dependencies.relayStore || !!process.env.PULSE_RELAY_DATABASE_URL,
             enabled: !!relayStore, lastError: relayWriteError },
-          revision: JSON.stringify([ui?.revision?.() ?? 0, svgBytes.size, capabilities.mintReady, capabilities.observerHealthy, capabilities.safetyHalted,
+          revision: JSON.stringify([ui?.revision?.() ?? 0, siteLaunchMode, currentSaleStatus().phase, svgBytes.size, capabilities.mintReady, capabilities.observerHealthy, capabilities.safetyHalted,
             [...includedMints(true).values()].map(m => [m.handle, m.state, m.blockHash, m.mintObservationUnavailable])]),
           unavailableSource: refreshError?.readSource, unavailableMethod: refreshError?.readMethod,
           unavailableHttpStatus: refreshError?.httpStatus, unavailableRpcCode: refreshError?.rpcErrorCode };
           if (path === '/api/test/capabilities') demand();
-          return send(path === '/health/ready' && !capabilities.mintReady ? 503 : 200, stringify(state), 'application/json');
+          const serviceReady = capabilities.mintReady || (capabilities.mintState === 'prelaunch' && !capabilities.safetyHalted);
+          return send(path === '/health/ready' && !serviceReady ? 503 : 200, stringify(state), 'application/json');
         }
         if (!path.startsWith('/api/') || path === '/api/test/status') demand();
         const stateMatch = /^\/api\/test\/status$/.test(path);
@@ -1008,6 +1040,13 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
         }
         const previewAsset = /^\/preview\/([A-Za-z0-9_]{1,15})\/([A-Z]{4})\.svg$/.exec(path);
         if (previewAsset) { assert.ok(isMbti(previewAsset[2])); res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox"); return send(200, await render('previewSvg', previewAsset[1], previewAsset[2]), 'image/svg+xml'); }
+        if (path === '/explore') {
+          const handle = url.searchParams.get('handle') ?? '';
+          if (handle) {
+            try { res.setHeader('Location', `/p/${preservedHandle(handle.trim())}/variations`); return send(302, ''); } catch {}
+          }
+          return send(200, await render('explorePage', handle, options()));
+        }
         const found = sessions.session(req.headers.cookie), session = found.session; if (found.created) res.setHeader('Set-Cookie', sessions.cookie(session));
         if (path === '/api/test/session') return json({ csrf: session.csrf, wallet: session.walletProof?.expiresAt > Date.now() ? session.wallet : undefined });
         if (path === '/api/test/options') return json(await mintOptions(verified(session)));
@@ -1015,9 +1054,13 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
           requireForUser(!!adminWeb, 'ADMIN_UNAVAILABLE', 'Administration is not enabled for this deployment.');
           const wallet = verified(session), generation = session.generation;
           const result = await adminWeb.status(wallet);
+          launch.observeMintActivity(result.policy);
           requireForUser(session.generation === generation && verified(session) === wallet,
             'CONNECT_WALLET', 'Connect and verify your admin wallet again.');
-          return json(result);
+          const activityConflict = launch.state().activityConflict;
+          return json({ ...result, siteLaunchMode, ...(activityConflict ? { siteLaunchError: 'SITE_ALREADY_OPEN' } : {}),
+            siteSaleStatus: activityConflict ? { phase: 'unknown', paused: result.policy?.paused === true }
+            : siteSaleStatus(siteLaunchMode, publicSaleStatus(result.policy)) });
         }
         const opts = options(session);
         if (path === '/') return send(200, await render('homePage', opts, entries()));
@@ -1026,7 +1069,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
         }), 'text/html; charset=utf-8', false);
         // Relay viewing is quiet; only mutable mint admission owns a warning.
         if (path === '/mint') return send(200, await render('mintPage', url.searchParams.get('handle') ?? '',
-          { ...opts, mintObservationNotice: mintAvailabilityNotice(health()) }));
+          { ...opts, mintObservationNotice: siteLaunchMode === 'prelaunch' ? undefined : mintAvailabilityNotice(health()) }));
         if (path === '/about') return send(200, await render('aboutPage', opts));
         if (path === '/me') {
           let mine = [];
@@ -1098,6 +1141,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
       }
       if (path === '/api/test/begin' || path === '/api/test/report') {
         const task = serial.then(async () => {
+          if (path.endsWith('begin')) requireLaunchOpen();
           fields(body, path.endsWith('begin') ? ['code'] : ['code', 'transactionHash']); const wallet = verified(session);
           const entry = Object.entries(db.requests).find(([, row]) => row.code === body.code && row.wallet === wallet);
           requireForUser(entry, 'REQUEST_NOT_FOUND', 'Request not found.');
@@ -1107,6 +1151,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
             const generation = session.generation;
             requireBinding();
             const preflight = await readMintState(c, binding, p, { wallet, handle }, { signal: AbortSignal.timeout(SEPOLIA_READ_BUDGETS.semanticMs) });
+            requireLaunchOpen();
             // RC1's paid path has no free slot/revision to decode. Keep its
             // existing behavior while RC2 binds every saved wire field.
             const authorization = binding.contractProfile === PULSE_ADMIN_PROFILE ? savedMintAuthorization(binding, row)
@@ -1128,6 +1173,7 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
             assert.equal(row.stage, 'begun'); next = { ...row, transactionHash: body.transactionHash, stage: 'reported' };
           }
           requireForUser(db.requests[handle] === row, 'RECOVERY_ATTEMPT_CHANGED', 'The previous mint request changed. Refresh its status before continuing.');
+          if (path.endsWith('begin')) requireLaunchOpen();
           db.requests[handle] = next;
           try { commit(); } catch (error) { db.requests[handle] = row; throw error; }
           // A wallet report never establishes inclusion; verification is read-only.
@@ -1144,20 +1190,27 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
     }
   });
   server.requestTimeout = 30000; server.headersTimeout = 10000;
-  try { await new Promise((accept, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', accept); }); }
-  catch (error) { await ui?.close(); await relayPool?.end(); unlinkSync(lock); throw error; }
+  await new Promise((accept, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', accept); });
+  launch.activate();
   bootstrap.start();
   const close = async () => { if (!running) return; running = false; relay.stop();
     const closed = new Promise(resolve => server.close(resolve));
     await Promise.all([bootstrap.close(), observer.close(), saleLoop.close(), artworkLoop.close(), ownershipLoop.close()]);
     await closed; await serial;
-    await Promise.allSettled([...receiptReads.values()].map(entry => entry.promise)); await ui?.close(); await relayPool?.end(); unlinkSync(lock);
+    await Promise.allSettled([...receiptReads.values()].map(entry => entry.promise)); await ui?.close(); await relayPool?.end(); releaseOwnedSiteLock(lock, lockIdentity);
     process.removeListener('SIGINT', shutdown); process.removeListener('SIGTERM', shutdown); };
   const shutdown = () => void close();
   process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
-  console.log(JSON.stringify({ origin, chainId: 11155111, collection: at, testOnly: true, provider: 'fixture-not-grok', deployerKeyLoaded: false }));
+  console.log(JSON.stringify({ origin, chainId: 11155111, collection: at, siteLaunchMode, testOnly: true, provider: 'fixture-not-grok', deployerKeyLoaded: false }));
   return { server, close, refresh, snapshot: () => snapshot, health,
     refreshSale: saleLoop.refresh, reloadUi: () => ui?.reload(), recovery: () => ({ bootstrap: bootstrap.snapshot(), observer: observer.snapshot(), sale: saleLoop.snapshot() }) };
+  } catch (error) {
+    // No startup failure may retain an owned listener/worker/pool/process lock.
+    await Promise.allSettled([server?.listening ? new Promise(resolve => server.close(resolve)) : undefined,
+      ui?.close(), relayPool?.end()]);
+    if (lockIdentity) releaseOwnedSiteLock(lock, lockIdentity);
+    throw error;
+  }
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   startSepoliaTestSite(Number(process.env.PORT ?? 3004)).catch(() => { console.error('Sepolia test site refused startup. Inspect finalized deployment/RPC/lock state; secret details suppressed.'); process.exitCode = 1; });
