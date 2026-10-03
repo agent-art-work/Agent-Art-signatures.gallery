@@ -96,6 +96,27 @@ test('public home and previews bind optional Grok copy without session or wallet
   assert.equal(nodes.get('[data-copy-feedback]').textContent, 'Copied.');
 });
 
+test('About binds reading and preview copies independently without session or wallet discovery', async () => {
+  const copied = [], nodes = new Map();
+  for (const selector of ['[data-about-reading]', '[data-copy-about-reading]', '[data-about-reading-prompt]', '[data-about-reading-feedback]', '[data-copy-handoff]', '[data-handoff-prompt]', '[data-copy-feedback]']) nodes.set(selector, element());
+  nodes.get('[data-about-reading-prompt]').value = 'Read About the work';
+  nodes.get('[data-handoff-prompt]').value = 'Make a chat preview';
+  runInNewContext(SEPOLIA_TEST_CLIENT, {
+    document: { querySelector: selector => nodes.get(selector) },
+    window: { addEventListener() { throw Error('No About wallet listeners'); }, dispatchEvent() { throw Error('No About wallet discovery'); } },
+    fetch() { throw Error('No About session request'); },
+    sessionStorage: { getItem() { throw Error('No About mint recovery'); } },
+    navigator: { clipboard: { async writeText(text) { copied.push(text); } } },
+  });
+  await nodes.get('[data-copy-about-reading]').handlers.click();
+  assert.deepEqual(copied, ['Read About the work']);
+  assert.equal(nodes.get('[data-about-reading-feedback]').textContent, 'Copied.');
+  assert.equal(nodes.get('[data-copy-feedback]').textContent, '');
+  await nodes.get('[data-copy-handoff]').handlers.click();
+  assert.deepEqual(copied, ['Read About the work', 'Make a chat preview']);
+  assert.equal(nodes.get('[data-copy-feedback]').textContent, 'Copied.');
+});
+
 test('prelaunch collection without wallet controls stays anonymous and does not read saved mint recovery', () => {
   const nodes = new Map([['[data-collection-page]', element()], ['[data-collection-mint-cta]', element()]]);
   runInNewContext(SEPOLIA_TEST_CLIENT, {

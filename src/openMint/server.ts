@@ -20,6 +20,7 @@ import { publicPreviewState } from "./previewState.js";
 import { openMintSupportUrl } from "./supportUrl.js";
 import { LOCAL_ROBOTS_TXT, PRIVATE_ROBOTS } from "./sharing.js";
 import { canRevealMint } from "./revealPolicy.js";
+import { agentDocument, AGENT_DOCUMENT_PATHS } from "./agentDocuments.js";
 
 export interface OpenMintServerOptions {
   origin: string; fixture: boolean; service: OpenMintService; sessions: WalletSessions;
@@ -107,6 +108,12 @@ export function createOpenMintServer(options: OpenMintServerOptions) {
       if (url.origin !== options.origin) throw new PublicError(400, "INVALID_URL", "Invalid request URL.");
       if (!["GET", "POST"].includes(req.method ?? "")) throw new PublicError(405, "METHOD_NOT_ALLOWED", "Method not allowed.");
       const path = url.pathname;
+      if (AGENT_DOCUMENT_PATHS.some(documentPath => documentPath === path)) {
+        if (req.method !== "GET") return send(res, 405, "Documentation is read-only.", "text/plain; charset=utf-8");
+        if (url.search) return send(res, 400, "Documentation accepts no query parameters.", "text/plain; charset=utf-8");
+        const document = agentDocument(path, { publicOrigin: options.origin, development: { fixture: options.fixture } })!;
+        return send(res, 200, document.body, document.contentType);
+      }
       if (req.method === "GET") {
         if (path === "/robots.txt") return send(res, 200, LOCAL_ROBOTS_TXT, "text/plain; charset=utf-8");
         if (options.fixture && path === MINT_CONTROL_STUDY_CSS_PATH) return send(res, 200, MINT_CONTROL_STUDY_CSS, "text/css; charset=utf-8");

@@ -16,6 +16,7 @@ import { SLOGAN_MBTI_HERO_SCRIPT_URL, SLOGAN_MBTI_HERO_SCRIPT } from '../src/bra
 import { SLOGAN_TOOLTIP_SCRIPT_URL, SLOGAN_TOOLTIP_SCRIPT } from '../src/brand/sloganTooltipScript.ts';
 import { SEPOLIA_TEST_CLIENT } from './pulse-sepolia-client.mjs';
 import { SEPOLIA_READINESS_CLIENT } from './pulse-sepolia-readiness-client.mjs';
+import { agentDocument, AGENT_DOCUMENT_PATHS } from '../src/openMint/agentDocuments.ts';
 
 // A separate, explicitly read-only frontend for RPC outages. It never starts
 // the mint backend, reads an authorizer/key/session/request database, or calls
@@ -73,6 +74,11 @@ export async function startSepoliaFrontend({ port = 3004, collection, plan, cach
       assert.equal(req.headers.host, new URL(origin).host); assert.ok((req.url?.length ?? 0) <= 2048);
       const url = new URL(req.url, origin), path = url.pathname;
       assert.equal(url.origin, origin);
+      if (AGENT_DOCUMENT_PATHS.includes(path)) {
+        if (req.method !== 'GET') return send(405, 'Documentation is read-only.', 'text/plain; charset=utf-8');
+        if (url.search) return send(400, 'Documentation accepts no query parameters.', 'text/plain; charset=utf-8');
+        const document = agentDocument(path, options); return send(200, document.body, document.contentType);
+      }
       // Every API, including session/challenge/verify and saved submissions,
       // fails closed. This cannot obtain a signature or issue a mint voucher.
       if (req.method === 'GET' && path === '/api/test/capabilities' && siteLaunchMode === 'prelaunch')

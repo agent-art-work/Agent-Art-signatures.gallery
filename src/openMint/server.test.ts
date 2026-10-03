@@ -26,6 +26,7 @@ import { SLOGAN_MBTI_FRAMES } from "../brand/sloganMbtiFrames.js";
 import { OPEN_MINT_GALLERY_FIXTURES } from "./galleryFixtures.js";
 import { MINT_CONTROL_STUDY_PATH, MINT_CONTROL_STUDY_CSS_PATH, MINT_CONTROL_STUDY_CSS, MINT_CONTROL_STUDY_SCRIPT_PATH, MINT_CONTROL_STUDY_SCRIPT } from "../brand/mintControlStudy.js";
 import { SITE_FONT_CSS, SITE_FONT_PRELOAD, siteFontAsset } from "../v1/fonts.js";
+import { agentDocument, AGENT_DOCUMENT_PATHS } from "./agentDocuments.js";
 
 const servers: Server[] = [];
 const wallet = privateKeyToAccount(`0x${"7".repeat(64)}`);
@@ -372,6 +373,33 @@ describe("local-only crawl policy", () => {
 });
 
 describe("open mint HTTP boundary", () => {
+  it.each([true, false])("serves Agent documentation before sessions and effects, with fixture=%s", async fixtureMode => {
+    const f = await fixture({ fixture: fixtureMode });
+    const session = vi.spyOn(f.sessions, "session");
+    const sign = vi.spyOn(f.network, "sign"), transaction = vi.spyOn(f.network, "transaction");
+    for (const path of AGENT_DOCUMENT_PATHS) {
+      const response = await f.client().request(path);
+      const expected = agentDocument(path, { publicOrigin: f.origin, development: { fixture: fixtureMode } })!;
+      expect(response.status).toBe(200);
+      expect(response.text).toBe(expected.body);
+      expect(response.headers.get("content-type")).toBe(expected.contentType);
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(response.headers.get("x-robots-tag")).toContain("noindex");
+      for (const method of ["POST", "PUT", "HEAD"]) {
+        const rejected = await f.client().request(path, { method, body: {}, skipCookie: true, skipOrigin: true, skipCsrf: true });
+        expect(rejected.status).toBe(405);
+        expect(rejected.headers.get("set-cookie")).toBeNull();
+      }
+      const query = await f.client().request(path + "?handle=Alice");
+      expect(query.status).toBe(400); expect(query.headers.get("set-cookie")).toBeNull();
+    }
+    expect(session).not.toHaveBeenCalled();
+    expect(f.assess).not.toHaveBeenCalled();
+    expect(f.network.state).not.toHaveBeenCalled();
+    expect(sign).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
   it("serves control comparisons without sessions, chain reads or assessment calls", async () => {
     const test = await fixture();
     const session = vi.spyOn(test.sessions, "session");

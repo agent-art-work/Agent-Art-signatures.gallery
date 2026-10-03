@@ -462,8 +462,8 @@ describe("open mint pages", () => {
     expect(content).toContain("data-copy-handoff");
     expect(content).toContain('href="https://grok.com" target="_blank" rel="noopener noreferrer"');
     expect(content).toContain('data-copy-feedback role="status" aria-live="polite"');
-    expect(content).toContain('<p>Previews are for exploration. Minting uses a fresh Grok assessment.</p>');
-    expect(html.match(/Previews are for exploration\. Minting uses a fresh Grok assessment\./g)).toHaveLength(1);
+    expect(content).toContain('<p>Previews are for exploration. Minting uses the backend’s own assessment, not this preview.</p>');
+    expect(html.match(/Previews are for exploration\. Minting uses the backend’s own assessment, not this preview\./g)).toHaveLength(1);
   });
 
   it("omits the pause button while retaining a focusable slogan for the tooltip and motion pause", () => {

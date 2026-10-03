@@ -5,6 +5,7 @@ import { REVEAL_MONITOR_SCRIPT } from "./revealMonitor.js";
 import { mintHandleDraft } from "./mintHandleDraft.js";
 import { bindHandleValidation } from "./fieldValidation.js";
 import { renderInlineFeedback } from "./inlineFeedback.js";
+import { bindDocumentPrompts } from "./promptCopy.js";
 
 /** Shared, bounded failure copy for the server-rendered page and live polling. */
 export function assessmentFailureText(input: { error?: unknown; errorCategory?: unknown; diagnosticReference?: unknown }): string {
@@ -26,12 +27,15 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
   const mintHandleDraft = ${mintHandleDraft.toString()};
   const bindHandleValidation = ${bindHandleValidation.toString()};
   const renderInlineFeedback = ${renderInlineFeedback.toString()};
+  const bindDocumentPrompts = ${bindDocumentPrompts.toString()};
   if (window.__openMintBound) return;
   window.__openMintBound = true;
   const one = (selector) => document.querySelector(selector);
   const all = (selector) => document.querySelectorAll(selector);
   const root = one('[data-open-mint]');
   if (!root || one('[data-reveal-monitor]')) return;
+  bindDocumentPrompts(document, typeof navigator === 'undefined' ? undefined : navigator.clipboard, renderInlineFeedback);
+  if (one('[data-about-reading]')) return;
   const candidate = one('[data-assessment-code]');
   const page = /^[A-Za-z0-9_-]{43}$/.test(candidate?.dataset.assessmentCode || '') ? candidate : null;
   const code = page?.dataset.assessmentCode || '';
@@ -841,11 +845,6 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
     });
     one('[data-dev-mint]')?.addEventListener('click', async () => submitMint('local'));
   }
-  one('[data-copy-handoff]')?.addEventListener('click', async () => {
-    const field = one('[data-handoff-prompt]'); if (!field) return;
-    try { await navigator.clipboard.writeText(field.value); message('[data-copy-feedback]', 'Copied. Paste it into Grok.'); }
-    catch { field.focus(); field.select(); message('[data-copy-feedback]', 'Select and copy the prompt above.', true); }
-  });
   one('[data-disconnect-wallet]')?.addEventListener('click', async (event) => {
     const button = event.currentTarget;
     if (button.disabled || mintBusy || requestBusy) return;
