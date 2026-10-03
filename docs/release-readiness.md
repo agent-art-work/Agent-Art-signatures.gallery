@@ -9,6 +9,11 @@ Public contracts and source verification already exist; they are not hosted
 staging acceptance, production launch approval, or a real Grok campaign.
 
 Free-mint policy/allocation and paid Pulse settings are awaiting the user.
+The [Pulse Pricing Calibration Protocol (PPCP)](pulse-pricing-protocol/README.md)
+records the planned 1,024-slot intake, pricing procedure, reference options and
+decision template. Its settings remain provisional. RC2 fixes paid economics
+at deployment, so using observations from the same free phase to set them later
+requires a future release or a predeployment pilot; see the protocol's timing rules.
 The admin-capable RC2 supports paused Merkle root/capacity/quota updates during
 the free phase; the immutable deadline and one-way free-to-paid transition remain.
 The site automatically chooses free versus paid from verified sale state.
