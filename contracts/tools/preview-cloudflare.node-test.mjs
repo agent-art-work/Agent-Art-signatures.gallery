@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { before, after, test } from 'node:test';
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, readdir, rm, writeFile, mkdir, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { buildPreviewCloudflare } from '../../scripts/build-preview-cloudflare.mjs';
 import { loadPreviewArtifact, startPreviewLocal } from '../../scripts/preview-cloudflare-local.mjs';
@@ -13,6 +15,7 @@ import { FAVICON_CSP, FAVICON_URL } from '../../src/brand/favicon.ts';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const digest = value => createHash('sha256').update(value).digest('hex');
+const executeFile = promisify(execFile);
 let directory;
 const builds = {};
 
@@ -41,6 +44,197 @@ async function inventory(path, prefix = '') {
 async function configuration(environment) {
   return JSON.parse(await readFile(builds[environment].config, 'utf8'));
 }
+
+const runPreviewCli = args => executeFile(process.execPath,
+  ['--import', 'tsx', 'scripts/build-preview-cloudflare.mjs', ...args],
+  { cwd: repository, env: {}, timeout: 60000, maxBuffer: 1024 * 1024 });
+
+for (const [name, environment] of [['default', undefined], ['staging', 'staging'], ['production', 'production']]) {
+  test(`actual credential-empty ${name} packaging CLI writes only its explicit fresh output`, async () => {
+    const destination = join(directory, 'cli-' + name);
+    const { stdout, stderr } = await runPreviewCli([...(environment ? [environment] : []), '--output-dir', destination]);
+    assert.equal(stderr, '');
+    const result = JSON.parse(stdout);
+    assert.equal(resolve(repository, result.destination), destination);
+    assert.equal(result.origin, builds[environment ?? 'staging'].manifest.origin);
+    assert.equal(result.mintingEnabled, false);
+    const manifest = JSON.parse(await readFile(join(destination, 'manifest.json'), 'utf8'));
+    assert.deepEqual(manifest, builds[environment ?? 'staging'].manifest);
+    assert.equal(result.artifactSha256, manifest.artifactSha256);
+    assert.deepEqual(await inventory(destination), [...manifest.files.map(file => file.path), 'manifest.json'].sort());
+    assert.equal((await loadPreviewArtifact(destination)).publicOrigin, result.origin);
+  });
+}
+
+test('actual packaging CLI rejects malformed arguments without creating output', async t => {
+  const destination = join(directory, 'cli-rejected');
+  const cases = [
+    ['missing-output-value', ['--output-dir']],
+    ['empty-output-value', ['--output-dir', '']],
+    ['unknown-flag', ['--unknown', destination]],
+    ['extra-environment', ['staging', '--output-dir', destination, 'production']],
+    ['duplicate-output', ['--output-dir', destination, '--output-dir', destination]],
+    ['extra-argument', ['production', destination]],
+    ['unknown-environment', ['development', '--output-dir', destination]],
+  ];
+  for (const [name, args] of cases) {
+    await t.test(name, async () => {
+      await assert.rejects(runPreviewCli(args), error => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /Usage: build-preview-cloudflare|Choose staging or production/);
+        return true;
+      });
+      await assert.rejects(readdir(destination), { code: 'ENOENT' });
+    });
+  }
+});
+
+test('actual packaging CLI never overwrites an existing output directory', async () => {
+  const destination = join(directory, 'cli-owned-content');
+  await mkdir(destination);
+  await writeFile(join(destination, 'keep.txt'), 'Owned synthetic contents.');
+  await assert.rejects(runPreviewCli(['production', '--output-dir', destination]), error => {
+    assert.equal(error.code, 1);
+    assert.match(error.stderr, /must be empty/);
+    return true;
+  });
+  assert.deepEqual(await readdir(destination), ['keep.txt']);
+  assert.equal(await readFile(join(destination, 'keep.txt'), 'utf8'), 'Owned synthetic contents.');
+});
+
+async function syntheticArtifact(t, name, change = () => {}) {
+  const destination = join(directory, 'loader-' + name);
+  await mkdir(destination);
+  const marker = 'sgPreviewArtifactImported:' + destination;
+  const worker = `globalThis[${JSON.stringify(marker)}] = (globalThis[${JSON.stringify(marker)}] ?? 0) + 1;
+export default { fetch() { return new Response('Synthetic local loader fixture.'); } };\n`;
+  const workerBytes = Buffer.from(worker);
+  const manifest = { schema: 'signatures-gallery.preview-cloudflare.v1', origin: 'https://staging.signatures.gallery',
+    artifactSha256: digest(workerBytes), files: [{ path: 'worker.mjs', bytes: workerBytes.length, sha256: digest(workerBytes) }] };
+  await writeFile(join(destination, 'worker.mjs'), workerBytes);
+  const changed = await change(manifest, destination);
+  await writeFile(join(destination, 'manifest.json'), JSON.stringify(changed === undefined ? manifest : changed));
+  t.after(() => { delete globalThis[marker]; });
+  return { destination, marker, manifest, workerBytes };
+}
+
+async function rejectedBeforeImport(t, name, change, message) {
+  const fixture = await syntheticArtifact(t, name, change);
+  assert.equal(globalThis[fixture.marker], undefined);
+  await assert.rejects(loadPreviewArtifact(fixture.destination), message);
+  assert.equal(globalThis[fixture.marker], undefined, 'Rejected artifact must not execute Worker module code.');
+}
+
+test('a valid synthetic inventory executes its Worker only after verification (import sentinel control)', async t => {
+  const fixture = await syntheticArtifact(t, 'valid');
+  assert.equal(globalThis[fixture.marker], undefined);
+  const { worker } = await loadPreviewArtifact(fixture.destination);
+  assert.equal(globalThis[fixture.marker], 1, 'The sentinel observes actual module execution.');
+  assert.equal(await worker.fetch().text(), 'Synthetic local loader fixture.');
+});
+
+test('loader rejects an omitted Worker inventory before executing the existing Worker', async t => {
+  await rejectedBeforeImport(t, 'omitted-worker', manifest => { manifest.files = []; }, /must include worker\.mjs exactly once/);
+});
+
+test('loader rejects a wrong top-level Worker digest before executing the Worker', async t => {
+  await rejectedBeforeImport(t, 'wrong-top-digest', manifest => { manifest.artifactSha256 = '0'.repeat(64); }, /Worker digests must agree/);
+});
+
+test('loader rejects a wrong declared byte count before executing the Worker', async t => {
+  await rejectedBeforeImport(t, 'wrong-byte-count', manifest => { manifest.files[0].bytes = 1; }, /Artifact differs from its manifest: byte count/);
+});
+
+test('loader rejects duplicate Worker inventory entries before executing the Worker', async t => {
+  await rejectedBeforeImport(t, 'duplicate-worker', manifest => { manifest.files.push({ ...manifest.files[0] }); }, /inventory paths must be unique/);
+});
+
+test('loader rejects a Worker whose actual bytes do not match both matching declared digests before execution', async t => {
+  await rejectedBeforeImport(t, 'wrong-actual-digest', manifest => {
+    manifest.files[0].sha256 = manifest.artifactSha256 = '0'.repeat(64);
+  }, /Artifact differs from its manifest/);
+});
+
+test('loader validates all manifest and path metadata before Worker execution', async t => {
+  const cases = [
+    ['null-manifest', () => null, /manifest must be an object/],
+    ['array-manifest', () => [], /manifest must be an object/],
+    ['missing-inventory', manifest => { delete manifest.files; }, /files must be an inventory array/],
+    ['object-inventory', manifest => { manifest.files = {}; }, /files must be an inventory array/],
+    ['null-entry', manifest => { manifest.files.push(null); }, /entries must be objects/],
+    ['array-entry', manifest => { manifest.files.push([]); }, /entries must be objects/],
+    ['missing-path', manifest => { delete manifest.files[0].path; }, /canonical relative file paths/],
+    ['numeric-path', manifest => { manifest.files[0].path = 1; }, /canonical relative file paths/],
+    ...['/worker.mjs', '../worker.mjs', './worker.mjs', 'public/../worker.mjs', 'public//probe.css',
+      'public/./probe.css', 'public/probe.css/', 'public\\probe.css', 'public/%2e%2e/worker.mjs',
+      'public/probe.css?query', 'public/probe.css#fragment', 'public/\u0000probe.css'].map((path, index) =>
+      ['path-' + index, manifest => { manifest.files.push({ ...manifest.files[0], path }); }, /canonical relative file paths/]),
+    ...[-1, 1.5, '1', Number.MAX_SAFE_INTEGER + 1].map((bytes, index) =>
+      ['invalid-byte-count-' + index, manifest => { manifest.files[0].bytes = bytes; }, /byte counts must be non-negative safe integers/]),
+    ['missing-byte-count', manifest => { delete manifest.files[0].bytes; }, /byte counts must be non-negative safe integers/],
+    ['bad-file-digest', manifest => { manifest.files[0].sha256 = 'not-a-sha256'; }, /file digests must be lowercase SHA-256/],
+    ['uppercase-file-digest', manifest => { manifest.files[0].sha256 = 'A'.repeat(64); }, /file digests must be lowercase SHA-256/],
+    ['missing-file-digest', manifest => { delete manifest.files[0].sha256; }, /file digests must be lowercase SHA-256/],
+    ['missing-top-digest', manifest => { delete manifest.artifactSha256; }, /Worker digest must be a lowercase SHA-256/],
+    ['bad-top-digest', manifest => { manifest.artifactSha256 = 'not-a-sha256'; }, /Worker digest must be a lowercase SHA-256/],
+  ];
+  for (const [name, change, message] of cases) {
+    await t.test(name, async child => { await rejectedBeforeImport(child, name, change, message); });
+  }
+});
+
+test('loader rejects duplicate public paths before Worker execution', async t => {
+  await rejectedBeforeImport(t, 'duplicate-public', async (manifest, destination) => {
+    await mkdir(join(destination, 'public'));
+    const bytes = Buffer.from('/* Synthetic asset. */');
+    await writeFile(join(destination, 'public/probe.css'), bytes);
+    const item = { path: 'public/probe.css', bytes: bytes.length, sha256: digest(bytes) };
+    manifest.files.push(item, { ...item });
+  }, /inventory paths must be unique/);
+});
+
+test('loader rejects late invalid asset bytes or types before Worker execution', async t => {
+  for (const [name, path, bytes, declared, message] of [
+    ['late-asset-size', 'public/probe.css', '/* Asset. */', { bytes: 1 }, /Artifact differs from its manifest: byte count/],
+    ['late-asset-digest', 'public/probe.css', '/* Asset. */', { sha256: '0'.repeat(64) }, /Artifact differs from its manifest/],
+    ['late-asset-type', 'public/probe.html', '<p>Asset.</p>', {}, /Unknown public file type/],
+  ]) {
+    await t.test(name, async child => {
+      await rejectedBeforeImport(child, name, async (manifest, destination) => {
+        await mkdir(join(destination, 'public'));
+        await writeFile(join(destination, path), bytes);
+        manifest.files.push({ path, bytes: Buffer.byteLength(bytes), sha256: digest(bytes), ...declared });
+      }, message);
+    });
+  }
+});
+
+test('loader refuses symlinked or non-regular inventory files before Worker execution', async t => {
+  await t.test('symlinked Worker', async child => {
+    await rejectedBeforeImport(child, 'symlink-worker', async (_manifest, destination) => {
+      const worker = await readFile(join(destination, 'worker.mjs'));
+      await writeFile(join(destination, 'worker-original.mjs'), worker);
+      await rm(join(destination, 'worker.mjs'));
+      await symlink('worker-original.mjs', join(destination, 'worker.mjs'));
+    }, /paths must not contain symlinks/);
+  });
+  await t.test('symlinked public parent', async child => {
+    await rejectedBeforeImport(child, 'symlink-parent', async (manifest, destination) => {
+      const target = join(directory, 'owned-symlink-asset-target');
+      await mkdir(target);
+      const bytes = Buffer.from('/* Owned synthetic symlink target. */');
+      await writeFile(join(target, 'probe.css'), bytes);
+      await symlink(target, join(destination, 'public'));
+      manifest.files.push({ path: 'public/probe.css', bytes: bytes.length, sha256: digest(bytes) });
+    }, /paths must not contain symlinks/);
+  });
+  await t.test('directory declared as a file', async child => {
+    await rejectedBeforeImport(child, 'directory-file', async (manifest, destination) => {
+      await mkdir(join(destination, 'probe'));
+      manifest.files.push({ path: 'probe', bytes: 0, sha256: digest('') });
+    }, /inventory must name regular files/);
+  });
+});
 
 for (const environment of ['staging', 'production']) {
   test(`${environment} local adapter starts with provider configuration present but never exposes it`, async t => {
