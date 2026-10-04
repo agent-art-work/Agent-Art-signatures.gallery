@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { SLOGAN_STUDY_CSS } from "../brand/sloganStudy.js";
+import { PREVIEW_WALLET_CSS } from "../openMint/previewWallet.js";
 import { SITE_FONT_CSS, SITE_FONT_PRELOAD, SITE_FONT_FAMILY, SITE_FONT_WEIGHT, SITE_FONT_EMPHASIS_WEIGHT, siteFontAsset } from "./fonts.js";
 import { SITE_CSS } from "./siteCss.js";
 import { SITE_CONTROLS_CSS } from "./controlsCss.js";
@@ -52,6 +53,12 @@ describe("single-family site typography", () => {
     expect(SITE_FONT_CSS).not.toMatch(/font-style: italic;|italic\.woff2|https?:/);
     const upstream = readFileSync(require.resolve("@fontsource-variable/playpen-sans/wght.css"), "utf8");
     expect(SITE_FONT_CSS).toContain(upstream.replaceAll("Playpen Sans Variable", "Playpen Sans").replaceAll("./files/", "/assets/fonts/playpen-sans-5.3.0/"));
+  });
+
+  it("keeps the informational wallet disclosure on shared reading typography and canonical controls", () => {
+    expect(SITE_CSS).toContain(PREVIEW_WALLET_CSS);
+    expect(PREVIEW_WALLET_CSS).not.toMatch(/font-size:|font-weight:|font:(?!inherit)/);
+    expect(PREVIEW_WALLET_CSS).toContain(".preview-wallet-panel .auth-action{width:100%}");
   });
 
   it.each(paths)("resolves versioned WOFF2 bytes for %s", (path) => {

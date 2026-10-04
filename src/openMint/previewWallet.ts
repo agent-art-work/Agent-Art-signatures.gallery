@@ -28,8 +28,8 @@ export const PREVIEW_WALLET_CSS = `
 .preview-wallet-menu>.collection-shortcut{inset:0;padding:0;border:0;background:transparent;list-style:none;cursor:pointer}
 .preview-wallet-menu>.collection-shortcut::-webkit-details-marker{display:none}
 .preview-wallet-menu>.collection-shortcut::marker{content:""}
-.preview-wallet-panel{position:absolute;inset-block-start:calc(100% + 8px);inset-inline-end:0;width:320px;max-width:calc(100vw - 32px);max-height:calc(100dvh - 88px);overflow-y:auto;overscroll-behavior:contain;padding:24px;border:1px solid var(--line);border-radius:16px;background:var(--paper);color:var(--ink);font-size:16px;line-height:1.6;box-shadow:0 8px 24px var(--art-shadow)}
-.preview-wallet-panel h2{margin:0 0 16px;font-size:18px;font-weight:var(--emphasis-font-weight);line-height:1.5}
+.preview-wallet-panel{position:absolute;inset-block-start:calc(100% + 8px);inset-inline-end:0;width:320px;max-width:calc(100vw - 32px);max-height:calc(100dvh - 88px);overflow-y:auto;overscroll-behavior:contain;padding:24px;border:1px solid var(--line);border-radius:16px;background:var(--paper);color:var(--ink);line-height:1.6;box-shadow:0 8px 24px var(--art-shadow)}
+.preview-wallet-panel h2{margin:0 0 16px;line-height:1.5}
 .preview-wallet-panel p{margin:0 0 16px;color:var(--muted)}
 .preview-wallet-panel .auth-action{width:100%}
 `;

@@ -46,7 +46,7 @@ Each build prints a new artifact directory under `.local/preview-cloudflare/`. N
 
 The initial launch used `.local/preview-cloudflare/staging-BSR1AQ` and `.local/preview-cloudflare/production-a920mV`. The October 4 fresh builds (`staging-n64g3j` and `production-a920mV`) were byte-identical to their respective October 3 packages, including all 25 manifest entries. Both initial Workers had SHA-256 `178e1637057ccabd11fe46b25c6e940db271cf24ec31f63f2e5e7ea521ec1167`. Their manifest SHA-256 values were respectively `d9f324f2dcecb050cb42f83a42db4f84370a5ed6c29fd110569c7c7530abb4c5` and `51c2430ce86e8159299d3db0ab825ce837e6edc9b7069b83cabcc1aec42812d9`. These artifacts remain intact for rollback, along with the earlier prepared `production-GLghkn`. Current Ops artifacts are recorded below. Ignored build files are not a substitute for a source commit.
 
-Both packages were built from HEAD `9dd031c5e6e4774613a470b17cd270c19ef7b6db` plus the existing uncommitted preview/UI work. HEAD alone does not reproduce the deployment: retain the complete artifact and manifest until those source changes are committed. Rebuild if source changes; never overwrite an old artifact.
+At initial launch, both packages were built from HEAD `9dd031c5e6e4774613a470b17cd270c19ef7b6db` plus then-uncommitted preview/UI work. That historical HEAD alone does not reproduce the deployment. Retain the complete original artifacts and manifests. The reproducible source checkpoint for the newer Ops release is recorded below. Rebuild if source changes; never overwrite an old artifact.
 
 ## Staging deployment record
 
@@ -88,7 +88,9 @@ This release changes static routing to assets-first and skips SVG generation for
 
 Both versions receive 100% of their environment's traffic, carry the tag `preview-ops-baseline`, expose only a fetch handler and retain only `ASSETS` and `PUBLIC_ORIGIN`. Both artifacts contain 26 manifest entries, including the non-public `_headers` configuration. Their shared Worker SHA-256 is `c2a53426da40f381fcd33391da8aabe54e593a62460f1fefb3db78a7b03a92df`. Manifest SHA-256: staging `eec3c1ce2cffb5f2a3078cac90f1f6db2630633447476dc3e7948e2f3375b1dd`; production `f16f64db0fdbc550e9453d0795ed14be064f6a0837cc02288aca8d886fffcfb1`.
 
-The source remains HEAD `9dd031c5e6e4774613a470b17cd270c19ef7b6db` plus existing uncommitted preview/UI work and these Ops edits. No source commit or push was requested for this Ops task. Retain the complete artifacts; HEAD alone does not reproduce them.
+At deployment, the source was HEAD `9dd031c5e6e4774613a470b17cd270c19ef7b6db` plus then-uncommitted preview/UI work and Ops edits. Repository cleanup preserved that published source in local commit `c1fb01e`. Fresh staging and production builds from that checkpoint exactly matched their retained manifests above—all 26 file entries, including Worker, assets and provider configuration. No provider access was used for this reproduction check. Retain the complete published artifacts; do not overwrite them or relabel a later build as this release.
+
+Subsequent local cleanup makes the preview wallet notice inherit shared typography and repairs stale layout/pricing assertions. Those refinements change the next preview bundle and are not deployed. The local adapter fix and explicit pinned Miniflare test dependency do not activate any public capability. OPS must review a fresh tested artifact before any future publication.
 
 Typecheck, all 225 preview unit tests and all 15 packaging tests pass, including both instrumented real `workerd` tests. Those runtime tests prove existing static GET/HEAD requests bypass the user handler; public HTTP checks alone cannot establish billing behavior. A sandboxed rerun initially could not bind its loopback listener (`EPERM`); rerunning with local-listener permission passed without changing tests. Renderer locks and both deployment dry-runs passed.
 
@@ -105,6 +107,19 @@ node scripts/preview-cloudflare-local.mjs .local/preview-cloudflare/STAGING_ARTI
 ```
 
 The adapter verifies every manifest hash, including `public/_headers`, before listening on loopback. Cloudflare configuration is not served as a public asset. It maps local requests to the artifact's exact public origin only for local viewing. This is not a substitute for the `workerd` test.
+
+## Repository cleanup verification — October 4, 2026
+
+The cleanup preserved authored source and design studies rather than deleting uncommitted work. It fixed local inspection of `_headers`, declared the already-used Miniflare runtime as a pinned direct test dependency, removed the obsolete localhost icon-study backlink, aligned the wallet notice with shared typography, and repaired stale About/layout assertions. Operational ownership is recorded as accepted; no provider settings, deployment, credentials or persistent local runtime were changed. Published artifacts were not deleted or overwritten.
+
+- `npm run typecheck` and `npm run build` pass; all three renderer locks remain unchanged.
+- `npm run test:preview`: 225 unit tests and 19 packaging/local-runtime tests pass, including both real `workerd` checks.
+- `npm run test:site-icons`: 106 renderer tests and 10 isolated HTTP/raster checks pass.
+- Sepolia browser-client regressions: all 137 tests pass with mocked providers and an isolated loopback fixture, not the live chain.
+- `npm run test:contract`: 251 offline Solidity tests pass; example manifest validation and all nine role-manifest tests pass.
+- Full HTTP-enabled Vitest coverage run: 6,856 tests pass, zero fail, and 553 opt-in persistence/projection tests are skipped because PostgreSQL testing was not enabled. The global coverage command still exits nonzero: statements/lines 84.53% and functions 86.82% fall below the unchanged 93%/97% thresholds; branches are 92.56%. This is not a passing repository-wide coverage gate or database integration certification. No thresholds were lowered, tests excluded or databases started to conceal that limitation.
+
+These are local development checks, not a new public browser audit or release acceptance. Any future publication remains an OPS action requiring the fresh artifact checks above.
 
 ## Authentication and publication
 
