@@ -44,6 +44,10 @@ The packaging tests run the bundled Worker and asset binding inside Cloudflare's
 
 Each build prints a new artifact directory under `.local/preview-cloudflare/`. Never reuse or overwrite an existing artifact directory. `manifest.json` records every packaged file's size and SHA-256; the Worker digest must match across staging and production. `wrangler.json` fixes the account, hostname, compatibility settings and preview-only bindings. `metafile.json` records the bundled dependencies and default-only Worker entry point.
 
+CI can instead select a fresh disposable destination with `npm run preview:build -- staging --output-dir <empty-directory>` (or `production`). The same builder and inventory checks apply; a nonempty destination is rejected. This option does not publish or change retained release packages.
+
+The independent `preview` Verify job runs the preview unit suite, separate Node packaging/real-workerd tests and both actual packaging CLIs with an allowlisted, credential-empty child environment. It retains only source identity, actual command exits, numeric test counts and artifact hashes. The core job retains sanitized numeric test/coverage evidence even when its unchanged 93% statements, 87% branches and 97% functions gate fails. A JSON report's success flag never substitutes for the CLI exit. These jobs qualify source, not a hosted deployment.
+
 The initial launch used `.local/preview-cloudflare/staging-BSR1AQ` and `.local/preview-cloudflare/production-a920mV`. The October 4 fresh builds (`staging-n64g3j` and `production-a920mV`) were byte-identical to their respective October 3 packages, including all 25 manifest entries. Both initial Workers had SHA-256 `178e1637057ccabd11fe46b25c6e940db271cf24ec31f63f2e5e7ea521ec1167`. Their manifest SHA-256 values were respectively `d9f324f2dcecb050cb42f83a42db4f84370a5ed6c29fd110569c7c7530abb4c5` and `51c2430ce86e8159299d3db0ab825ce837e6edc9b7069b83cabcc1aec42812d9`. These artifacts remain intact for rollback, along with the earlier prepared `production-GLghkn`. Current Ops artifacts are recorded below. Ignored build files are not a substitute for a source commit.
 
 At initial launch, both packages were built from HEAD `9dd031c5e6e4774613a470b17cd270c19ef7b6db` plus then-uncommitted preview/UI work. That historical HEAD alone does not reproduce the deployment. Retain the complete original artifacts and manifests. The reproducible source checkpoint for the newer Ops release is recorded below. Rebuild if source changes; never overwrite an old artifact.
@@ -106,7 +110,7 @@ Pass the printed artifact directory to the local adapter:
 node scripts/preview-cloudflare-local.mjs .local/preview-cloudflare/STAGING_ARTIFACT_DIRECTORY 3010
 ```
 
-The adapter verifies every manifest hash, including `public/_headers`, before listening on loopback. Cloudflare configuration is not served as a public asset. It maps local requests to the artifact's exact public origin only for local viewing. This is not a substitute for the `workerd` test.
+The adapter requires a unique canonical inventory containing `worker.mjs`, validates all listed metadata and actual byte lengths/hashes, and requires the top-level Worker digest to agree before importing executable code. Listed symlinks and non-regular files are rejected. It verifies `public/_headers` but does not serve Cloudflare configuration as a public asset. Self-declared hashes prove package consistency, not publisher authenticity: use trusted, immutable artifacts. Unlisted provider bookkeeping is permitted; this is not a signature or concurrent-mutation guarantee. The adapter maps local requests to the artifact's exact public origin only for local viewing. This is not a substitute for the `workerd` test.
 
 ## Repository cleanup verification — October 4, 2026
 

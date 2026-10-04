@@ -1,6 +1,6 @@
 # Offline mobile and accessibility regression
 
-The home, mint, and Sepolia admin pages use one typography/control/navigation system. This audit exercises the actual templates, local Playpen Sans assets, styles, slogan motion, and inline handle validation with synthetic data. It never loads the production wallet client, reads RPC, signs a message, sends a transaction, calls X/Grok, or changes mint policy.
+The home, mint, explorer, and Sepolia admin pages use one typography/control/navigation system. This audit exercises the actual templates, local Playpen Sans assets, styles, slogan motion, and inline handle validation with synthetic data. It never loads the production wallet client, reads RPC, signs a message, sends a transaction, calls X/Grok, or changes mint policy.
 
 Run with Node 22+ and a local Chrome/Chromium binary:
 
@@ -14,11 +14,12 @@ node --import tsx scripts/pulse-ui-accessibility.mjs --output-dir /private/tmp/s
 
 | Surface | Sale states | Themes | Responsive widths |
 | --- | --- | --- | --- |
-| Home | Free, paid | Light, dark | 320, 375, 390 CSS px; 200% zoom reflow |
-| Mint | Free, paid, checking availability | Light, dark | Same |
+| Home | Prelaunch, free, paid; paused free/paid overlays | Light, dark | 320, 375, 390 CSS px; 200% zoom reflow |
+| Mint | Prelaunch, free, paid, checking availability; paused free/paid overlays | Light, dark | Same |
+| Explorer | Prelaunch, free, paid, checking availability | Light, dark | Same |
 | Admin | Synthetic policy editing and pending recovery | Light, dark | Same |
 
-There are 48 cases. The zoom case represents a 1280×900 physical viewport at 200% zoom as 640×450 CSS pixels with device-scale factor 2. It tests responsive reflow and enlarged rendering, not an operating-system font-size preference.
+There are 128 cases, preserving the original 48 and adding prelaunch, explorer and maintenance cases. The zoom case represents a 1280×900 physical viewport at 200% zoom as 640×450 CSS pixels with device-scale factor 2. It tests responsive reflow and enlarged rendering, not an operating-system font-size preference.
 
 Each case checks document/content bounds, 44px navigation targets, 48px form controls, identical header alignment, named interactive controls, a page heading in Chrome's accessibility tree, polite live status regions, real Tab traversal, visible keyboard focus, underline-only input focus, and reduced-motion behavior. Mint cases also check accessible sale-section naming and inline invalid-handle feedback. Admin cases confirm visual address wrapping leaves the actual newline-separated slot rows unchanged.
 
@@ -29,12 +30,26 @@ profile's `DevToolsActivePort` file and verifies the same loopback browser's
 HTTP identity; a captured output banner is a fallback, not proof of readiness.
 It rejects redirects, foreign browser/page endpoints and responses arriving
 after the deadline. CDP handshake/command deadlines remain ten seconds.
-Startup failures write `results.json` with the failed stage, child exit/signal
-and at most 16 KiB each of stdout/stderr, without environment variables. Cleanup
+The HTTP readiness probe uses a fresh direct IPv4 loopback socket, independent
+of global fetch dispatchers/proxies and pooled connections. Each attempt keeps
+its existing one-second budget within the ten-second overall deadline, bounds
+the JSON body at 64 KiB and records connect/header/body/identity phases.
+Startup failures write `results.json` after cleanup with the failed stage,
+owned-child liveness/exit, classified probe failures and profile-removal status.
+Raw browser output, arbitrary error prose, profile paths, PIDs and DevTools
+endpoints are not included in the uploaded report. Cleanup
 awaits the owned child process's actual close before deleting its private
-profile. It never kills unrelated browsers. Nineteen helper regressions cover
-startup, deadline, transport and cleanup failures; these are separate from the
-unchanged 48-case visual matrix.
+profile. It never kills unrelated browsers. Forty-two helper regressions cover
+startup, deadline, transport, report confidentiality and cleanup failures;
+these are separate from the unchanged 128-case visual matrix.
+
+The filtered historical Pulse CI failure (run `37099954648`, October 3, 2026)
+shows Chrome alive with an emitted endpoint while HTTP readiness timed out.
+It does not establish whether transport dispatch, host scheduling or Chrome
+caused that particular stall; DBus warnings alone are not a diagnosis. The new
+direct transport removes a tested dependency on global fetch and adds phase
+evidence for any recurrence. Exact-candidate hosted CI is still required;
+local success is not a retrospective proof of the historical root cause.
 
 ## October 2, 2026 findings and fixes
 

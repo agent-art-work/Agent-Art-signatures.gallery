@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { accessibilityFixture, accessibilityFixtureOptions, assertPhaseSurface, expectedExplorerRedirect, createAccessibilityFixtureServer, auditTargetEndpoint, connectCdp, launchAccessibilityChrome, runAccessibilityAudit, UI_ACCESSIBILITY_MATRIX } from '../../scripts/pulse-ui-accessibility.mjs';
+import { accessibilityFixture, accessibilityFixtureOptions, assertPhaseSurface, expectedExplorerRedirect, createAccessibilityFixtureServer, auditTargetEndpoint, connectCdp, launchAccessibilityChrome, probePrivateDevtools, accessibilityFailureEvidence, runAccessibilityAudit, UI_ACCESSIBILITY_MATRIX } from '../../scripts/pulse-ui-accessibility.mjs';
 import { OPEN_MINT_CSS } from '../../src/openMint/pages.ts';
 import { SEPOLIA_ADMIN_CSS } from '../../scripts/pulse-sepolia-admin-page.mjs';
 
@@ -204,6 +205,10 @@ test('Chrome readiness uses the private port file without requiring a stderr ban
     assert.deepEqual(urls, ['http://127.0.0.1:12345/json/version']);
     assert.equal(ready.webSocketDebuggerUrl, endpoint); assert.equal(ready.source, 'DevToolsActivePort'); assert.equal(ready.browser, 'Chrome/offline-test');
     assert.equal(h.supervisor.diagnostics().stderrTail, '');
+    assert.equal(ready.attempts, 1); assert.equal(ready.transport, 'injected-test-probe');
+    assert.deepEqual(h.supervisor.diagnostics().readiness, { attempts: 1, portFile: 'valid', phase: 'ready',
+      probes: [{ attempt: 1, source: 'DevToolsActivePort', phase: 'identity', elapsedMs: h.supervisor.diagnostics().readiness.probes[0].elapsedMs,
+        status: 200, errorCode: null, outcome: 'ready' }] });
   } finally { await h.supervisor.close(); }
 });
 
@@ -335,11 +340,131 @@ test('late HTTP readiness cannot beat an expired startup deadline when the event
   } finally { await h.supervisor.close(); }
 });
 
-test('default DevTools readiness probe rejects redirects rather than following them outside the private browser', async () => {
-  const original = globalThis.fetch, h = browserFixture(); let options;
-  globalThis.fetch = async (url, input) => { assert.equal(url, 'http://127.0.0.1:12345/json/version'); options = input; return version(); };
-  try { await h.supervisor.ready(); assert.equal(options.redirect, 'error'); assert.equal(options.signal.aborted, true); }
-  finally { globalThis.fetch = original; await h.supervisor.close(); }
+async function privateDevtoolsFixture(handler) {
+  const requests = [], server = createServer((request, response) => { requests.push({ path: request.url, host: request.headers.host }); handler(request, response); });
+  await new Promise((accept, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', accept); });
+  const port = server.address().port;
+  return { requests, port, origin: `http://127.0.0.1:${port}`, endpoint: `ws://127.0.0.1:${port}/devtools/browser/offline-test`,
+    close: () => new Promise((accept, reject) => { server.close(error => error ? reject(error) : accept()); server.closeAllConnections(); }) };
+}
+
+test('direct DevTools readiness is independent of a hung global fetch dispatcher and records its successful phases', async () => {
+  const fixture = await privateDevtoolsFixture((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ Browser: 'Chrome/offline-test', webSocketDebuggerUrl: fixture.endpoint }));
+  });
+  const original = globalThis.fetch, h = browserFixture({ readActivePort: () => `${fixture.port}\n/devtools/browser/offline-test\n` }); let fetchCalls = 0;
+  globalThis.fetch = async () => { fetchCalls++; return new Promise(() => {}); };
+  try {
+    const ready = await h.supervisor.ready();
+    assert.equal(ready.webSocketDebuggerUrl, fixture.endpoint); assert.equal(ready.transport, 'direct-loopback-http'); assert.equal(ready.attempts, 1);
+    assert.equal(fetchCalls, 0); assert.deepEqual(fixture.requests, [{ path: '/json/version', host: `127.0.0.1:${fixture.port}` }]);
+    const probe = h.supervisor.diagnostics().readiness.probes[0];
+    assert.equal(probe.phase, 'identity'); assert.equal(probe.status, 200); assert.equal(probe.outcome, 'ready');
+  } finally { globalThis.fetch = original; await h.supervisor.close(); await fixture.close(); }
+});
+
+test('direct DevTools rejects redirects without contacting the redirect location', async () => {
+  const fixture = await privateDevtoolsFixture((_request, response) => { response.writeHead(302, { location: 'http://outside.invalid/json/version' }); response.end(); });
+  const progress = [];
+  try {
+    await assert.rejects(probePrivateDevtools(fixture.origin + '/json/version', AbortSignal.timeout(1000), (...value) => progress.push(value)), { code: 'DEVTOOLS_HTTP_STATUS' });
+    assert.equal(fixture.requests.length, 1); assert.ok(progress.some(value => value[0] === 'body' && value[1] === 302));
+  } finally { await fixture.close(); }
+});
+
+test('direct DevTools rejects malformed and oversized JSON without retaining its response text', async () => {
+  for (const [body, code] of [['private-invalid-json', 'DEVTOOLS_INVALID_JSON'], ['x'.repeat(65537), 'DEVTOOLS_BODY_LIMIT']]) {
+    const fixture = await privateDevtoolsFixture((_request, response) => { response.writeHead(200); response.end(body); });
+    try {
+      await assert.rejects(probePrivateDevtools(fixture.origin + '/json/version', AbortSignal.timeout(1000)), error => error.code === code && !error.message.includes(body));
+    } finally { await fixture.close(); }
+  }
+});
+
+test('direct DevTools distinguishes refused connections and truncated response bodies without following another endpoint', async () => {
+  const closedFixture = await privateDevtoolsFixture(() => {}); await closedFixture.close();
+  const progress = [];
+  await assert.rejects(probePrivateDevtools(closedFixture.origin + '/json/version', AbortSignal.timeout(1000), (...value) => progress.push(value)), { code: 'ECONNREFUSED' });
+  assert.deepEqual(progress, [['connect']]);
+  let response;
+  const fixture = await privateDevtoolsFixture((_request, value) => { response = value; response.writeHead(200, { 'content-length': 1000 }); response.write('{'); });
+  try {
+    await assert.rejects(probePrivateDevtools(fixture.origin + '/json/version', AbortSignal.timeout(1000), phase => {
+      if (phase === 'body') queueMicrotask(() => response.destroy());
+    }), { code: 'DEVTOOLS_BODY_INCOMPLETE' });
+    assert.equal(fixture.requests.length, 1);
+  } finally { await fixture.close(); }
+});
+
+test('a direct DevTools body stall is cancelled and diagnosed at its actual phase within the existing startup budget', async t => {
+  const fixture = await privateDevtoolsFixture((_request, response) => { response.writeHead(200); response.write('{"Browser":'); });
+  const h = browserFixture({ readActivePort: () => `${fixture.port}\n/devtools/browser/offline-test\n` });
+  let enteredBody; const body = new Promise(resolve => { enteredBody = resolve; });
+  // Real socket traffic establishes the body stall before the exact synthetic
+  // deadline advances. Busy CI scheduling must not replace it with connect lag.
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
+  try {
+    const pending = h.supervisor.ready({ timeoutMs: 150, pollMs: 1, probe: (url, signal, progress) => probePrivateDevtools(url, signal,
+      (phase, status) => { progress(phase, status); if (phase === 'body') enteredBody(); }) });
+    pending.catch(() => {}); await body;
+    t.mock.timers.tick(149); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.supervisor.diagnostics().readiness.probes[0].outcome, 'pending');
+    t.mock.timers.tick(1); await new Promise(resolve => setImmediate(resolve)); t.mock.timers.tick(0);
+    await assert.rejects(pending, /did not become ready within 150ms/);
+    const diagnostic = h.supervisor.diagnostics();
+    assert.equal(diagnostic.exited, false); assert.equal(diagnostic.readiness.portFile, 'valid');
+    assert.equal(diagnostic.readiness.probes.at(-1).phase, 'body'); assert.equal(diagnostic.readiness.probes.at(-1).status, 200);
+    assert.equal(diagnostic.readiness.probes.at(-1).errorCode, 'DEVTOOLS_PROBE_TIMEOUT'); assert.equal(diagnostic.readiness.probes.at(-1).outcome, 'failed');
+    assert.equal(diagnostic.readiness.attempts, 1);
+  } finally { t.mock.timers.reset(); await h.supervisor.close(); await fixture.close(); }
+});
+
+test('direct DevTools probes refuse foreign, ambiguous or credential-bearing URLs before making any request', () => {
+  for (const url of ['http://outside.invalid:12345/json/version', 'https://127.0.0.1:12345/json/version', 'http://127.0.0.1/json/version',
+    'http://127.0.0.1:12345/json/version?token=private', 'http://user:password@127.0.0.1:12345/json/version',
+    'http://127.0.0.1:12345/json/version#other', 'http://127.0.0.1:12345/other'])
+    assert.throws(() => probePrivateDevtools(url, AbortSignal.timeout(1000)), /Invalid private DevTools probe URL/);
+});
+
+test('Chrome readiness never widens its total ten-second deadline or accepts an unbounded polling interval', async () => {
+  const h = browserFixture();
+  try {
+    for (const timeoutMs of [10001, 0, NaN, Infinity, 1.5]) await assert.rejects(h.supervisor.ready({ timeoutMs }), /bounded at ten seconds/);
+    for (const pollMs of [0, -1, NaN, Infinity, 1.5]) await assert.rejects(h.supervisor.ready({ pollMs }), /positive bounded interval/);
+  } finally { await h.supervisor.close(); }
+});
+
+test('Chrome readiness retains only bounded classified probe evidence rather than arbitrary failure details', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
+  const h = browserFixture();
+  try {
+    const pending = h.supervisor.ready({ timeoutMs: 20, pollMs: 1, probe: async () => { throw Object.assign(Error('private remote response text'), { code: 'private remote code' }); } });
+    pending.catch(() => {});
+    for (let index = 0; index < 20; index++) { await new Promise(resolve => setImmediate(resolve)); t.mock.timers.tick(1); }
+    await assert.rejects(pending, /did not become ready/);
+    const readiness = h.supervisor.diagnostics().readiness;
+    assert.equal(readiness.attempts, 20); assert.equal(readiness.probes.length, 8);
+    assert.ok(readiness.probes.every(value => value.errorCode === 'DEVTOOLS_PROBE_ERROR' && value.outcome === 'failed'));
+    assert.doesNotMatch(JSON.stringify(readiness), /private remote/);
+  } finally { t.mock.timers.reset(); await h.supervisor.close(); }
+});
+
+test('CI failure evidence allows only synthetic lifecycle/probe facts, never raw browser/error/profile/endpoint data', async () => {
+  const h = browserFixture(); h.child.stderr.write('private-browser-stderr'); h.child.stdout.write('private-browser-stdout');
+  try {
+    await h.supervisor.ready({ probe: async () => version() });
+    const evidence = accessibilityFailureEvidence({ stage: 'chrome-startup', completedCases: 0,
+      error: Object.assign(Error('private-error-message'), { code: 'PRIVATE_ERROR_CODE', stack: 'private-error-stack' }),
+      startup: { webSocketDebuggerUrl: endpoint, source: 'DevToolsActivePort', elapsedMs: 10, attempts: 1,
+        transport: 'direct-loopback-http', browser: 'Chrome/154.0.0.1' }, chrome: h.supervisor.diagnostics(), profileRemoved: false });
+    assert.equal(evidence.errorCode, 'DEVTOOLS_PROBE_ERROR'); assert.equal(evidence.chrome.exited, false);
+    assert.equal(evidence.chrome.profileRemoved, false); assert.equal(evidence.chrome.stderrPresent, true); assert.equal(evidence.chrome.stdoutPresent, true);
+    assert.equal(evidence.startup.browser, 'Chrome/154.0.0.1'); assert.equal(evidence.startup.transport, 'direct-loopback-http');
+    assert.deepEqual(evidence.chrome.readiness, h.supervisor.diagnostics().readiness);
+    for (const key of ['chromePath', 'profile', 'pid', 'stdoutTail', 'stderrTail', 'spawnError']) assert.equal(Object.hasOwn(evidence.chrome, key), false);
+    assert.equal(Object.hasOwn(evidence.startup, 'webSocketDebuggerUrl'), false);
+    assert.doesNotMatch(JSON.stringify(evidence), /private-browser|private-error|PRIVATE_ERROR_CODE|offline\/private-profile|99999|ws:\/\//);
+  } finally { await h.supervisor.close(); }
 });
 
 test('audit target URL must identify the exact created page on the owned loopback browser', () => {
@@ -352,7 +477,7 @@ test('audit target URL must identify the exact created page on the owned loopbac
   assert.throws(() => auditTargetEndpoint(endpoint, targetId, []), /did not enumerate/);
   assert.throws(() => auditTargetEndpoint('ws://external.invalid:12345/devtools/browser/other', targetId, []), /Invalid audit browser/);
   const source = readFileSync(new URL('../../scripts/pulse-ui-accessibility.mjs', import.meta.url), 'utf8');
-  assert.match(source, /fetch\(`http:\/\/\$\{devtoolsOrigin.host\}\/json\/list`, \{ signal: AbortSignal.timeout\(10000\), redirect: 'error' \}\)/);
+  assert.match(source, /probePrivateDevtools\(`http:\/\/\$\{devtoolsOrigin.host\}\/json\/list`, AbortSignal.timeout\(10000\)\)/);
 });
 
 function websocketFixture({ open = true, onSend } = {}) {
@@ -404,6 +529,8 @@ test('real child bootstrap failure produces actionable evidence and removes only
     await assert.rejects(runAccessibilityAudit({ outputDir, chromePath: process.execPath }), /Chrome exited before DevTools/);
     const result = JSON.parse(readFileSync(join(outputDir, 'results.json'), 'utf8'));
     assert.equal(result.stage, 'chrome-startup'); assert.equal(result.completedCases, 0); assert.ok(result.chrome.exitCode > 0);
-    assert.match(result.chrome.stderrTail, /bad option/); assert.equal(existsSync(result.chrome.profile), false);
+    assert.equal(result.chrome.stderrPresent, true); assert.equal(result.chrome.closed, true); assert.equal(result.chrome.profileRemoved, true);
+    for (const key of ['error', 'stack']) assert.equal(Object.hasOwn(result, key), false);
+    for (const key of ['chromePath', 'profile', 'pid', 'stdoutTail', 'stderrTail', 'spawnError']) assert.equal(Object.hasOwn(result.chrome, key), false);
   } finally { rmSync(outputDir, { recursive: true, force: true }); }
 });
