@@ -124,8 +124,10 @@ export async function buildPreviewCloudflare({ environment = 'staging', destinat
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const args = process.argv.slice(2);
-  assert.ok(args.length <= 1, 'Usage: build-preview-cloudflare.mjs [staging|production]');
-  const result = await buildPreviewCloudflare({ environment: args[0] ?? 'staging' });
+  const environment = args[0] && !args[0].startsWith('--') ? args.shift() : 'staging';
+  assert.ok(args.length === 0 || (args.length === 2 && args[0] === '--output-dir' && args[1]),
+    'Usage: build-preview-cloudflare.mjs [staging|production] [--output-dir <empty-directory>]');
+  const result = await buildPreviewCloudflare({ environment, destination: args[1] });
   console.log(JSON.stringify({ destination: relative(root, result.destination), origin: result.manifest.origin,
     artifactSha256: result.manifest.artifactSha256, mintingEnabled: false }, null, 2));
 }
