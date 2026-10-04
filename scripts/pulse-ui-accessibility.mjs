@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { createServer, request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
@@ -235,7 +236,7 @@ function browserEndpoint(value) {
 }
 
 const DEVTOOLS_ERROR_CODES = new Set(['ABORT_ERR', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOENT', 'EACCES', 'EPERM',
-  'ERR_ASSERTION', 'DEVTOOLS_HTTP_STATUS', 'DEVTOOLS_BODY_LIMIT', 'DEVTOOLS_BODY_INCOMPLETE', 'DEVTOOLS_INVALID_JSON', 'DEVTOOLS_PROBE_TIMEOUT']);
+  'ENOTEMPTY', 'ERR_ASSERTION', 'DEVTOOLS_HTTP_STATUS', 'DEVTOOLS_BODY_LIMIT', 'DEVTOOLS_BODY_INCOMPLETE', 'DEVTOOLS_INVALID_JSON', 'DEVTOOLS_PROBE_TIMEOUT']);
 const diagnosticCode = code => DEVTOOLS_ERROR_CODES.has(code) ? code : 'DEVTOOLS_PROBE_ERROR';
 const startupEvidence = value => value && ({ source: value.source, elapsedMs: value.elapsedMs, attempts: value.attempts,
   transport: value.transport, browser: /^(?:HeadlessChrome|Chrome|Chromium)\/\d+(?:\.\d+){0,3}$/.test(value.browser ?? '') ? value.browser : null });
@@ -253,6 +254,19 @@ export function accessibilityFailureEvidence({ stage, completedCases, error, sta
         probes: chrome.readiness.probes.map(value => ({ attempt: value.attempt, source: value.source, phase: value.phase,
           elapsedMs: value.elapsedMs, status: value.status, errorCode: value.errorCode, outcome: value.outcome })) },
     } };
+}
+
+export function createAccessibilityChromeProfile({ remove = rm } = {}) {
+  // Ownership is a capability created here: callers cannot supply a path or
+  // substitute an existing browser profile. Never delete until actual close.
+  const profile = mkdtempSync(join(tmpdir(), 'sg-ui-chrome-'));
+  return Object.freeze({ path: profile, async removeAfterClose(chrome) {
+    assert.ok(!chrome || chrome.diagnostics().closed, 'Owned Chrome must actually close before its disposable profile is removed.');
+    // Same five retries/100ms linear backoff as before. Node's async rimraf
+    // rescans children on ENOTEMPTY; rmSync retries only the final rmdir, so a
+    // late-created file could survive every retry even after its writer stops.
+    await remove(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } });
 }
 
 // DevTools belongs to the newly spawned browser, not an application/provider
@@ -442,7 +456,7 @@ export async function runAccessibilityAudit({ outputDir = mkdtempSync(join(tmpdi
     '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(existsSync);
   assert.ok(chromePath && existsSync(chromePath), 'Chrome/Chromium required; set CHROME_PATH.');
   mkdirSync(outputDir, { recursive: true });
-  const profile = mkdtempSync(join(tmpdir(), 'sg-ui-chrome-'));
+  const ownedProfile = createAccessibilityChromeProfile(), profile = ownedProfile.path;
   let client, browser, chrome, fixture, startup, failure, stage = 'fixture'; const rows = [], requests = [], errors = [];
   try {
     fixture = await createAccessibilityFixtureServer(); stage = 'chrome-startup';
@@ -579,7 +593,7 @@ export async function runAccessibilityAudit({ outputDir = mkdtempSync(join(tmpdi
     try { await fixture?.close(); } catch (error) { cleanup.push(error); }
     // Do not remove a profile until its owning browser has actually stopped.
     if (!chrome || chrome.diagnostics().closed) {
-      try { rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch (error) { cleanup.push(error); }
+      try { await ownedProfile.removeAfterClose(chrome); } catch (error) { cleanup.push(error); }
     }
     if (failure || cleanup.length) {
       try { writeFileSync(join(outputDir, 'results.json'), JSON.stringify(accessibilityFailureEvidence({

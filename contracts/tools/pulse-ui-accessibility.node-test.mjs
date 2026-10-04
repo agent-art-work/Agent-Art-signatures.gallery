@@ -3,10 +3,11 @@ import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createServer } from 'node:http';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { accessibilityFixture, accessibilityFixtureOptions, assertPhaseSurface, expectedExplorerRedirect, createAccessibilityFixtureServer, auditTargetEndpoint, connectCdp, launchAccessibilityChrome, probePrivateDevtools, accessibilityFailureEvidence, runAccessibilityAudit, UI_ACCESSIBILITY_MATRIX } from '../../scripts/pulse-ui-accessibility.mjs';
+import { accessibilityFixture, accessibilityFixtureOptions, assertPhaseSurface, expectedExplorerRedirect, createAccessibilityFixtureServer, auditTargetEndpoint, connectCdp, launchAccessibilityChrome, createAccessibilityChromeProfile, probePrivateDevtools, accessibilityFailureEvidence, runAccessibilityAudit, UI_ACCESSIBILITY_MATRIX } from '../../scripts/pulse-ui-accessibility.mjs';
 import { OPEN_MINT_CSS } from '../../src/openMint/pages.ts';
 import { SEPOLIA_ADMIN_CSS } from '../../scripts/pulse-sepolia-admin-page.mjs';
 
@@ -329,6 +330,87 @@ test('Chrome cleanup fails visibly if the owned child never closes', async () =>
   const h = browserFixture({ onKill() {} });
   try { await assert.rejects(h.supervisor.close({ gracefulMs: 5, forceMs: 5 }), /Chrome shutdown timed out/); assert.deepEqual(h.signals, ['SIGTERM', 'SIGKILL']); }
   finally { h.finish(null, 'SIGKILL'); }
+});
+
+test('owned disposable profile cleanup cannot accept a supplied path or run before actual child close', async () => {
+  let closed; const calls = [];
+  const h = browserFixture({ onKill(signal) { h.child.emit('exit', 0, signal); closed = () => h.child.emit('close', 0, signal); } });
+  const owner = createAccessibilityChromeProfile({ remove: async (path, options) => { calls.push({ path, options }); } });
+  try {
+    assert.ok(Object.isFrozen(owner)); assert.equal(existsSync(owner.path), true); assert.match(owner.path, /sg-ui-chrome-[A-Za-z0-9]+$/);
+    await assert.rejects(owner.removeAfterClose(h.supervisor), /actually close before/); assert.deepEqual(calls, []);
+    const closing = h.supervisor.close(); await new Promise(accept => setImmediate(accept));
+    assert.equal(h.supervisor.diagnostics().exited, true); assert.equal(h.supervisor.diagnostics().closed, false);
+    await assert.rejects(owner.removeAfterClose(h.supervisor), /actually close before/); assert.deepEqual(calls, []);
+    closed(); await closing; await owner.removeAfterClose(h.supervisor);
+    assert.deepEqual(calls, [{ path: owner.path, options: { recursive: true, force: true, maxRetries: 5, retryDelay: 100 } }]);
+    const beforeSpawn = createAccessibilityChromeProfile();
+    await beforeSpawn.removeAfterClose(undefined); assert.equal(existsSync(beforeSpawn.path), false);
+  } finally { await h.supervisor.close(); rmSync(owner.path, { recursive: true, force: true }); }
+});
+
+test('exhausted owned-profile removal remains a visible cleanup error and leaves the directory for recovery', async () => {
+  const cause = Object.assign(Error('Synthetic persistent directory race.'), { code: 'ENOTEMPTY' }); let attempts = 0;
+  const owner = createAccessibilityChromeProfile({ remove: async (_path, options) => {
+    attempts++; assert.deepEqual(options, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); throw cause;
+  } });
+  try {
+    await assert.rejects(owner.removeAfterClose({ diagnostics: () => ({ closed: true }) }), error => error === cause);
+    assert.equal(attempts, 1, 'The wrapper must not add another retry policy around native rm.'); assert.equal(existsSync(owner.path), true);
+    assert.equal(accessibilityFailureEvidence({ stage: 'cleanup', completedCases: 128, error: cause }).errorCode, 'ENOTEMPTY');
+  } finally { rmSync(owner.path, { recursive: true, force: true }); }
+});
+
+// A new bare Node child controls only its own newly-created fixture folder.
+// Instrument native rmdir BEFORE rimraf is lazily loaded, adding an entry after
+// its first child enumeration. This exercises the actual fs algorithms, not a
+// duplicated retry implementation. No Chrome process or external I/O is used.
+const nativeProfileRace = String.raw`
+const fs = require('node:fs'), timers = require('node:timers'), { join } = require('node:path');
+const [profile, mode, persistent] = process.argv.slice(1), seed = join(profile, 'initial'), late = join(profile, 'late');
+fs.writeFileSync(seed, 'synthetic');
+let injections = 0, rmdirCalls = 0; const retryDelays = [];
+const inject = path => { if (String(path) === profile) {
+  rmdirCalls++;
+  if (!fs.existsSync(seed) && (persistent === 'true' || !injections)) { fs.writeFileSync(late, 'synthetic late entry'); injections++; }
+} };
+const originalRmdir = fs.rmdir, originalRmdirSync = fs.rmdirSync, originalTimer = timers.setTimeout;
+fs.rmdir = function(path, ...args) { inject(path); return originalRmdir.call(fs, path, ...args); };
+fs.rmdirSync = function(path, ...args) { inject(path); return originalRmdirSync.call(fs, path, ...args); };
+timers.setTimeout = function(fn, delay, ...args) { retryDelays.push(delay); return originalTimer(fn, delay, ...args); };
+const options = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 };
+(async () => {
+  let errorCode = null;
+  try { if (mode === 'sync') fs.rmSync(profile, options); else await fs.promises.rm(profile, options); }
+  catch (error) { errorCode = error.code; }
+  console.log(JSON.stringify({ errorCode, options, injections, rmdirCalls, retryDelays, profileExists: fs.existsSync(profile), lateExists: fs.existsSync(late) }));
+})();`;
+function runNativeProfileRace(mode, persistent = false) {
+  const owner = createAccessibilityChromeProfile();
+  try {
+    const child = spawnSync(process.execPath, ['--input-type=commonjs', '-e', nativeProfileRace, owner.path, mode, String(persistent)], {
+      encoding: 'utf8', timeout: 10000, env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', TMPDIR: tmpdir(), NODE_ENV: 'test' },
+    });
+    assert.equal(child.error, undefined); assert.equal(child.status, 0); assert.equal(child.signal, null);
+    assert.equal(child.stderr, ''); return JSON.parse(child.stdout);
+  } finally { rmSync(owner.path, { recursive: true, force: true }); }
+}
+
+test('native asynchronous profile removal rescans a transient late entry while sync removal fails with the SAME five/100 policy', () => {
+  const sync = runNativeProfileRace('sync'), async = runNativeProfileRace('async');
+  assert.deepEqual(sync.options, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); assert.deepEqual(async.options, sync.options);
+  assert.equal(sync.injections, 1); assert.equal(sync.errorCode, 'ENOTEMPTY'); assert.equal(sync.profileExists, true); assert.equal(sync.lateExists, true);
+  assert.equal(sync.rmdirCalls, 7, 'Initial rmdir plus six exhausted final-rmdir attempts without rescanning.');
+  assert.equal(async.injections, 1); assert.equal(async.errorCode, null); assert.equal(async.profileExists, false); assert.equal(async.lateExists, false);
+  assert.deepEqual(async.retryDelays, [100]); assert.equal(async.rmdirCalls, 4);
+});
+
+test('native asynchronous profile removal stops after the existing bounded retries when late entries persist', () => {
+  const result = runNativeProfileRace('async', true);
+  assert.equal(result.errorCode, 'ENOTEMPTY'); assert.equal(result.profileExists, true); assert.equal(result.lateExists, true);
+  assert.deepEqual(result.retryDelays, [100, 200, 300, 400, 500]);
+  assert.equal(result.retryDelays.reduce((sum, delay) => sum + delay, 0), 1500, 'Retry backoff was widened.');
+  assert.equal(result.injections, 11); assert.equal(result.rmdirCalls, 12);
 });
 
 test('late HTTP readiness cannot beat an expired startup deadline when the event loop delays timers', async () => {

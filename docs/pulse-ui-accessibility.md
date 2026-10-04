@@ -39,9 +39,26 @@ owned-child liveness/exit, classified probe failures and profile-removal status.
 Raw browser output, arbitrary error prose, profile paths, PIDs and DevTools
 endpoints are not included in the uploaded report. Cleanup
 awaits the owned child process's actual close before deleting its private
-profile. It never kills unrelated browsers. Forty-two helper regressions cover
+profile. It never kills unrelated browsers. Forty-six helper regressions cover
 startup, deadline, transport, report confidentiality and cleanup failures;
 these are separate from the unchanged 128-case visual matrix.
+
+Profile removal now uses awaited native asynchronous `fs.rm`, retaining the
+existing five retries and 100ms linear retry delay. In [Node 22.23.3's
+implementation](https://github.com/nodejs/node/blob/v22.23.3/lib/internal/fs/rimraf.js),
+asynchronous retries rescan children after `ENOTEMPTY`; synchronous removal
+enumerates children once and then retries only directory removal. A deterministic
+late-entry fixture proves the difference and a persistent-entry fixture still
+exhausts the same retries and fails visibly. This is not a global wall-clock
+cleanup timeout; nested traversal and filesystem I/O also take time.
+
+Hosted branch run `37212219164` completed all 128 visual cases but failed during
+profile removal with `ENOTEMPTY`, after the owned browser had exited and closed.
+The corresponding PR run `37212222319` passed all eight jobs. Both results are
+retained: a passing run does not erase the failed cleanup. The precise writer
+that left the entry is unproved; the correction addresses the reproduced
+filesystem mechanism, not a claimed Chrome root cause. The corrected revision
+requires separate exact-head hosted qualification.
 
 The filtered historical Pulse CI failure (run `37099954648`, October 3, 2026)
 shows Chrome alive with an emitted endpoint while HTTP readiness timed out.
