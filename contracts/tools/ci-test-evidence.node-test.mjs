@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, mkdir, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { childEnvironment, coverageRatchetFromConfig, execute, runCiEvidence, summarizeCoverage, summarizePreviewTests,
   summarizeVitest } from '../../scripts/ci-test-evidence.mjs';
 
@@ -177,6 +177,32 @@ test('source mutation fails a nominally successful test execution', async t => {
   assert.equal(exit, 1);
   assert.equal(JSON.parse(await readFile(join(outputDir, 'execution.json'), 'utf8')).sourceChangedDuringExecution, true);
 });
+
+for (const code of [0, 7]) {
+  test(`a failed final source capture durably fails the receipt and preserves CLI exit ${code}`, async t => {
+    const { outputDir } = await fixture(t); let captures = 0, scratch;
+    const exit = await runCiEvidence({ profile: 'coverage', outputDir,
+      source: async () => {
+        if (captures++ === 0) return source();
+        throw new Error('SECRET-NOT-RETAINED /private/fixture-path final identity failure');
+      }, run: async command => {
+        scratch = dirname(command.find(value => value.startsWith('--outputFile=')).slice('--outputFile='.length));
+        await coverageFiles(command); return { code, durationMs: 1, output: '' };
+      } });
+    assert.equal(exit, code === 0 ? 1 : code);
+    assert.equal(captures, 2);
+    const receiptText = await readFile(join(outputDir, 'execution.json'), 'utf8');
+    const receipt = JSON.parse(receiptText);
+    assert.equal(receipt.exitCode, exit);
+    assert.equal(receipt.commands[0].cliExitCode, code);
+    assert.equal(receipt.commands[0].evidenceValid, true);
+    assert.equal(receipt.sourceAfterError, 'Final exact-source identity could not be captured.');
+    assert.equal(receipt.sourceAfter, undefined);
+    assert.doesNotMatch(receiptText, /SECRET|private|fixture-path/);
+    assert.deepEqual((await readdir(outputDir)).sort(), ['coverage-summary.json', 'execution.json', 'test-summary.json']);
+    await assert.rejects(stat(scratch), error => error.code === 'ENOENT');
+  });
+}
 
 test('existing evidence is not overwritten and invalid profiles are rejected before execution', async t => {
   const { outputDir } = await fixture(t);

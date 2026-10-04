@@ -192,9 +192,17 @@ export async function runCiEvidence({ profile, outputDir, repository = root, env
       // Preview packaging CLIs still run after a test failure, preserving each
       // independent CLI's evidence while the overall job stays failed.
     }
-    receipt.sourceAfter = await source(repository);
-    if (receipt.source.trackedInputInventorySha256 !== receipt.sourceAfter.trackedInputInventorySha256) {
-      receipt.sourceChangedDuringExecution = true;
+    try {
+      receipt.sourceAfter = await source(repository);
+      if (receipt.source.trackedInputInventorySha256 !== receipt.sourceAfter.trackedInputInventorySha256) {
+        receipt.sourceChangedDuringExecution = true;
+        if (receipt.exitCode === 0) receipt.exitCode = 1;
+      }
+    } catch {
+      // An earlier command receipt may already say exitCode=0. Persist the
+      // failed identity check before returning; never retain raw Git/fs errors
+      // or replace a CLI's existing nonzero exit with this evidence failure.
+      receipt.sourceAfterError = 'Final exact-source identity could not be captured.';
       if (receipt.exitCode === 0) receipt.exitCode = 1;
     }
     await writeReport('execution.json', receipt);
