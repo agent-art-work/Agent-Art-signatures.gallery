@@ -1,7 +1,7 @@
 import { encodeAbiParameters, keccak256, type Hex } from "viem";
 import { MBTI_TYPES, type MBTI } from "../algorithmV2/index.js";
 export { RENDERER_VERSION, MBTI_TYPES, type MBTI } from "../algorithmV2/index.js";
-export { RENDERER_VERSION as LEGACY_RENDERER_VERSION } from "../v1/renderer.js";
+export { RENDERER_VERSION as LEGACY_RENDERER_VERSION } from "../v1/rendererVersion.js";
 
 export const HANDLE_DOMAIN = "signatures.gallery/open-handle/v1";
 export const LEGACY_MAPPING_VERSION = "mbti-seed-v1";

@@ -4,6 +4,7 @@ import { mintHandleDraft } from '../src/openMint/mintHandleDraft.ts';
 import { bindHandleValidation } from '../src/openMint/fieldValidation.ts';
 import { renderInlineFeedback } from '../src/openMint/inlineFeedback.ts';
 import { bindDocumentPrompts } from '../src/openMint/promptCopy.ts';
+import { bindPreviewWalletNotice } from '../src/openMint/previewWallet.ts';
 import { SEPOLIA_READ_BUDGETS } from './pulse-sepolia-read-budgets.mjs';
 import { sitePhasePresentation } from '../src/openMint/sitePhase.ts';
 
@@ -45,8 +46,9 @@ export function previewExplorerClient(restoreHandleDraft, phasePresentation) {
   return true;
 }
 
-export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, renderInlineFeedback, readBudgets, phasePresentation, bindExplorer, bindPrompts) {
+export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, renderInlineFeedback, readBudgets, phasePresentation, bindExplorer, bindPrompts, bindWalletNotice) {
   const $ = q => document.querySelector(q);
+  bindWalletNotice(document);
   bindPrompts(document, typeof navigator === 'undefined' ? undefined : navigator.clipboard, renderInlineFeedback);
   bindHandleValidation(document);
   // Exploration never restores a session, discovers a wallet, checks a saved
@@ -835,4 +837,4 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
   }
   window.addEventListener('pagehide', () => { statusGeneration++; clearTimeout(statusTimer); cancelOptionsRetry(); });
 }
-export const SEPOLIA_TEST_CLIENT = `(${sepoliaTestClient.toString()})(${mintHandleDraft.toString()}, ${bindHandleValidation.toString()}, ${renderInlineFeedback.toString()}, ${JSON.stringify(SEPOLIA_READ_BUDGETS)}, ${sitePhasePresentation.toString()}, ${previewExplorerClient.toString()}, ${bindDocumentPrompts.toString()});`;
+export const SEPOLIA_TEST_CLIENT = `(${sepoliaTestClient.toString()})(${mintHandleDraft.toString()}, ${bindHandleValidation.toString()}, ${renderInlineFeedback.toString()}, ${JSON.stringify(SEPOLIA_READ_BUDGETS)}, ${sitePhasePresentation.toString()}, ${previewExplorerClient.toString()}, ${bindDocumentPrompts.toString()}, ${bindPreviewWalletNotice.toString()});`;

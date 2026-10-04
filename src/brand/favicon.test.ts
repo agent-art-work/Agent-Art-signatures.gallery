@@ -2,43 +2,63 @@ import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import { homePage, signInRequiredPage } from "../v1/pages.js";
-import { formalSignatureRenderer } from "../v1/renderer.js";
+import { renderSignatureSvg, RENDERER_VERSION } from "../algorithmV2/index.js";
 import { sloganStudyPage } from "./sloganStudy.js";
 import { FAVICON_CSP, FAVICON_LINK, FAVICON_MANIFEST, FAVICON_SVG, FAVICON_URL, FAVICON_VERSION } from "./favicon.js";
-import { FAVICON_SHAPE_LOCK } from "./faviconShapeLock.js";
-import { captureSignatureComposition, restoreSignatureCompositionSnapshot } from "./signatureComposition.js";
+import { FAVICON_SHAPE_LOCK, SIGNATURE_ICON_SHAPE_LOCKS } from "./faviconShapeLock.js";
+import { signatureIcon, type SignatureIconLetter } from "./signatureIcon.js";
+import { pathInkBounds } from "./sloganStudyBounds.js";
+
+const letters = ["S", "s"] as const;
+const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
 
 describe("renderer-derived signature favicon", () => {
-  it("locks the exact capital S from the signature renderer without lowercasing or redrawing", () => {
-    const capture = captureSignatureComposition({ id: FAVICON_SHAPE_LOCK.id, displayText: "S", gr0kRaw: 22 }, formalSignatureRenderer);
-    const restored = restoreSignatureCompositionSnapshot(FAVICON_SHAPE_LOCK);
-    expect(capture.tokens).toEqual(restored.tokens);
-    expect(capture.glyphs).toEqual(restored.glyphs);
-    expect(capture.proposedShapeLock).toEqual(restored.verifiedShapeLock);
-    expect(FAVICON_MANIFEST).toMatchObject({
-      rendererInput: "S",
-      rendererVersion: capture.rendererVersion,
-      rendererApproved: capture.rendererApproved,
-      gr0kRaw: 22,
-      sourceSvgSha256: capture.glyphs[0].svgSha256,
-      shapeSha256: capture.glyphs[0].shapeSha256,
+  it.each(letters)("locks exact %s from the v2 renderer without case conversion or redrawing", letter => {
+    const shape = SIGNATURE_ICON_SHAPE_LOCKS[letter];
+    const source = renderSignatureSvg(letter, shape.mbti);
+    const paths = source.match(/<path\b[^>]*\/>/g);
+    expect(paths).toHaveLength(1);
+    expect(shape.rendererInput).toBe(letter);
+    expect(shape.mbti).toBe("ENFP");
+    expect(shape.rendererVersion).toBe(RENDERER_VERSION);
+    expect(shape.sourceSvgSha256).toBe(sha256(source));
+    expect(shape.sourcePathElementSha256).toBe(sha256(paths![0]!));
+    expect(shape.pathSha256).toBe(sha256(shape.d));
+    const icon = signatureIcon(letter);
+    expect(icon.svg.match(/<path /g)).toHaveLength(1);
+    expect(icon.svg).toContain(paths![0]!);
+    expect(icon.manifest).toMatchObject({
+      rendererInput: letter, rendererVersion: RENDERER_VERSION, mbti: "ENFP",
+      purpose: "branding-only", sourceSvgSha256: shape.sourceSvgSha256,
+      sourcePathElementSha256: shape.sourcePathElementSha256, pathSha256: shape.pathSha256,
+      canonicalViewBox: [0, 0, 420, 420],
     });
-    expect(FAVICON_SVG.match(/<path /g)).toHaveLength(1);
-    expect(FAVICON_SVG).toContain(`d="${capture.glyphs[0].drawing.d}"`);
-    expect(FAVICON_SVG).toContain('transform="translate(0 0) scale(1)"');
-    const lowercase = captureSignatureComposition({ id: "lowercase-comparison", displayText: "s", gr0kRaw: 22 }, formalSignatureRenderer);
-    expect(capture.glyphs[0].drawing.d).not.toBe(lowercase.glyphs[0].drawing.d);
+    expect(icon.manifest).not.toHaveProperty("gr0kRaw");
   });
 
-  it("uses a square paper frame and the artwork palette unchanged in both themes", () => {
-    expect(FAVICON_SVG).toContain('viewBox="160 141.5 100 100"');
-    expect(FAVICON_SVG).toContain('width="64" height="64"');
-    expect(FAVICON_SVG).toContain('color="#000000"');
-    expect(FAVICON_SVG).toContain('<rect x="160" y="141.5" width="100" height="100" fill="#f4e7c7"/>');
-    expect(FAVICON_SVG).toContain('fill="currentColor" stroke="none"');
-    expect(FAVICON_MANIFEST.background).toBe("#f4e7c7");
-    expect(FAVICON_MANIFEST.ink).toBe("#000000");
-    expect(FAVICON_SVG).not.toMatch(/<style|<text|<image|<script|href=|prefers-color-scheme/);
+  it("selects capital S, preserving lowercase s as genuinely different algorithm output", () => {
+    expect(FAVICON_SHAPE_LOCK).toBe(SIGNATURE_ICON_SHAPE_LOCKS.S);
+    expect(FAVICON_SVG).toBe(signatureIcon("S").svg);
+    expect(FAVICON_MANIFEST).toEqual(signatureIcon("S").manifest);
+    expect(SIGNATURE_ICON_SHAPE_LOCKS.S.d).not.toBe(SIGNATURE_ICON_SHAPE_LOCKS.s.d);
+    expect(() => signatureIcon("SS" as SignatureIconLetter)).toThrow(RangeError);
+  });
+
+  it.each(letters)("centers %s on an undistorted square with equal paper margins", letter => {
+    const { svg, manifest } = signatureIcon(letter);
+    const [x, y, width, height] = manifest.viewBox;
+    const bounds = pathInkBounds(SIGNATURE_ICON_SHAPE_LOCKS[letter].d);
+    expect(width).toBe(height);
+    expect((bounds.minX + bounds.maxX) / 2).toBeCloseTo(x + width / 2, 5);
+    expect((bounds.minY + bounds.maxY) / 2).toBeCloseTo(y + height / 2, 5);
+    expect(Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) / width).toBeCloseTo(.78, 6);
+    expect(svg).toContain(`viewBox="${manifest.viewBox.join(" ")}"`);
+    expect(svg).toContain('width="64" height="64"');
+    expect(svg).toContain(`<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="#f4e7c7"/>`);
+    expect(svg).toContain('fill="#000000" stroke="none"');
+    expect(manifest.background).toBe("#f4e7c7");
+    expect(manifest.ink).toBe("#000000");
+    expect(svg).not.toMatch(/transform=|<style|<text|<image|<script|href=|prefers-color-scheme/);
   });
 
   it("uses a content-versioned URL consistently across product and study pages", () => {
@@ -55,8 +75,8 @@ describe("renderer-derived signature favicon", () => {
     expect(FAVICON_CSP).toBe("default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
   });
 
-  it.each([16, 32, 64])("renders visible ink and opaque paper margins without clipping at %dpx", async size => {
-    const { data, info } = await sharp(Buffer.from(FAVICON_SVG)).resize(size, size).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  it.each(letters.flatMap(letter => [16, 32, 64].map(size => ({ letter, size }))))("renders $letter with opaque margins without clipping at $size px", async ({ letter, size }) => {
+    const { data, info } = await sharp(Buffer.from(signatureIcon(letter).svg)).resize(size, size).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     expect(info.channels).toBe(4);
     let ink = 0;
     for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
@@ -66,6 +86,6 @@ describe("renderer-derived signature favicon", () => {
       if (x === 0 || x === size - 1 || y === 0 || y === size - 1) expect([...data.subarray(offset, offset + 3)]).toEqual([244, 231, 199]);
     }
     expect(ink).toBeGreaterThan(size * size * .015);
-    expect(ink).toBeLessThan(size * size * .2);
+    expect(ink).toBeLessThan(size * size * .45);
   });
 });

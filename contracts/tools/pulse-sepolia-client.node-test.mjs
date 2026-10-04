@@ -128,6 +128,36 @@ test('prelaunch collection without wallet controls stays anonymous and does not 
   assert.equal(nodes.get('[data-collection-page]').hidden, false);
 });
 
+test('public prelaunch wallet notice binds before viewing early return, with no provider, session or storage access', () => {
+  for (const surface of ['home', 'about', 'preview', 'variations', 'collection', 'MBTI gallery']) {
+    const listeners = new Map(), nodes = new Map(), calls = [];
+    const summary = { focus() { calls.push('focus'); } };
+    const inside = {}, outside = {};
+    const notice = { open: false, dataset: {}, querySelector(selector) { return selector === 'summary' ? summary : null; },
+      contains(target) { return target === summary || target === inside || target === notice; } };
+    nodes.set('[data-preview-wallet-notice]', notice);
+    if (surface === 'about') nodes.set('[data-about-reading]', element());
+    const forbidden = () => { throw Error(`${surface}: preview wallet information must stay anonymous`); };
+    runInNewContext(SEPOLIA_TEST_CLIENT, {
+      document: { querySelector: selector => nodes.get(selector), addEventListener(type, listener) { listeners.set(type, listener); } },
+      window: new Proxy({}, { get: forbidden }), fetch: forbidden,
+      localStorage: new Proxy({}, { get: forbidden }), sessionStorage: new Proxy({}, { get: forbidden }),
+    });
+    assert.equal(notice.dataset.previewWalletBound, 'true');
+    assert.equal(notice.open, false);
+    notice.open = true;
+    listeners.get('pointerdown')({ target: inside });
+    assert.equal(notice.open, true);
+    listeners.get('keydown')({ key: 'Escape', preventDefault() { calls.push('prevent'); } });
+    assert.equal(notice.open, false);
+    assert.deepEqual(calls, ['focus', 'prevent']);
+    notice.open = true;
+    listeners.get('pointerdown')({ target: outside });
+    assert.equal(notice.open, false);
+    assert.deepEqual(calls, ['focus', 'prevent']);
+  }
+});
+
 function element(tag = 'p') {
   let text = '', children = [];
   const node = { tag, handlers: {}, dataset: {}, attributes: {}, hidden: false, className: '', disabled: false, value: '',

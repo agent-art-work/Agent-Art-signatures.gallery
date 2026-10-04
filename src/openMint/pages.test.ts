@@ -62,7 +62,9 @@ it('pre-launch mint and exploration omit every wallet and mint-process capabilit
     expect(page).toContain('Minting coming soon.');
     expect(page).toContain('data-explorer-mint-link hidden');
     expect(page).toContain(HOME_LINK);
-    expect(page).toContain('class="collection-shortcut" href="/me"');
+    expect(page).toContain('data-preview-wallet-notice');
+    expect(page).toContain('aria-label="Wallet information"');
+    expect(page).not.toContain('class="collection-shortcut" href="/me"');
     expect(page).not.toMatch(/data-mint-process|data-mint-entry|data-assessment-request|data-wallet-controls|data-connect-wallet|data-pulse-options|data-request-submit|name="pulse-|data-mint-recovery|RPC failed/);
   }
 });

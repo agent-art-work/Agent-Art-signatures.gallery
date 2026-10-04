@@ -7,7 +7,7 @@ import { ARTIST_NAME, ARTIST_X_URL } from "../brand/artist.js";
 import { compactHandleLink, handleLink, handleVariationsPath } from "./handleLink.js";
 import { SLOGAN_MBTI_HERO_MANIFEST, SLOGAN_MBTI_HERO_SVG, SLOGAN_MBTI_HERO_CSS, SLOGAN_MBTI_HERO_SCRIPT_URL } from "../brand/sloganMbtiHero.js";
 import { mintUiState } from "./mintUiState.js";
-import { assessmentFailureText } from "./clientScript.js";
+import { assessmentFailureText } from "./assessmentFailureText.js";
 import { SLOGAN_TOOLTIP_SCRIPT_URL } from "../brand/sloganTooltipScript.js";
 import { isMbti, MBTI_TYPES, preservedHandle, RENDERER_VERSION, type MBTI } from "./identity.js";
 import type { PublicPreviewState } from "./previewState.js";
@@ -16,6 +16,7 @@ import { provenanceBody } from "./provenance.js";
 import { canRevealMint, type MintConfidence } from "./revealPolicy.js";
 import { sitePhasePresentation, type SiteLaunchMode, type SiteSaleStatus } from "./sitePhase.js";
 import { aboutReadingPrompt } from "./aboutReadingPrompt.js";
+import { walletShortcut } from "./previewWallet.js";
 
 export interface OpenMintPageOptions {
   csrfToken?: string;
@@ -284,9 +285,10 @@ function observationWarning(options: OpenMintPageOptions, body: string): string 
 function layout(title: string, body: string, options: OpenMintPageOptions, description = "An X handle, an artist-defined system, and Grok’s reading become a signature."): string {
   const sloganScript = body.includes('id="slogan-tooltip"') ? `<script src="${SLOGAN_TOOLTIP_SCRIPT_URL}" defer></script><script src="${SLOGAN_MBTI_HERO_SCRIPT_URL}" defer></script>` : "";
   const dev = options.development;
+  const navigation = walletShortcut(options.siteLaunchMode === "prelaunch" || options.pulseSaleStatus?.phase === "prelaunch");
   body = body.replace(OBSERVATION_WARNING_SLOT, observationWarning(options, body));
   if (options.assessmentSource === "sample") description = "An X handle and a personality become a signature.";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>${e(title === "Signatures Gallery" ? title : `${title} · Signatures Gallery`)}</title><meta name="description" content="${e(description)}"><link rel="alternate" type="application/json" href="/agent-index.json" title="Agent documentation">${FAVICON_LINK}${SITE_FONT_PRELOAD}<link rel="stylesheet" href="${e(safeUrl(options.stylesheetUrl, SITE_CSS_URL))}"><script src="${e(safeUrl(options.clientScriptUrl, "/assets/open-mint.js"))}" defer></script>${sloganScript}</head><body class="book-page open-mint" data-open-mint${options.durableWalletSubmission ? ' data-durable-wallet-submission="true"' : ""} data-wallet-verified="${options.walletVerified ? "true" : "false"}" data-chain-id="${e(options.chainId)}" data-contract="${e(options.contract)}"${dev?.fixture ? ' data-fixture="true"' : ""}${dev?.localChain ? ' data-local-chain="true"' : ""}><main>${HOME_LINK}<a class="collection-shortcut" href="/me" aria-label="My Collection" title="My Collection"><span class="collection-shortcut-dot" aria-hidden="true"></span></a>${body}</main>${siteFooter()}</body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>${e(title === "Signatures Gallery" ? title : `${title} · Signatures Gallery`)}</title><meta name="description" content="${e(description)}"><link rel="alternate" type="application/json" href="/agent-index.json" title="Agent documentation">${FAVICON_LINK}${SITE_FONT_PRELOAD}<link rel="stylesheet" href="${e(safeUrl(options.stylesheetUrl, SITE_CSS_URL))}"><script src="${e(safeUrl(options.clientScriptUrl, "/assets/open-mint.js"))}" defer></script>${sloganScript}</head><body class="book-page open-mint" data-open-mint${options.durableWalletSubmission ? ' data-durable-wallet-submission="true"' : ""} data-wallet-verified="${options.walletVerified ? "true" : "false"}" data-chain-id="${e(options.chainId)}" data-contract="${e(options.contract)}"${dev?.fixture ? ' data-fixture="true"' : ""}${dev?.localChain ? ' data-local-chain="true"' : ""}><main>${HOME_LINK}${navigation}${body}</main>${siteFooter()}</body></html>`;
 }
 
 function walletControls(options: OpenMintPageOptions, proved = options.walletVerified, compact = false): string {

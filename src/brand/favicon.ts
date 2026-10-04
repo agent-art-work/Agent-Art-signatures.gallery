@@ -1,38 +1,11 @@
 import { createHash } from "node:crypto";
-import { FORMAL_BACKGROUND, FORMAL_INK } from "../algorithmV1/index.js";
-import { FAVICON_SHAPE_LOCK } from "./faviconShapeLock.js";
-import { renderSignatureCompositionSvg, restoreSignatureCompositionSnapshot, type SignatureCompositionPresentation } from "./signatureComposition.js";
+import { signatureIcon } from "./signatureIcon.js";
 
-/** The same checked shape boundary as the slogan: no runtime rendering,
- * lowercasing, redrawing, or non-uniform scaling. This is not a claimed work. */
-const composition = restoreSignatureCompositionSnapshot(FAVICON_SHAPE_LOCK);
-const presentation = {
-  viewBox: [160, 141.5, 100, 100],
-  width: 64,
-  height: 64,
-  placements: [{ tokenIndex: 0, translateX: 0, translateY: 0, scale: 1 }],
-} as const satisfies SignatureCompositionPresentation;
-// Frozen Signature Algorithm v1.0.0 artwork palette.
-const background = FORMAL_BACKGROUND;
-const ink = FORMAL_INK;
-const [x, y, width, height] = presentation.viewBox;
-const composed = renderSignatureCompositionSvg(composition, presentation);
-
-export const FAVICON_SVG = composed
-  .replace('fill="none" aria-hidden="true" focusable="false"', `color="${ink}"`)
-  .replace(">", `><title>Signatures Gallery</title><rect x="${x}" y="${y}" width="${width}" height="${height}" fill="${background}"/>`);
-
-export const FAVICON_MANIFEST = Object.freeze({
-  rendererInput: composition.tokens[0].rendererInput,
-  rendererVersion: composition.rendererVersion,
-  rendererApproved: composition.rendererApproved,
-  gr0kRaw: composition.gr0kRaw,
-  sourceSvgSha256: composition.glyphs[0].svgSha256,
-  shapeSha256: composition.glyphs[0].shapeSha256,
-  viewBox: presentation.viewBox,
-  background,
-  ink,
-});
+// Capital S has the fuller silhouette at favicon sizes. Lowercase s remains
+// available in the comparison page; both use exact algorithm-derived outlines.
+const icon = signatureIcon("S");
+export const FAVICON_SVG = icon.svg;
+export const FAVICON_MANIFEST = icon.manifest;
 
 // Artwork colors remain the same in both themes; no embedded styles are needed.
 export const FAVICON_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'";

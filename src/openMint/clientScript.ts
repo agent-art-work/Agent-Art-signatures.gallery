@@ -6,17 +6,10 @@ import { mintHandleDraft } from "./mintHandleDraft.js";
 import { bindHandleValidation } from "./fieldValidation.js";
 import { renderInlineFeedback } from "./inlineFeedback.js";
 import { bindDocumentPrompts } from "./promptCopy.js";
+import { bindPreviewWalletNotice } from "./previewWallet.js";
+import { assessmentFailureText } from "./assessmentFailureText.js";
 
-/** Shared, bounded failure copy for the server-rendered page and live polling. */
-export function assessmentFailureText(input: { error?: unknown; errorCategory?: unknown; diagnosticReference?: unknown }): string {
-  let text = typeof input.error === "string" && input.error ? input.error.slice(0, 1000) : "The assessment could not be completed. No mint transaction was submitted.";
-  if (input.errorCategory === "assessment-abstained") text = "Grok could not choose a signature from the available evidence. No mint was submitted. This result will not be retried automatically.";
-  if (input.errorCategory === "assessment-blocked") text = "This assessment needs operator review before it can continue. No new assessment or mint will be requested automatically.";
-  if (input.errorCategory === "preparation-interrupted") text = "Your assessment was saved, but artwork preparation needs operator review. No new assessment will be requested automatically.";
-  const reference = input.diagnosticReference;
-  if (typeof reference === "string" && /^(?:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|legacy-[a-f0-9]{24})$/.test(reference)) text += ` Reference: ${reference}.`;
-  return text;
-}
+export { assessmentFailureText } from "./assessmentFailureText.js";
 
 /** Explicit wallet-gated mint intent; early reveal requires verified inclusion. */
 export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() => {
@@ -28,14 +21,24 @@ export const OPEN_MINT_CLIENT_SCRIPT = REVEAL_MONITOR_SCRIPT + String.raw`(() =>
   const bindHandleValidation = ${bindHandleValidation.toString()};
   const renderInlineFeedback = ${renderInlineFeedback.toString()};
   const bindDocumentPrompts = ${bindDocumentPrompts.toString()};
+  const bindPreviewWalletNotice = ${bindPreviewWalletNotice.toString()};
   if (window.__openMintBound) return;
   window.__openMintBound = true;
   const one = (selector) => document.querySelector(selector);
   const all = (selector) => document.querySelectorAll(selector);
   const root = one('[data-open-mint]');
+  bindPreviewWalletNotice(document);
   if (!root || one('[data-reveal-monitor]')) return;
   bindDocumentPrompts(document, typeof navigator === 'undefined' ? undefined : navigator.clipboard, renderInlineFeedback);
   if (one('[data-about-reading]')) return;
+  // Preview navigation is informational. Anonymous prelaunch pages must not
+  // discover providers or restore sessions just because a wallet dot exists.
+  // Existing collection controls and submitted-request recovery are unchanged.
+  if (one('[data-preview-wallet-notice]') && !one('[data-wallet-label]') && !one('[data-assessment-code]') && !one('[data-assessment-request]')) {
+    bindHandleValidation(document);
+    mintHandleDraft(one('input[name="handle"]'));
+    return;
+  }
   const candidate = one('[data-assessment-code]');
   const page = /^[A-Za-z0-9_-]{43}$/.test(candidate?.dataset.assessmentCode || '') ? candidate : null;
   const code = page?.dataset.assessmentCode || '';
