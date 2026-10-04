@@ -62,7 +62,9 @@ it('pre-launch mint and exploration omit every wallet and mint-process capabilit
     expect(page).toContain('Minting coming soon.');
     expect(page).toContain('data-explorer-mint-link hidden');
     expect(page).toContain(HOME_LINK);
-    expect(page).toContain('class="collection-shortcut" href="/me"');
+    expect(page).toContain('data-preview-wallet-notice');
+    expect(page).toContain('aria-label="Wallet information"');
+    expect(page).not.toContain('class="collection-shortcut" href="/me"');
     expect(page).not.toMatch(/data-mint-process|data-mint-entry|data-assessment-request|data-wallet-controls|data-connect-wallet|data-pulse-options|data-request-submit|name="pulse-|data-mint-recovery|RPC failed/);
   }
 });
@@ -462,8 +464,8 @@ describe("open mint pages", () => {
     expect(content).toContain("data-copy-handoff");
     expect(content).toContain('href="https://grok.com" target="_blank" rel="noopener noreferrer"');
     expect(content).toContain('data-copy-feedback role="status" aria-live="polite"');
-    expect(content).toContain('<p>Previews are for exploration. Minting uses a fresh Grok assessment.</p>');
-    expect(html.match(/Previews are for exploration\. Minting uses a fresh Grok assessment\./g)).toHaveLength(1);
+    expect(content).toContain('<p>Previews are for exploration. Minting uses the backend’s own assessment, not this preview.</p>');
+    expect(html.match(/Previews are for exploration\. Minting uses the backend’s own assessment, not this preview\./g)).toHaveLength(1);
   });
 
   it("omits the pause button while retaining a focusable slogan for the tooltip and motion pause", () => {

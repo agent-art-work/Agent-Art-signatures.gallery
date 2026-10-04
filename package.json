@@ -49,6 +49,8 @@
     "pulse:sepolia:relay:migrate": "node scripts/pulse-sepolia-relay-migrate.mjs",
     "pulse:sepolia:safety:review": "node --import tsx scripts/pulse-sepolia-safety-review.mjs",
     "pulse:sepolia:fe": "node --import tsx scripts/pulse-sepolia-fe.mjs",
+    "preview:build": "npm run renderer:verify && node --import tsx scripts/build-preview-cloudflare.mjs",
+    "test:preview": "vitest run src/preview && node --import tsx --test contracts/tools/preview-cloudflare.node-test.mjs",
     "test:generative:deployment": "node --test contracts/tools/generative-deployment.node-test.mjs",
     "test:generative:deployment:coverage": "node --experimental-test-coverage --test-coverage-include=contracts/tools/generative-deployment.mjs --test-coverage-lines=100 --test-coverage-branches=95 --test-coverage-functions=100 --test contracts/tools/generative-deployment.node-test.mjs",
     "generative:deployment:rehearsal": "node scripts/generative-deployment-rehearsal.mjs",
@@ -88,6 +90,8 @@
     "legacy:dev": "tsx src/legacyMain.ts",
     "design:fonts": "node --import tsx scripts/font-study.mjs",
     "design:slogan": "node --import tsx scripts/signing-slogan-study.mjs",
+    "design:icons": "node --import tsx scripts/site-icon-study.mjs",
+    "test:site-icons": "vitest run src/brand/favicon.test.ts src/brand/siteIconMbtiStudy.test.ts && node --import tsx --test contracts/tools/site-icon-study.node-test.mjs",
     "start": "node dist/main.js",
     "pretest": "npm run renderer:verify",
     "test": "vitest run",
@@ -117,10 +121,12 @@
     "@types/pg": "^8.23.1",
     "@vitest/coverage-v8": "^2.1.9",
     "esbuild": "0.21.5",
+    "miniflare": "5.20261001.0-alpha",
     "solc": "^0.8.30",
     "tsx": "^4.23.13",
     "typescript": "^5.6.3",
-    "vitest": "^2.1.4"
+    "vitest": "^2.1.4",
+    "wrangler": "4.147.0"
   },
   "dependencies": {
     "@fontsource-variable/caveat": "5.3.0",

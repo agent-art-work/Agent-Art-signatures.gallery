@@ -13,6 +13,15 @@ function rules(css: string): { selector: string; declarations: string }[] {
     .map(([, selector, declarations]) => ({ selector: selector!.trim(), declarations: declarations! }));
 }
 
+function sharedHandoffDeclarations(currentRules: ReturnType<typeof rules>, suffix: string, aboutSelector = `.open-mint .about-sheet .open-handoff-content${suffix}`): string {
+  const homeSelector = `.open-mint .home-grid .open-handoff-content${suffix}`;
+  const matching = currentRules.filter(rule => rule.selector.split(",").map(selector => selector.trim()).includes(homeSelector));
+  expect(matching).toHaveLength(1);
+  // Homepage and About share one declaration block, not independently drifting rules.
+  expect(matching[0]!.selector.split(",").map(selector => selector.trim())).toEqual([homeSelector, aboutSelector]);
+  return matching[0]!.declarations;
+}
+
 describe("home gallery width", () => {
   it("enlarges only the current homepage slogan while preserving responsive width and intro size", () => {
     const currentRules = rules(OPEN_MINT_CSS);
@@ -92,9 +101,9 @@ describe("home gallery width", () => {
 
   it("separates expanded preview instructions while retaining a visible keyboard focus for the disclosure", () => {
     const currentRules = rules(OPEN_MINT_CSS);
-    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff-content")?.declarations)
+    expect(sharedHandoffDeclarations(currentRules, ""))
       .toBe("display:grid;gap:1.5rem;margin-top:1.5rem;padding-top:1.5rem;border-top:1px solid var(--line)");
-    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff-content>p")?.declarations)
+    expect(sharedHandoffDeclarations(currentRules, ">p"))
       .toBe("margin:0");
     const focus = currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff>summary:focus-visible")?.declarations;
     expect(focus).toContain("outline:2px solid var(--blue)");
@@ -106,17 +115,18 @@ describe("home gallery width", () => {
   it("gives the expanded Grok prompt and wrapped actions breathing room without altering shared controls", () => {
     const currentRules = rules(OPEN_MINT_CSS);
     // A grid gap survives the shared field and disclosure action margin resets.
-    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff-content")?.declarations)
+    expect(sharedHandoffDeclarations(currentRules, ""))
       .toContain("display:grid;gap:1.5rem");
-    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff-content>.grok-prompt")?.declarations)
+    expect(sharedHandoffDeclarations(currentRules, ">.grok-prompt", ".open-mint .about-sheet .grok-prompt"))
       .toBe("min-height:14rem;margin:0;line-height:1.6");
-    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff-content>.auth-actions")?.declarations)
+    expect(sharedHandoffDeclarations(currentRules, ">.auth-actions"))
       .toBe("margin:0;gap:1rem");
     // An empty live region must not add a spare grid row; populated feedback remains visible.
-    expect(currentRules.find(rule => rule.selector === ".open-mint .home-grid .open-handoff-content>.open-feedback:empty")?.declarations)
+    expect(sharedHandoffDeclarations(currentRules, ">.open-feedback:empty"))
       .toBe("display:none");
     expect(currentRules.filter(rule => rule.selector.includes(".open-handoff-content"))
-      .every(rule => rule.selector.startsWith(".open-mint .home-grid "))).toBe(true);
+      .flatMap(rule => rule.selector.split(",").map(selector => selector.trim()))
+      .every(selector => selector.startsWith(".open-mint .home-grid ") || selector.startsWith(".open-mint .about-sheet "))).toBe(true);
   });
 
   it("lowers only the current homepage slogan by 24px while preserving its padded height and 896px width", () => {

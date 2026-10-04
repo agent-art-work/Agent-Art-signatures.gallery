@@ -1,44 +1,25 @@
-import type { SignatureCompositionSnapshot } from "./signatureComposition.js";
-
-/** Exact authored text at integer seed 22, captured from the frozen formal
- * Signature Algorithm v1.0.0. Framing is presentation only; geometry is locked. */
-export const FAVICON_SHAPE_LOCK = {
-  "schema": "signature-composition/2",
-  "id": "agent-art-favicon-s-v2",
-  "displayText": "S",
-  "rendererVersion": "sg-renderer-1.0.0",
-  "rendererApproved": true,
-  "gr0kRaw": 22,
-  "gr0kScale": 1,
-  "tokens": [
-    {
-      "tokenIndex": 0,
-      "displayWord": "S",
-      "rendererInput": "S",
-      "start": 0,
-      "end": 1
-    }
-  ],
-  "glyphs": [
-    {
-      "rendererInput": "S",
-      "firstDisplayWord": "S",
-      "width": 420,
-      "height": 420,
-      "svgSha256": "5daae273071ae1d618996145623a2cff5c3a4087737857e2c95550b5c78a19de",
-      "sourcePathElementSha256": "195f44304f7b58a0e053efefa98baad171ad0ffef12f6ade00a2b7b15c9d022b",
-      "shapeSha256": "44ae39147977c824a69d4600fe44e25387372f7706034054d82928afc02c37ed",
-      "drawing": {
-        "mode": "fill",
-        "d": "M170.97,196.61C261.36,216.29 184.12,174.02 245.97,196.61L249.03,182.95C161.50,171.98 252.96,201.30 174.03,182.95Z"
-      }
-    }
-  ],
-  "proposedShapeLock": {
-    "S": "44ae39147977c824a69d4600fe44e25387372f7706034054d82928afc02c37ed"
+/** Exact S/s paths captured from the frozen TypeScript Signature Renderer v2.0.0.
+ * ENFP is a fixed branding input, not a Grok assessment or a minted work.
+ * Source SVGs use the renderer's default 1080px size and canonical 420px viewBox. */
+export const SIGNATURE_ICON_SHAPE_LOCKS = {
+  S: {
+    rendererInput: "S",
+    mbti: "ENFP",
+    rendererVersion: "sg-renderer-2.0.0",
+    sourceSvgSha256: "38740f1a874b595fabb83227521827d42f60a5d5ce46b8365ce3f53a620be3c8",
+    sourcePathElementSha256: "55eff1a90fbe8de86b5e2a177fcc4415f56d7d09d358ac00b586aa7165dfc530",
+    pathSha256: "7aad53ae781b1201628b44a7a166e2c37a7fc4b16f680016f96eeaeb4402f48d",
+    d: "M165.02,184.80C191.83,290.93 252.28,97.40 240.02,184.80L254.98,183.62C227.92,83.10 168.75,275.28 179.98,183.62Z",
   },
-  "shapeLockSchema": "signature-shape-lock/1",
-  "verifiedShapeLock": {
-    "S": "44ae39147977c824a69d4600fe44e25387372f7706034054d82928afc02c37ed"
-  }
-} as const satisfies SignatureCompositionSnapshot;
+  s: {
+    rendererInput: "s",
+    mbti: "ENFP",
+    rendererVersion: "sg-renderer-2.0.0",
+    sourceSvgSha256: "13c5f25d8fdeb8ae9d834170eafd5c5c632dbfa3fc43def30d6f5b17168161fb",
+    sourcePathElementSha256: "4405e4aa298c5e3866e225a5ede246ee659c8fa01ad2cabb373e031c380b3d23",
+    pathSha256: "1b26e859946a50e954709a39e72f11c809e979d55b46cfe9002848c63479fbe7",
+    d: "M169.03,247.73C147.88,265.72 286.55,235.92 244.03,247.73L246.14,252.27C285.18,226.14 145.48,256.05 171.14,252.27Z",
+  },
+} as const;
+
+export const FAVICON_SHAPE_LOCK = SIGNATURE_ICON_SHAPE_LOCKS.S;

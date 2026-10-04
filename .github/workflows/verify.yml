@@ -48,8 +48,22 @@ jobs:
         run: npm run renderer:verify
       - name: Check types
         run: npm run typecheck
+      - name: Verify bounded synthetic CI evidence handling
+        run: node --test contracts/tools/ci-test-evidence.node-test.mjs
       - name: Test with coverage ratchet and real loopback HTTP
-        run: npm run test:coverage
+        run: node scripts/ci-test-evidence.mjs coverage --output-dir "$RUNNER_TEMP/verify-test-evidence"
+      - name: Retain exact-source coverage execution evidence even on failure
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verify-test-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/verify-test-evidence/execution.json
+            ${{ runner.temp }}/verify-test-evidence/test-summary.json
+            ${{ runner.temp }}/verify-test-evidence/coverage-summary.json
+          if-no-files-found: ignore
+          retention-days: 14
+          include-hidden-files: false
       - name: Build
         run: npm run build
       - name: Test contracts offline
@@ -101,6 +115,47 @@ jobs:
           done
           test "$ready" = 1 || { cat "$RUNNER_TEMP/open-mint-fixture.log"; exit 1; }
           OPEN_MINT_TEST_ORIGIN="$OPEN_MINT_ORIGIN" npm run open:rehearsal -- --execute-local-test-transactions
+
+  preview:
+    runs-on: ubuntu-24.04
+    # Independent public-preview acceptance: no Foundry, DB, provider account,
+    # credentials or deployment. workerd uses only owned loopback fixtures.
+    timeout-minutes: 10
+    env:
+      XAI_API_KEY: ''
+      OPEN_MINT_X_BEARER_TOKEN: ''
+      CLOUDFLARE_API_TOKEN: ''
+      CLOUDFLARE_API_KEY: ''
+      CLOUDFLARE_EMAIL: ''
+      CF_API_TOKEN: ''
+      WRANGLER_SEND_METRICS: 'false'
+      OPEN_MINT_TEST_HTTP: ''
+      OPEN_MINT_TEST_POSTGRES: ''
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install locked preview tooling
+        run: npm ci
+      - name: Verify synthetic CI evidence handling
+        run: node --test contracts/tools/ci-test-evidence.node-test.mjs
+      - name: Test preview, real workerd and both packaging CLI targets offline
+        run: node scripts/ci-test-evidence.mjs preview --output-dir "$RUNNER_TEMP/preview-test-evidence"
+      - name: Retain only exact-source synthetic preview execution evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: preview-test-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/preview-test-evidence/execution.json
+            ${{ runner.temp }}/preview-test-evidence/test-summary.json
+          if-no-files-found: ignore
+          retention-days: 14
+          include-hidden-files: false
 
   admission:
     runs-on: ubuntu-24.04

@@ -1,9 +1,32 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { startSepoliaFrontend } from '../../scripts/pulse-sepolia-fe.mjs';
+import { agentDocument, AGENT_DOCUMENT_PATHS } from '../../src/openMint/agentDocuments.ts';
 
 // Separate test servers reuse this port, not a previous closing keepalive socket.
 const fetch = (url, options = {}) => globalThis.fetch(url, { ...options, headers: { ...options.headers, connection: 'close' } });
+
+test('Agent documents remain anonymous and read-only in preview-only and outage frontends', async t => {
+  for (const mode of ['prelaunch', 'open']) {
+    const site = await startSepoliaFrontend({ port: 32004, siteLaunchMode: mode,
+      ...(mode === 'open' ? { collection: '0x' + '11'.repeat(20) } : {}) });
+    try {
+      for (const path of AGENT_DOCUMENT_PATHS) {
+        const response = await fetch(site.origin + path);
+        const expected = agentDocument(path, { publicOrigin: site.origin, generativeArtwork: true, assessmentSource: 'sample' });
+        assert.equal(response.status, 200); assert.equal(response.headers.get('content-type'), expected.contentType);
+        assert.equal(await response.text(), expected.body); assert.equal(response.headers.get('set-cookie'), null);
+        assert.match(response.headers.get('x-robots-tag'), /noindex/);
+        for (const method of ['POST', 'PUT', 'HEAD']) {
+          const denied = await fetch(site.origin + path, { method });
+          assert.equal(denied.status, 405); assert.equal(denied.headers.get('set-cookie'), null);
+        }
+        const query = await fetch(site.origin + path + '?handle=Alice');
+        assert.equal(query.status, 400); assert.equal(query.headers.get('set-cookie'), null);
+      }
+    } finally { await site.close(); }
+  }
+});
 
 test('read-only Sepolia FE serves the correct network and previews but refuses all wallet and mint APIs', async t => {
   const site = await startSepoliaFrontend({ port: 32004, collection: '0x88c435146A017338E48Abe3BEE2F11BcEab79cC2' });

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { SITE_FONT_CSS, SITE_FONT_FAMILY, SITE_FONT_WEIGHT, SITE_FONT_EMPHASIS_WEIGHT } from "./fonts.js";
 import { SITE_CONTROLS_CSS } from "./controlsCss.js";
+import { PREVIEW_WALLET_CSS } from "../openMint/previewWallet.js";
 
 export const SITE_CSS = `
 ${SITE_FONT_CSS}
@@ -78,6 +79,7 @@ body :is(strong,b){font-weight:var(--emphasis-font-weight)}
 @media(max-width:820px){.public-gallery-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.collection-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.mint-review{grid-template-columns:1fr}.gallery-shell{min-height:680px}.mint-art{min-height:0;padding:1.75rem 20px}.mint-art img{width:min(100%,340px)}}
 @media(max-width:600px){.book-page{--page-gutter:20px}.public-gallery-grid{grid-template-columns:minmax(0,1fr)}.collection-grid{grid-template-columns:minmax(0,1fr)}.slogan-signature-desktop{display:none}.slogan-signature-mobile{display:block}}
 ${SITE_CONTROLS_CSS}
+${PREVIEW_WALLET_CSS}
 `;
 
 // A normal page reload must not reuse CSS from an earlier build.

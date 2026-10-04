@@ -31,7 +31,9 @@ function fixture(pulse = false) {
 describe("isolated generative site pages", () => {
   it("does not advertise fee-free paid minting for the Pulse composition", async () => {
     const f = fixture(true), r = await f.call("/about");
-    expect(r.body).toContain("Paid mints follow Pulse pricing");
+    expect(r.body).toContain("Paid minting follows Pulse pricing afterward.");
+    expect(r.body).toContain("Each allowlist slot permits one free token.");
+    expect(r.body).toContain("Paid mints then follow Pulse pricing and require your explicit spending ceiling; unused payment is refunded. You pay network gas in either phase.");
     expect(r.body).not.toContain("No mint fee.");
     expect(f.runtime.sessions.session).not.toHaveBeenCalled();
   });

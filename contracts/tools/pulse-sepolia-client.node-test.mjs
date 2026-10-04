@@ -96,6 +96,27 @@ test('public home and previews bind optional Grok copy without session or wallet
   assert.equal(nodes.get('[data-copy-feedback]').textContent, 'Copied.');
 });
 
+test('About binds reading and preview copies independently without session or wallet discovery', async () => {
+  const copied = [], nodes = new Map();
+  for (const selector of ['[data-about-reading]', '[data-copy-about-reading]', '[data-about-reading-prompt]', '[data-about-reading-feedback]', '[data-copy-handoff]', '[data-handoff-prompt]', '[data-copy-feedback]']) nodes.set(selector, element());
+  nodes.get('[data-about-reading-prompt]').value = 'Read About the work';
+  nodes.get('[data-handoff-prompt]').value = 'Make a chat preview';
+  runInNewContext(SEPOLIA_TEST_CLIENT, {
+    document: { querySelector: selector => nodes.get(selector) },
+    window: { addEventListener() { throw Error('No About wallet listeners'); }, dispatchEvent() { throw Error('No About wallet discovery'); } },
+    fetch() { throw Error('No About session request'); },
+    sessionStorage: { getItem() { throw Error('No About mint recovery'); } },
+    navigator: { clipboard: { async writeText(text) { copied.push(text); } } },
+  });
+  await nodes.get('[data-copy-about-reading]').handlers.click();
+  assert.deepEqual(copied, ['Read About the work']);
+  assert.equal(nodes.get('[data-about-reading-feedback]').textContent, 'Copied.');
+  assert.equal(nodes.get('[data-copy-feedback]').textContent, '');
+  await nodes.get('[data-copy-handoff]').handlers.click();
+  assert.deepEqual(copied, ['Read About the work', 'Make a chat preview']);
+  assert.equal(nodes.get('[data-copy-feedback]').textContent, 'Copied.');
+});
+
 test('prelaunch collection without wallet controls stays anonymous and does not read saved mint recovery', () => {
   const nodes = new Map([['[data-collection-page]', element()], ['[data-collection-mint-cta]', element()]]);
   runInNewContext(SEPOLIA_TEST_CLIENT, {
@@ -105,6 +126,36 @@ test('prelaunch collection without wallet controls stays anonymous and does not 
     sessionStorage: { getItem() { throw Error('No saved mint recovery from a preview-only collection'); } },
   });
   assert.equal(nodes.get('[data-collection-page]').hidden, false);
+});
+
+test('public prelaunch wallet notice binds before viewing early return, with no provider, session or storage access', () => {
+  for (const surface of ['home', 'about', 'preview', 'variations', 'collection', 'MBTI gallery']) {
+    const listeners = new Map(), nodes = new Map(), calls = [];
+    const summary = { focus() { calls.push('focus'); } };
+    const inside = {}, outside = {};
+    const notice = { open: false, dataset: {}, querySelector(selector) { return selector === 'summary' ? summary : null; },
+      contains(target) { return target === summary || target === inside || target === notice; } };
+    nodes.set('[data-preview-wallet-notice]', notice);
+    if (surface === 'about') nodes.set('[data-about-reading]', element());
+    const forbidden = () => { throw Error(`${surface}: preview wallet information must stay anonymous`); };
+    runInNewContext(SEPOLIA_TEST_CLIENT, {
+      document: { querySelector: selector => nodes.get(selector), addEventListener(type, listener) { listeners.set(type, listener); } },
+      window: new Proxy({}, { get: forbidden }), fetch: forbidden,
+      localStorage: new Proxy({}, { get: forbidden }), sessionStorage: new Proxy({}, { get: forbidden }),
+    });
+    assert.equal(notice.dataset.previewWalletBound, 'true');
+    assert.equal(notice.open, false);
+    notice.open = true;
+    listeners.get('pointerdown')({ target: inside });
+    assert.equal(notice.open, true);
+    listeners.get('keydown')({ key: 'Escape', preventDefault() { calls.push('prevent'); } });
+    assert.equal(notice.open, false);
+    assert.deepEqual(calls, ['focus', 'prevent']);
+    notice.open = true;
+    listeners.get('pointerdown')({ target: outside });
+    assert.equal(notice.open, false);
+    assert.deepEqual(calls, ['focus', 'prevent']);
+  }
 });
 
 function element(tag = 'p') {

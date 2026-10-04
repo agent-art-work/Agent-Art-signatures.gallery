@@ -4,6 +4,7 @@ import type { XIdentitySnapshot } from "./xIdentity.js";
 import type { ProviderAssessment, ProviderAbstention } from "./assessment.js";
 import type { AssessmentExecution, ProviderReceipt } from "./assessmentOperations.js";
 import { GROK_PILOT_PROFILE } from "./providerProfile.js";
+import { GROK_INSTRUCTIONS } from "./grokInstructions.js";
 
 function accepted(value: ProviderAssessment | ProviderAbstention): ProviderAssessment {
   if ("kind" in value) throw new Error("Expected accepted assessment");
@@ -69,6 +70,7 @@ describe("trusted direct Grok X Search assessment", () => {
     expect(url).toBe(GROK_RESPONSES_ENDPOINT);
     expect(options?.redirect).toBe("error");
     const body = JSON.parse(String(options?.body));
+    expect(body.instructions).toBe(GROK_INSTRUCTIONS);
     expect(body.tools).toEqual([{ type: "x_search", allowed_x_handles: ["alice"] }]);
     expect(body.model).toBe(GROK_DEFAULT_MODEL);
     expect(body.text.format.strict).toBe(true);

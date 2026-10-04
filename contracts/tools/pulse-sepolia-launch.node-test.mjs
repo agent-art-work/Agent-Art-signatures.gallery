@@ -10,6 +10,7 @@ import { startSepoliaTestSite } from '../../scripts/pulse-sepolia-site.mjs';
 import { startSepoliaFrontend } from '../../scripts/pulse-sepolia-fe.mjs';
 import { SITE_LAUNCH_RECORD } from '../../scripts/pulse-site-launch.mjs';
 import { MBTI_TYPES } from '../../src/openMint/identity.ts';
+import { agentDocument, AGENT_DOCUMENT_PATHS } from '../../src/openMint/agentDocuments.ts';
 
 // Owned, unfunded public test keys and synthetic chain only. No live RPC,
 // provider, secret environment file or public-chain write enters this suite.
@@ -61,6 +62,27 @@ async function signIn(f) {
   assert.equal(verified.status, 200);
   return { cookie, headers, post };
 }
+
+test('Agent docs bypass sessions, relay demand and mint effects on the complete Sepolia site', async t => {
+  const f = fixture(t), site = await f.start(); await until(() => site.health().observerHealthy);
+  const before = readFileSync(join(f.directory, 'web-records.json'), 'utf8'), reads = f.calls.length;
+  for (const path of AGENT_DOCUMENT_PATHS) {
+    const response = await fetch(f.origin + path);
+    const expected = agentDocument(path, { publicOrigin: f.origin, generativeArtwork: true, assessmentSource: 'sample' });
+    assert.equal(response.status, 200); assert.equal(await response.text(), expected.body);
+    assert.equal(response.headers.get('content-type'), expected.contentType); assert.equal(response.headers.get('set-cookie'), null);
+    assert.match(response.headers.get('x-robots-tag'), /noindex/);
+    for (const method of ['POST', 'PUT', 'HEAD']) {
+      const denied = await fetch(f.origin + path, { method });
+      assert.equal(denied.status, 405); assert.equal(denied.headers.get('set-cookie'), null);
+    }
+    const query = await fetch(f.origin + path + '?handle=Alice');
+    assert.equal(query.status, 400); assert.equal(query.headers.get('set-cookie'), null);
+  }
+  assert.equal(f.calls.length, reads); assert.equal(readFileSync(join(f.directory, 'web-records.json'), 'utf8'), before);
+  assert.equal(existsSync(join(f.directory, 'authorizer.key')), false);
+  assert.equal(existsSync(join(f.directory, SITE_LAUNCH_RECORD)), false);
+});
 
 test('prelaunch is healthy but closed: options/prepare/begin reject before wallet, RPC, key and saved-request effects', async t => {
   const f = fixture(t), site = await f.start(); await until(() => site.health().observerHealthy);

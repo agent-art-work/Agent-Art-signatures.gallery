@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { createServer, request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -234,6 +235,88 @@ function browserEndpoint(value) {
   } catch { return undefined; }
 }
 
+const DEVTOOLS_ERROR_CODES = new Set(['ABORT_ERR', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOENT', 'EACCES', 'EPERM',
+  'ENOTEMPTY', 'ERR_ASSERTION', 'DEVTOOLS_HTTP_STATUS', 'DEVTOOLS_BODY_LIMIT', 'DEVTOOLS_BODY_INCOMPLETE', 'DEVTOOLS_INVALID_JSON', 'DEVTOOLS_PROBE_TIMEOUT']);
+const diagnosticCode = code => DEVTOOLS_ERROR_CODES.has(code) ? code : 'DEVTOOLS_PROBE_ERROR';
+const startupEvidence = value => value && ({ source: value.source, elapsedMs: value.elapsedMs, attempts: value.attempts,
+  transport: value.transport, browser: /^(?:HeadlessChrome|Chrome|Chromium)\/\d+(?:\.\d+){0,3}$/.test(value.browser ?? '') ? value.browser : null });
+
+// This is the only failure object written to the CI-uploaded report. Detailed
+// local diagnostics still exist on the supervisor/error for live triage, but
+// no arbitrary error prose, browser output, profile, PID or endpoint is saved.
+export function accessibilityFailureEvidence({ stage, completedCases, error, startup, chrome, profileRemoved, cleanupFailures = 0 }) {
+  return { stage, completedCases, errorCode: diagnosticCode(error?.code), cleanupFailures,
+    ...(startup ? { startup: startupEvidence(startup) } : {}), chrome: chrome && {
+      elapsedMs: chrome.elapsedMs, exited: chrome.exited, closed: chrome.closed, exitCode: chrome.exitCode,
+      signal: /^SIG[A-Z0-9]{1,12}$/.test(chrome.signal ?? '') ? chrome.signal : null,
+      spawnFailed: Boolean(chrome.spawnError), stdoutPresent: Boolean(chrome.stdoutTail), stderrPresent: Boolean(chrome.stderrTail), profileRemoved,
+      readiness: { attempts: chrome.readiness.attempts, portFile: chrome.readiness.portFile, phase: chrome.readiness.phase,
+        probes: chrome.readiness.probes.map(value => ({ attempt: value.attempt, source: value.source, phase: value.phase,
+          elapsedMs: value.elapsedMs, status: value.status, errorCode: value.errorCode, outcome: value.outcome })) },
+    } };
+}
+
+export function createAccessibilityChromeProfile({ remove = rm } = {}) {
+  // Ownership is a capability created here: callers cannot supply a path or
+  // substitute an existing browser profile. Never delete until actual close.
+  const profile = mkdtempSync(join(tmpdir(), 'sg-ui-chrome-'));
+  return Object.freeze({ path: profile, async removeAfterClose(chrome) {
+    assert.ok(!chrome || chrome.diagnostics().closed, 'Owned Chrome must actually close before its disposable profile is removed.');
+    // Same five retries/100ms linear backoff as before. Node's async rimraf
+    // rescans children on ENOTEMPTY; rmSync retries only the final rmdir, so a
+    // late-created file could survive every retry even after its writer stops.
+    await remove(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } });
+}
+
+// DevTools belongs to the newly spawned browser, not an application/provider
+// HTTP client. A new direct IPv4 loopback socket avoids global fetch dispatchers,
+// proxies and pooled connections surviving a cancelled startup probe. The
+// caller's existing deadline bounds connect, headers AND body; redirects and
+// oversized/incomplete JSON are never accepted as readiness.
+export function probePrivateDevtools(value, abort, progress = () => {}) {
+  const url = new URL(value);
+  assert.ok(url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname)
+    && /^\d+$/.test(url.port) && Number(url.port) > 0 && Number(url.port) <= 65535
+    && !url.username && !url.password && !url.search && !url.hash
+    && ['/json/version', '/json/list'].includes(url.pathname), 'Invalid private DevTools probe URL.');
+  return new Promise((accept, reject) => {
+    let settled = false;
+    const finish = (error, value) => { if (!settled) { settled = true; error ? reject(error) : accept(value); } };
+    progress('connect');
+    const request = httpRequest({ hostname: '127.0.0.1', port: Number(url.port), path: url.pathname,
+      method: 'GET', agent: false, signal: abort, headers: { host: url.host, connection: 'close' } });
+    request.on('socket', socket => socket.once('connect', () => progress('headers')));
+    request.once('response', response => {
+      progress('body', response.statusCode);
+      if (response.statusCode !== 200) {
+        response.destroy(); request.destroy();
+        finish(Object.assign(Error('Private DevTools returned a non-200 response.'), { code: 'DEVTOOLS_HTTP_STATUS' })); return;
+      }
+      const chunks = []; let bytes = 0;
+      response.on('data', chunk => {
+        bytes += chunk.length;
+        if (bytes > 65536) {
+          finish(Object.assign(Error('Private DevTools JSON exceeds 64 KiB.'), { code: 'DEVTOOLS_BODY_LIMIT' }));
+          response.destroy(); request.destroy();
+        } else chunks.push(chunk);
+      });
+      response.once('error', error => finish(error));
+      response.once('aborted', () => finish(Object.assign(Error('Private DevTools JSON body was incomplete.'), { code: 'DEVTOOLS_BODY_INCOMPLETE' })));
+      response.once('end', () => {
+        try {
+          const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          progress('complete', response.statusCode);
+          finish(undefined, { status: response.statusCode, json: async () => parsed });
+        } catch {
+          finish(Object.assign(Error('Private DevTools returned invalid JSON.'), { code: 'DEVTOOLS_INVALID_JSON' }));
+        }
+      });
+    });
+    request.once('error', error => finish(error)); request.end();
+  });
+}
+
 // Test-only browser supervision. A fresh private profile's port file is a
 // readiness signal; a stderr banner alone neither proves readiness nor life.
 export function launchAccessibilityChrome(chromePath, profile, { spawnProcess = spawn,
@@ -241,6 +324,7 @@ export function launchAccessibilityChrome(chromePath, profile, { spawnProcess = 
   const started = Date.now(), child = spawnProcess(chromePath, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--disable-gpu',
     '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--no-sandbox', 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] });
   let stderr = '', stdout = '', spawnError, exited = false, closed = false, closing = false, exitCode, signal;
+  const readiness = { attempts: 0, portFile: 'not-read', phase: 'waiting-private-endpoint', probes: [] };
   // Browser exit proves the owned PID has stopped. Mac updater descendants can
   // retain its inherited pipes; close only our pipe handles, then still await
   // the real Node child close event before deleting the private profile.
@@ -252,7 +336,8 @@ export function launchAccessibilityChrome(chromePath, profile, { spawnProcess = 
   child.stdout?.on('data', value => { stdout = (stdout + value).slice(-16384); });
   const diagnostics = () => ({ chromePath, profile, pid: child.pid ?? null, elapsedMs: Date.now() - started, exited, closed,
     exitCode: exitCode ?? child.exitCode ?? null, signal: signal ?? child.signalCode ?? null,
-    spawnError: spawnError?.message ?? null, stderrTail: stderr, stdoutTail: stdout });
+    spawnError: spawnError?.message ?? null, stderrTail: stderr, stdoutTail: stdout,
+    readiness: { ...readiness, probes: readiness.probes.map(value => ({ ...value })) } });
   const failure = (reason, cause) => Error(`${reason} ${JSON.stringify(diagnostics())}`, cause ? { cause } : undefined);
   const checkAlive = () => {
     if (spawnError) throw failure('Chrome could not be spawned.', spawnError);
@@ -266,31 +351,46 @@ export function launchAccessibilityChrome(chromePath, profile, { spawnProcess = 
   };
   return {
     diagnostics,
-    async ready({ timeoutMs = 10000, pollMs = 50, probe = (url, abort) => fetch(url, { signal: abort, redirect: 'error' }) } = {}) {
+    async ready({ timeoutMs = 10000, pollMs = 50, probe = probePrivateDevtools } = {}) {
+      assert.ok(Number.isInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 10000, 'Chrome startup must remain bounded at ten seconds.');
+      assert.ok(Number.isInteger(pollMs) && pollMs > 0, 'Chrome startup polling must have a positive bounded interval.');
       const deadline = Date.now() + timeoutMs; let lastProbeError;
       while (Date.now() < deadline) {
         checkAlive(); let endpoint, source;
         try {
           const [port, path] = readActivePort().trim().split(/\r?\n/);
           if (/^\d+$/.test(port) && Number(port) > 0 && Number(port) <= 65535) endpoint = browserEndpoint(`ws://127.0.0.1:${port}${path}`);
+          readiness.portFile = endpoint ? 'valid' : 'partial-or-invalid';
           if (endpoint) source = 'DevToolsActivePort';
-        } catch (error) { if (error.code !== 'ENOENT') throw failure('Chrome port file could not be read.', error); }
+        } catch (error) { readiness.portFile = error.code === 'ENOENT' ? 'missing' : 'read-error'; if (error.code !== 'ENOENT') throw failure('Chrome port file could not be read.', error); }
         if (!endpoint) {
           endpoint = browserEndpoint((stderr + stdout).match(/DevTools listening on (ws:\/\/[^\s]+)/)?.[1]);
           if (endpoint) source = 'browser-output';
         }
         if (endpoint) {
           const stop = new AbortController(); let timer;
+          const attempt = { attempt: ++readiness.attempts, source, phase: 'probe', elapsedMs: 0, status: null, errorCode: null, outcome: 'pending' };
+          const probeStarted = Date.now(); readiness.phase = 'http-readiness';
+          readiness.probes.push(attempt); if (readiness.probes.length > 8) readiness.probes.shift();
           try {
             const version = await Promise.race([Promise.resolve().then(async () => {
-              const response = await probe(`http://${new URL(endpoint).host}/json/version`, stop.signal);
+              const response = await probe(`http://${new URL(endpoint).host}/json/version`, stop.signal,
+                (phase, status) => { attempt.phase = phase; if (status !== undefined) attempt.status = status; });
+              attempt.status = response.status; attempt.phase = 'json';
               assert.equal(response.status, 200); return response.json();
-            }), new Promise((_, reject) => { timer = setTimeout(() => { stop.abort(); reject(Error('DevTools HTTP readiness probe timed out.')); }, Math.min(1000, deadline - Date.now())); })]);
+            }), new Promise((_, reject) => { timer = setTimeout(() => { stop.abort(); reject(Object.assign(Error('DevTools HTTP readiness probe timed out.'), { code: 'DEVTOOLS_PROBE_TIMEOUT' })); }, Math.min(1000, deadline - Date.now())); })]);
             checkAlive(); assert.ok(Date.now() < deadline && !stop.signal.aborted, 'DevTools readiness expired before its response could be accepted.');
+            attempt.phase = 'identity';
             assert.equal(browserEndpoint(version.webSocketDebuggerUrl), endpoint, 'DevTools endpoint differs from the spawned private browser.');
-            return { webSocketDebuggerUrl: endpoint, source, elapsedMs: Date.now() - started, browser: version.Browser ?? null };
-          } catch (error) { lastProbeError = error; checkAlive(); }
-          finally { clearTimeout(timer); stop.abort(); }
+            attempt.outcome = 'ready'; readiness.phase = 'ready';
+            return { webSocketDebuggerUrl: endpoint, source, elapsedMs: Date.now() - started, browser: version.Browser ?? null,
+              attempts: readiness.attempts, transport: probe === probePrivateDevtools ? 'direct-loopback-http' : 'injected-test-probe' };
+          } catch (error) {
+            lastProbeError = error; attempt.outcome = 'failed';
+            // Retain classifications, not arbitrary remote/error response text.
+            attempt.errorCode = diagnosticCode(error.code); checkAlive();
+          }
+          finally { attempt.elapsedMs = Date.now() - probeStarted; clearTimeout(timer); stop.abort(); }
         }
         await pause(Math.min(pollMs, Math.max(0, deadline - Date.now())));
       }
@@ -356,7 +456,7 @@ export async function runAccessibilityAudit({ outputDir = mkdtempSync(join(tmpdi
     '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(existsSync);
   assert.ok(chromePath && existsSync(chromePath), 'Chrome/Chromium required; set CHROME_PATH.');
   mkdirSync(outputDir, { recursive: true });
-  const profile = mkdtempSync(join(tmpdir(), 'sg-ui-chrome-'));
+  const ownedProfile = createAccessibilityChromeProfile(), profile = ownedProfile.path;
   let client, browser, chrome, fixture, startup, failure, stage = 'fixture'; const rows = [], requests = [], errors = [];
   try {
     fixture = await createAccessibilityFixtureServer(); stage = 'chrome-startup';
@@ -365,7 +465,7 @@ export async function runAccessibilityAudit({ outputDir = mkdtempSync(join(tmpdi
     browser = await connectCdp(browserWs);
     const { targetId } = await browser.send('Target.createTarget', { url: 'about:blank' });
     const devtoolsOrigin = new URL(browserWs);
-    const targetsResponse = await fetch(`http://${devtoolsOrigin.host}/json/list`, { signal: AbortSignal.timeout(10000), redirect: 'error' });
+    const targetsResponse = await probePrivateDevtools(`http://${devtoolsOrigin.host}/json/list`, AbortSignal.timeout(10000));
     assert.equal(targetsResponse.status, 200, 'Chrome target enumeration failed.');
     const targets = await targetsResponse.json();
     client = await connectCdp(auditTargetEndpoint(browserWs, targetId, targets)); browser.close(); browser = undefined; stage = 'audit';
@@ -479,14 +579,12 @@ export async function runAccessibilityAudit({ outputDir = mkdtempSync(join(tmpdi
     assert.deepEqual(failedRequests, [], 'Fixture asset request failures'); assert.deepEqual(externalRequests, [], 'Audit made external requests');
     const rpcOrApiRequests = requests.filter(request => /\/(?:api|internal|rpc)(?:[/?]|$)/.test(new URL(request.url).pathname) || request.method !== 'GET');
     assert.deepEqual(rpcOrApiRequests, [], 'Anonymous exploration made an API, RPC or non-GET request');
-    const result = { matrix:rows, failedRequests, externalRequests, javascriptErrors:errors, networkRequests:requests.length, startup,
+    const result = { matrix:rows, failedRequests, externalRequests, javascriptErrors:errors, networkRequests:requests.length, startup: startupEvidence(startup),
       zoomMethod:'200% browser-zoom reflow: 1280×900 physical viewport represented by 640×450 CSS pixels with deviceScaleFactor 2.',
       scope:'Real templates, fonts, CSS, inline validation, anonymous explorer GET navigation, phase/maintenance presentation, keyboard traversal and AX tree; synthetic content only, no wallet signing or RPC. Original 48 cases retained. Not a manual screen-reader certification or full mint transaction rehearsal.' };
     writeFileSync(join(outputDir, 'results.json'), JSON.stringify(result, null, 2)); return result;
   } catch (error) {
     failure = error;
-    writeFileSync(join(outputDir, 'results.json'), JSON.stringify({ stage, completedCases: rows.length, error: error.stack,
-      ...(startup ? { startup } : {}), chrome: chrome?.diagnostics() ?? null }, null, 2));
     throw error;
   } finally {
     const cleanup = [];
@@ -495,7 +593,13 @@ export async function runAccessibilityAudit({ outputDir = mkdtempSync(join(tmpdi
     try { await fixture?.close(); } catch (error) { cleanup.push(error); }
     // Do not remove a profile until its owning browser has actually stopped.
     if (!chrome || chrome.diagnostics().closed) {
-      try { rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch (error) { cleanup.push(error); }
+      try { await ownedProfile.removeAfterClose(chrome); } catch (error) { cleanup.push(error); }
+    }
+    if (failure || cleanup.length) {
+      try { writeFileSync(join(outputDir, 'results.json'), JSON.stringify(accessibilityFailureEvidence({
+        stage: failure ? stage : 'cleanup', completedCases: rows.length, error: failure ?? cleanup[0], startup,
+        chrome: chrome?.diagnostics() ?? null, profileRemoved: !existsSync(profile), cleanupFailures: cleanup.length,
+      }), null, 2)); } catch (error) { cleanup.push(error); }
     }
     if (cleanup.length) throw new AggregateError([...(failure ? [failure] : []), ...cleanup], 'Accessibility audit cleanup failed.');
   }

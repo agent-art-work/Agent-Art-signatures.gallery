@@ -3,6 +3,8 @@
 import { mintHandleDraft } from '../src/openMint/mintHandleDraft.ts';
 import { bindHandleValidation } from '../src/openMint/fieldValidation.ts';
 import { renderInlineFeedback } from '../src/openMint/inlineFeedback.ts';
+import { bindDocumentPrompts } from '../src/openMint/promptCopy.ts';
+import { bindPreviewWalletNotice } from '../src/openMint/previewWallet.ts';
 import { SEPOLIA_READ_BUDGETS } from './pulse-sepolia-read-budgets.mjs';
 import { sitePhasePresentation } from '../src/openMint/sitePhase.ts';
 
@@ -44,8 +46,10 @@ export function previewExplorerClient(restoreHandleDraft, phasePresentation) {
   return true;
 }
 
-export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, renderInlineFeedback, readBudgets, phasePresentation, bindExplorer) {
+export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, renderInlineFeedback, readBudgets, phasePresentation, bindExplorer, bindPrompts, bindWalletNotice) {
   const $ = q => document.querySelector(q);
+  bindWalletNotice(document);
+  bindPrompts(document, typeof navigator === 'undefined' ? undefined : navigator.clipboard, renderInlineFeedback);
   bindHandleValidation(document);
   // Exploration never restores a session, discovers a wallet, checks a saved
   // mint, fetches eligibility, or enters the sign/prepare/send workflow.
@@ -53,7 +57,6 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
   // A monitored signature is still a viewing surface unless the page is an
   // actual mint flow. Relay/RPC health is not a visitor-facing gallery notice.
   const mintProcess = !!($('[data-mint-entry]') || $('[data-assessment-code]') || $('[data-mint-process]'));
-  $('[data-copy-handoff]')?.addEventListener('click', async () => { try { await navigator.clipboard.writeText($('[data-handoff-prompt]').value); renderInlineFeedback($('[data-copy-feedback]'), 'Copied.'); } catch { renderInlineFeedback($('[data-copy-feedback]'), 'Select and copy the prompt.', true); } });
   // Public viewing/preview instructions need no sign-in bootstrap. Collection
   // and mint/reveal recovery keep their existing explicit wallet/session flow.
   if (!mintProcess && !$('[data-wallet-label]') && !$('[data-reveal-monitor]')) return;
@@ -834,4 +837,4 @@ export function sepoliaTestClient(restoreHandleDraft, bindHandleValidation, rend
   }
   window.addEventListener('pagehide', () => { statusGeneration++; clearTimeout(statusTimer); cancelOptionsRetry(); });
 }
-export const SEPOLIA_TEST_CLIENT = `(${sepoliaTestClient.toString()})(${mintHandleDraft.toString()}, ${bindHandleValidation.toString()}, ${renderInlineFeedback.toString()}, ${JSON.stringify(SEPOLIA_READ_BUDGETS)}, ${sitePhasePresentation.toString()}, ${previewExplorerClient.toString()});`;
+export const SEPOLIA_TEST_CLIENT = `(${sepoliaTestClient.toString()})(${mintHandleDraft.toString()}, ${bindHandleValidation.toString()}, ${renderInlineFeedback.toString()}, ${JSON.stringify(SEPOLIA_READ_BUDGETS)}, ${sitePhasePresentation.toString()}, ${previewExplorerClient.toString()}, ${bindDocumentPrompts.toString()}, ${bindPreviewWalletNotice.toString()});`;

@@ -18,6 +18,7 @@ import { WalletSessions, opaqueCode, fields, PublicError } from '../src/openMint
 import { canonicalHandle, preservedHandle, isMbti, MBTI_TYPES, RENDERER_VERSION } from '../src/openMint/identity.ts';
 import { openMintHandleKey } from '../src/openMint/authorization.ts';
 import { homePage, mintPage, explorePage, assessmentPage, revealedSignature, previewPage, previewVariationsPage, mbtiGalleryPage, collectionPage, aboutPage, errorPage, OPEN_MINT_CSS } from '../src/openMint/pages.ts';
+import { agentDocument, AGENT_DOCUMENT_PATHS } from '../src/openMint/agentDocuments.ts';
 import { siteSaleStatus } from '../src/openMint/sitePhase.ts';
 import { createSiteLaunchGate, hasKnownMintActivity, parseSiteLaunchMode, releaseOwnedSiteLock } from './pulse-site-launch.mjs';
 import { SITE_CSS } from '../src/v1/siteCss.ts';
@@ -955,6 +956,11 @@ export async function startSepoliaTestSite(port = 3004, dependencies = {}) {
       assert.equal(req.headers.host, new URL(origin).host); assert.ok((req.url?.length ?? 0) <= 2048);
       const url = new URL(req.url, origin), path = url.pathname;
       assert.equal(url.origin, origin);
+      if (AGENT_DOCUMENT_PATHS.includes(path)) {
+        if (req.method !== 'GET') return send(405, 'Documentation is read-only.', 'text/plain; charset=utf-8');
+        if (url.search) return send(400, 'Documentation accepts no query parameters.', 'text/plain; charset=utf-8');
+        const document = agentDocument(path, options()); return send(200, document.body, document.contentType);
+      }
       if ((req.method === 'GET' && path === '/api/test/options')
         || (req.method === 'POST' && ['/api/test/prepare', '/api/test/begin'].includes(path))) requireLaunchOpen();
       if (req.method === 'GET') {

@@ -1,8 +1,22 @@
 # Signatures Gallery — open mint
 
+## Public preview-only release
+
+The public production and staging sites currently serve the prelaunch preview-only package. Minting, wallet connections, RPC, Grok and backend APIs are disabled in this package; `/mint` is an explorer. The open-mint and legacy flows below describe development implementations, not capabilities enabled on the public site.
+
+Build with `npm run preview:build -- staging` or `npm run preview:build -- production`; verify with `npm run test:preview`. Each build creates a fresh ignored artifact and integrity manifest under `.local/preview-cloudflare/`. Keep existing release and rollback artifacts intact. See [the preview hosting runbook](docs/cloudflare-preview-hosting.md) for package boundaries and technical release instructions.
+
+Central OPS owns operations in `/Users/bigu/Projects/inshell-ops`; this repository retains application development and reproducible build artifacts. Further provider work remains paused. [Site Ops](docs/site-ops.md) is the recorded handback baseline, not an independent live operations log.
+
+The algorithm-generated `S` favicon and all 16 MBTI icon studies are retained as source. Use `npm run design:icons` for the isolated loopback study and `npm run test:site-icons` for its renderer and HTTP regressions.
+
+## Open-mint development application
+
 The default app separates **playful previews** from **wallet → independent Grok assessment → mint & reveal**. Anyone may mint any available handle. There is no X login, ownership claim, or claim withdrawal in this flow.
 
-The approved homepage slogan is `The_First_Agent_Artwork`, supported by the centered, responsively sized guidance “Choose any X handle. Grok interprets it. Mint to reveal the signature.” See [the current slogan composition](docs/slogan-composition.md) and [open-mint architecture](docs/open-mint.md) for the active app. The [development execution plan](docs/development-plan.md) tracks the evaluated backlog, dependencies and acceptance gates; [INBOX.md](INBOX.md) collects new, untriaged items. The obsolete handoff has been removed; retained notes in [MEMO.md](MEMO.md) may be historical.
+The approved homepage slogan is `Anyone_Can_Sign_Anyone`. Guidance and CTAs follow the explicit prelaunch, free-mint and paid-mint phases; the public release remains prelaunch. See [the current slogan composition](docs/slogan-composition.md) and [open-mint architecture](docs/open-mint.md) for the development app. The [development execution plan](docs/development-plan.md) tracks the evaluated backlog, dependencies and acceptance gates; [INBOX.md](INBOX.md) collects new, untriaged items. The obsolete handoff has been removed; retained notes in [MEMO.md](MEMO.md) may be historical.
+
+For free-to-paid Pulse pricing, use the [Pulse Pricing Calibration Protocol (PPCP)](docs/pulse-pricing-protocol/README.md). It preserves the steps, a reusable intake for the planned 1,024-slot free phase, the finite power-of-ten option menu and a decision-report template. Start with its deployment-timing section: RC2 fixes paid economics before its free phase begins.
 
 - `/p/<handle>/<MBTI>` renders one freely editable preview, such as `/p/Alice_Bob_Key/ENFP`. Consumer Grok can choose the preview MBTI in the user's chat; previews make zero paid X or Grok calls and do not create an authoritative assessment.
 - `/p/<handle>/variations` keeps the 16-type comparison grid. Once a mint is confirmed, both preview routes redirect case variants to the saved artwork spelling; the selected type displays its archived artifact, and the other 15 stay clickable alternatives using the recorded renderer. The CTA becomes **View minted signature**. Pending and unavailable states never expose a prepared choice or suggest the handle is available to mint.

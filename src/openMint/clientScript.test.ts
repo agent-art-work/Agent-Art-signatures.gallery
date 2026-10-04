@@ -203,6 +203,27 @@ const tick = (test: ReturnType<typeof setup>, delay: number) => {
 };
 
 describe('shared inline warning feedback', () => {
+  it('copies each About prompt independently without sessions, wallet discovery or other requests', async () => {
+    const selectors = ['[data-open-mint]', '[data-about-reading]', '[data-copy-about-reading]', '[data-about-reading-prompt]', '[data-about-reading-feedback]', '[data-copy-handoff]', '[data-handoff-prompt]', '[data-copy-feedback]'];
+    const nodes = new Map(selectors.map(selector => [selector, new Element()]));
+    nodes.get('[data-about-reading-prompt]')!.value = 'Read About the work';
+    nodes.get('[data-handoff-prompt]')!.value = 'Make a chat preview';
+    const copied: string[] = [];
+    runInNewContext(OPEN_MINT_CLIENT_SCRIPT, {
+      document: { querySelector: (selector: string) => nodes.get(selector) ?? null },
+      navigator: { clipboard: { async writeText(text: string) { copied.push(text); } } },
+      window: { addEventListener() { throw Error('About cannot discover wallets'); }, dispatchEvent() { throw Error('About cannot discover wallets'); } },
+      fetch() { throw Error('Reading a prompt cannot fetch'); },
+      sessionStorage: { getItem() { throw Error('About cannot read mint recovery'); } },
+    });
+    await nodes.get('[data-copy-about-reading]')!.emit('click');
+    expect(copied).toEqual(['Read About the work']);
+    expect(nodes.get('[data-about-reading-feedback]')!.textContent).toBe('Copied.');
+    expect(nodes.get('[data-copy-feedback]')!.textContent).toBe('');
+    await nodes.get('[data-copy-handoff]')!.emit('click');
+    expect(copied).toEqual(['Read About the work', 'Make a chat preview']);
+    expect(nodes.get('[data-copy-feedback]')!.textContent).toBe('Copied.');
+  });
   it('styles wallet failures and restores plain successful feedback without changing transaction behavior', async () => {
     let fail = true;
     const test = setup({ entry: true, walletRequest: method => {
