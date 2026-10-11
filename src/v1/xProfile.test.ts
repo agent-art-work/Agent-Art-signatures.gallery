@@ -24,7 +24,7 @@ function expectNoNestedLinks(html: string): void {
 }
 
 describe("X profile links", () => {
-  it.each(["alice", "TimD1919027", "under_score", "a", "abcdefghijklmno", "@AgentArt_AA"])("links %s without changing display case", handle => {
+  it.each(["alice", "TimD1919027", "under_score", "a", "abcdefghijklmno", "@AnAgentARTist"])("links %s without changing display case", handle => {
     const username = handle.replace(/^@/, "");
     const html = xProfileLink(handle);
     expect(html).toContain(`href="https://x.com/${username}"`);
