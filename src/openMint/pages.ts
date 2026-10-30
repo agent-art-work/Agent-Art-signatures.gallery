@@ -3,6 +3,7 @@ import { SITE_CSS_URL } from "../v1/siteCss.js";
 import { HOME_LINK } from "../v1/navigation.js";
 import { FAVICON_LINK } from "../brand/favicon.js";
 import { siteFooter } from "../brand/footer.js";
+import { ANALYTICS_OPEN_BUTTON, analyticsMarkup, type GalleryAnalyticsOptions } from "../preview/analyticsMarkup.js";
 import { ARTIST_NAME, ARTIST_X_URL } from "../brand/artist.js";
 import { compactHandleLink, handleLink, handleVariationsPath } from "./handleLink.js";
 import { SLOGAN_MBTI_HERO_MANIFEST, SLOGAN_MBTI_HERO_SVG, SLOGAN_MBTI_HERO_CSS, SLOGAN_MBTI_HERO_SCRIPT_URL } from "../brand/sloganMbtiHero.js";
@@ -38,6 +39,8 @@ export interface OpenMintPageOptions {
   siteLaunchMode?: SiteLaunchMode;
   /** Relay presentation only; a fresh wallet quote still authorizes the active phase. */
   pulseSaleStatus?: SiteSaleStatus;
+  /** Consent-first GA4 choices; Google loads only when `production` is true. */
+  analytics?: GalleryAnalyticsOptions;
   /** Active mint request/result context, never a permanent signature view. */
   mintProcess?: boolean;
   /** Actionable mint-process notice; passive viewing never renders this. */
@@ -288,7 +291,7 @@ function layout(title: string, body: string, options: OpenMintPageOptions, descr
   const navigation = walletShortcut(options.siteLaunchMode === "prelaunch" || options.pulseSaleStatus?.phase === "prelaunch");
   body = body.replace(OBSERVATION_WARNING_SLOT, observationWarning(options, body));
   if (options.assessmentSource === "sample") description = "An X handle and a personality become a signature.";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>${e(title === "Signatures Gallery" ? title : `${title} · Signatures Gallery`)}</title><meta name="description" content="${e(description)}"><link rel="alternate" type="application/json" href="/agent-index.json" title="Agent documentation">${FAVICON_LINK}${SITE_FONT_PRELOAD}<link rel="stylesheet" href="${e(safeUrl(options.stylesheetUrl, SITE_CSS_URL))}"><script src="${e(safeUrl(options.clientScriptUrl, "/assets/open-mint.js"))}" defer></script>${sloganScript}</head><body class="book-page open-mint" data-open-mint${options.durableWalletSubmission ? ' data-durable-wallet-submission="true"' : ""} data-wallet-verified="${options.walletVerified ? "true" : "false"}" data-chain-id="${e(options.chainId)}" data-contract="${e(options.contract)}"${dev?.fixture ? ' data-fixture="true"' : ""}${dev?.localChain ? ' data-local-chain="true"' : ""}><main>${HOME_LINK}${navigation}${body}</main>${siteFooter()}</body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>${e(title === "Signatures Gallery" ? title : `${title} · Signatures Gallery`)}</title><meta name="description" content="${e(description)}"><link rel="alternate" type="application/json" href="/agent-index.json" title="Agent documentation">${FAVICON_LINK}${SITE_FONT_PRELOAD}<link rel="stylesheet" href="${e(safeUrl(options.stylesheetUrl, SITE_CSS_URL))}"><script src="${e(safeUrl(options.clientScriptUrl, "/assets/open-mint.js"))}" defer></script>${sloganScript}</head><body class="book-page open-mint" data-open-mint${options.durableWalletSubmission ? ' data-durable-wallet-submission="true"' : ""} data-wallet-verified="${options.walletVerified ? "true" : "false"}" data-chain-id="${e(options.chainId)}" data-contract="${e(options.contract)}"${dev?.fixture ? ' data-fixture="true"' : ""}${dev?.localChain ? ' data-local-chain="true"' : ""}><main>${HOME_LINK}${navigation}${body}</main>${siteFooter(false, options.analytics ? ANALYTICS_OPEN_BUTTON : "")}${options.analytics ? analyticsMarkup(options.analytics) : ""}</body></html>`;
 }
 
 function walletControls(options: OpenMintPageOptions, proved = options.walletVerified, compact = false): string {

@@ -8,6 +8,8 @@ import { build } from 'esbuild';
 import * as fonts from '../src/v1/fonts.ts';
 import { SITE_CSS } from '../src/v1/siteCss.ts';
 import { OPEN_MINT_CSS } from '../src/openMint/pages.ts';
+import { ANALYTICS_CSS } from '../src/preview/analyticsMarkup.ts';
+import { previewContentSecurityPolicy } from '../src/preview/worker.ts';
 import { FAVICON_CSP, FAVICON_SVG, FAVICON_URL } from '../src/brand/favicon.ts';
 import { SLOGAN_MBTI_HERO_SCRIPT, SLOGAN_MBTI_HERO_SCRIPT_URL } from '../src/brand/sloganMbtiHero.ts';
 import { SLOGAN_TOOLTIP_SCRIPT, SLOGAN_TOOLTIP_SCRIPT_URL } from '../src/brand/sloganTooltipScript.ts';
@@ -39,7 +41,7 @@ export async function buildPreviewCloudflare({ environment = 'staging', destinat
   assert.equal((await readdir(destination)).length, 0, 'Build output must be empty; never reuse an old artifact.');
   const files = new Map();
   const asset = (url, bytes) => files.set('public' + new URL(url, target.origin).pathname, bytes);
-  asset('/assets/preview.css', SITE_CSS + OPEN_MINT_CSS);
+  asset('/assets/preview.css', SITE_CSS + OPEN_MINT_CSS + ANALYTICS_CSS);
   asset(FAVICON_URL, FAVICON_SVG);
   asset(SLOGAN_MBTI_HERO_SCRIPT_URL, SLOGAN_MBTI_HERO_SCRIPT);
   asset(SLOGAN_TOOLTIP_SCRIPT_URL, SLOGAN_TOOLTIP_SCRIPT);
@@ -90,7 +92,7 @@ export async function buildPreviewCloudflare({ environment = 'staging', destinat
     const headers = {
       'Cache-Control': path === '/assets/preview.css' || path === '/assets/preview.js' ? 'no-cache' : 'public, max-age=300',
       'Content-Security-Policy': path === new URL(FAVICON_URL, target.origin).pathname ? FAVICON_CSP
-        : "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+        : previewContentSecurityPolicy(environment === 'staging'),
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
       'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
