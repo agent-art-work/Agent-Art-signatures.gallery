@@ -80,7 +80,7 @@ other work.
 
 Done October 31, 2026, 10:35 China, by Claude Code (Opus 5.5) on branch
 `claude/ga4-followup-71c3dc` from `origin/main` `1b29335`. Pull request:
-PR_LINK_PLACEHOLDER.
+[PR #4](https://github.com/agent-art-work/Agent-Art-signatures.gallery/pull/4).
 
 **Deployment records (item 1).** `docs/cloudflare-preview-hosting.md` has a new
 section, "GA4 release — October 31, 2026". Deployment IDs were read with
