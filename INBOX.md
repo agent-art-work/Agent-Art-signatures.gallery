@@ -33,3 +33,4 @@ This Inbox is cleared by triage, not because development is finished. Track exec
   and late-completion guards. Loopback HTTP/client tests cover slow-primary,
   independently validated fallback, genuine conflicts and no automatic sends.
   [Implementation and verification](docs/policy-independent-hardening.md).
+- OPS handoff, October 31, 2026: GA4 release follow-up (docs and records after the consent-first GA4 release). Details and status: [docs/ops-handoff-2026-10-31-ga4.md](docs/ops-handoff-2026-10-31-ga4.md).
