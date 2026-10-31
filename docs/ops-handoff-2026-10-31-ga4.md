@@ -3,7 +3,7 @@
 From OPS (`/Users/bigu/Projects/inshell-ops`). Any session, Codex or Claude, can
 take this. Keep progress in this file, not only in a conversation.
 
-**Status:** in progress. **Taken by:** Claude Code (Opus 5.5), worktree
+**Status:** done (see Outcome). **Taken by:** Claude Code (Opus 5.5), worktree
 `ga4-followup-71c3dc`, branch `claude/ga4-followup-71c3dc`, October 31, 2026,
 10:23 China. Before you start, replace "none yet"
 with your agent and session and the China time; when you stop, write the
@@ -78,5 +78,66 @@ other work.
 
 ## Outcome
 
-Write here when you stop: the pull request, test results, what changed in the
-runbook, and the note for the `codex/about-the-work` owner.
+Done October 31, 2026, 10:35 China, by Claude Code (Opus 5.5) on branch
+`claude/ga4-followup-71c3dc` from `origin/main` `1b29335`. Pull request:
+PR_LINK_PLACEHOLDER.
+
+**Deployment records (item 1).** `docs/cloudflare-preview-hosting.md` has a new
+section, "GA4 release — October 31, 2026". Deployment IDs were read with
+`npx wrangler deployments list` and `deployments status` at 10:26 China, using
+the retained Gallery sign-in, read-only:
+
+| Worker | Version | Deployment | UTC | Artifact | Manifest SHA-256 |
+| --- | --- | --- | --- | --- | --- |
+| `signatures-gallery-staging` | `437d0660` | `42f83710` | 2026-10-30 22:48:25 | `staging-rvRd1V` | `54328e26…0cb7` |
+| `signatures-gallery` | `7b5a8084` | `4d0aa35e` | 2026-10-30 23:31:31 | `production-RjU8Qr` | `0ad76911…2e7b` |
+| staging, replaced | `23764a03` | `efb566bf` | 2026-10-30 22:45:12 | `staging-3ET1kP` | `8b066221…8d90` |
+
+Both live versions are at 100%. The section also records the rollback targets
+(staging `e0a515ad` / deployment `b2c30b1a`, production `6f5379cd` / deployment
+`ed369296`, tag `preview-maintenance-9818`) and OPS's acceptance checks.
+Production's deployment record says 07:31:31 China, not "about 07:35".
+
+Fresh `--output-dir` builds from `1b29335` reproduce both deployed artifacts
+exactly: same manifest digests, all 27 files byte-identical. `staging-3ET1kP`
+differs from `staging-rvRd1V` only in `public/assets/preview.css`. The public
+file paths match the October 4 package, so the rate-limit exempt path set in
+`docs/site-ops.md` needs no change.
+
+**Wording (item 2).** In the runbook:
+
+- The October 3 "no analytics beacon markup and no external requests"
+  statement now says it holds on staging always and on production only until
+  a visitor allows analytics.
+- The standing acceptance rule "browser requests must stay on the site's
+  origin" now allows Google's hosts on production after **Allow analytics**
+  only, and requires nothing to reach Google before consent, on staging or in
+  automated browsers.
+- Three present-tense claims that the October 3–4 versions are the current
+  rollback or carry 100% of traffic are now past tense and point to the GA4
+  section.
+
+`docs/site-ops.md` makes no analytics or external-request claim; it is
+unchanged. The October 5 maintenance release (`9818b00`) is recorded in OPS but
+was missing from this runbook; it is now named as the rollback target, without
+a full record of its own.
+
+**Tests (item 3), on this branch.** `npm run typecheck` passes. Full `vitest
+run`: 6,813 passed, 625 skipped (opt-in PostgreSQL/HTTP suites), 0 failed.
+`npm run test:preview`: 253 preview unit tests and 77 packaging/real-`workerd`
+tests pass. `npm run build` passes. Both `preview:build` targets pass with
+Worker SHA-256 `9a0120dd…dfd7fb3`.
+
+No deployment, provider, Cloudflare or GA4 change was made.
+
+**Note for the owner of the uncommitted `codex/about-the-work` edits
+(item 4).** That branch's working tree in
+`/Users/bigu/Projects/Agent-Art-signatures.gallery` has uncommitted edits to
+`docs/cloudflare-preview-hosting.md` and `docs/site-ops.md`. Before you commit,
+bring in `origin/main`, including PR #3 (GA4) and this pull request once it is
+merged. Git will not merge over uncommitted edits to the same files, so set
+yours aside first in a local work-in-progress commit (or a tagged stash), then
+merge. Expect a conflict in `docs/cloudflare-preview-hosting.md`: this PR edits
+the staging, production and First Ops release record paragraphs, the
+acceptance rule, and adds the "GA4 release" section after "First Ops release".
+Keep both sides. `docs/site-ops.md` is untouched here.
