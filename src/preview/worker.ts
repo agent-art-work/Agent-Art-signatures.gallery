@@ -9,6 +9,7 @@ import {
   mintPage, previewPage, previewVariationsPage, type OpenMintPageOptions,
 } from "../openMint/pages.js";
 import { siteSaleStatus } from "../openMint/sitePhase.js";
+import { galleryAnalytics } from "./analyticsMarkup.js";
 
 export const PREVIEW_STYLESHEET_PATH = "/assets/preview.css";
 export const PREVIEW_CLIENT_SCRIPT_PATH = "/assets/preview.js";
@@ -23,6 +24,13 @@ export interface PreviewWorkerEnv {
 }
 
 const CONTENT_SECURITY_POLICY = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+// Production only: consent-gated GA4 needs Google's tag host and collection
+// hosts. Staging keeps connect-src 'none' and never loads Google.
+const PRODUCTION_CONTENT_SECURITY_POLICY = "default-src 'none'; script-src 'self' https://www.googletagmanager.com; style-src 'self'; img-src 'self' https://*.google-analytics.com https://*.googletagmanager.com; font-src 'self'; connect-src https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+/** One policy source for Worker HTML and the build's static asset headers. */
+export function previewContentSecurityPolicy(staging: boolean): string {
+  return staging ? CONTENT_SECURITY_POLICY : PRODUCTION_CONTENT_SECURITY_POLICY;
+}
 const PREVIEW_READINESS = Object.freeze({
   live: true,
   frontendOnly: true,
@@ -48,6 +56,7 @@ function previewOptions(origin: string): OpenMintPageOptions {
     siteLaunchMode: "prelaunch",
     pulseSaleStatus: siteSaleStatus("prelaunch"),
     mintObservationManaged: true,
+    analytics: galleryAnalytics(origin),
   };
 }
 
@@ -75,7 +84,7 @@ export async function handlePreviewRequest(request: Request, env: PreviewWorkerE
   const staging = env?.PUBLIC_ORIGIN === PREVIEW_PUBLIC_ORIGINS[0];
   const headers = () => new Headers({
     "Cache-Control": "no-store",
-    "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+    "Content-Security-Policy": previewContentSecurityPolicy(staging),
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",

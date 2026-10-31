@@ -56,10 +56,22 @@ describe("hosted preview Worker", () => {
         expect(response.status).toBe(200);
         expect(response.headers.get("Content-Type")).toMatch(/^text\/html/);
         expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate, no-transform");
-        expect(response.headers.get("Content-Security-Policy")).toContain("script-src 'self'");
-        expect(response.headers.get("Content-Security-Policy")).toContain("connect-src 'none'");
+        expect(response.headers.get("Content-Security-Policy")).toBe(origin === PRODUCTION
+          // Consent-gated GA4: only Google's tag and collection hosts are added, and only in production.
+          ? "default-src 'none'; script-src 'self' https://www.googletagmanager.com; style-src 'self'; img-src 'self' https://*.google-analytics.com https://*.googletagmanager.com; font-src 'self'; connect-src https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+          : "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
       }
     }
+  });
+
+  it.each([STAGING, PRODUCTION])("renders consent-first analytics choices on %s, enabled for Google only in production", async origin => {
+    const html = await (await request("/about", environment(origin))).text();
+    const config = JSON.parse(/<script type="application\/json" id="analytics-config">([^<]*)<\/script>/.exec(html)![1]);
+    expect(config).toEqual({ enabled: true, production: origin === PRODUCTION, measurementId: "G-QBCNPY7QK1" });
+    expect(html).toContain('<aside id="analytics-notice" aria-label="Optional analytics" hidden>');
+    expect(html).toContain('<dialog id="analytics-settings"');
+    expect(html).toContain('data-analytics-action="open" aria-haspopup="dialog" aria-controls="analytics-settings" hidden>Analytics choices</button></footer>');
+    expect(html).not.toMatch(/googletagmanager|google-analytics/);
   });
 
   it.each([
