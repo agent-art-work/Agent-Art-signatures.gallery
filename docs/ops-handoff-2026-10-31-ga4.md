@@ -3,7 +3,9 @@
 From OPS (`/Users/bigu/Projects/inshell-ops`). Any session, Codex or Claude, can
 take this. Keep progress in this file, not only in a conversation.
 
-**Status:** open. **Taken by:** none yet. Before you start, replace "none yet"
+**Status:** in progress. **Taken by:** Claude Code (Opus 5.5), worktree
+`ga4-followup-71c3dc`, branch `claude/ga4-followup-71c3dc`, October 31, 2026,
+10:23 China. Before you start, replace "none yet"
 with your agent and session and the China time; when you stop, write the
 outcome at the end of this file.
 
