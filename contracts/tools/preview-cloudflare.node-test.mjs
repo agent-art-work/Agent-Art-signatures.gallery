@@ -313,6 +313,7 @@ for (const environment of ['staging', 'production']) {
       assert.deepEqual(output.exports, ['default']);
     }
     const client = await readFile(join(destination, 'public/assets/preview.js'), 'utf8');
+    assert.doesNotMatch(client, /googletagmanager\.com|google-analytics\.com|G-QBCNPY7QK1|signaturesAnalyticsLayer/);
     assert.doesNotMatch(client, /eth_requestAccounts|personal_sign|eth_sendTransaction|wallet_switchEthereumChain|eth_accounts|wallet_requestPermissions|\/api\/|fetch\(|XMLHttpRequest|WebSocket/);
     const paths = await inventory(destination);
     assert.ok(paths.every(path => !/(?:^|\/)(?:\.env|node_modules|src|contracts|authorizer|web-records|state\.json)|\.key$/.test(path)));
@@ -345,8 +346,9 @@ test('staging and production isolate names/origins while sharing identical audit
   const productionHeaders = await readFile(join(builds.production.destination, 'public/_headers'), 'utf8');
   assert.match(stagingHeaders, /X-Robots-Tag: noindex, nofollow/);
   assert.doesNotMatch(productionHeaders, /X-Robots-Tag/);
-  // The only other difference: production asset CSP allows consent-gated GA4 hosts.
-  assert.match(productionHeaders, /connect-src https:\/\/\*\.google-analytics\.com/);
+  // Production also remains OFF until all collection gates qualify.
+  assert.match(productionHeaders, /connect-src 'none'/);
+  assert.doesNotMatch(productionHeaders, /google|cloudflareinsights/);
   assert.doesNotMatch(stagingHeaders, /google/);
   assert.equal(stagingHeaders.replaceAll('  X-Robots-Tag: noindex, nofollow\n', '')
     .replaceAll(previewContentSecurityPolicy(true), previewContentSecurityPolicy(false)), productionHeaders);
@@ -478,8 +480,8 @@ for (const environment of ['staging', 'production']) {
       assert.equal(response.headers.get('set-cookie'), null);
       assert.match(html, /data-preview-wallet-notice/);
       assert.doesNotMatch(html, /data-connect-wallet|data-wallet-controls|data-mint-process|data-request-submit|Checking for minted signatures|RPC unavailable|deterministic fixture/);
-      // Production allows only Google's collection hosts for consent-gated GA4; staging stays closed.
-      assert.match(response.headers.get('content-security-policy'), environment === 'staging' ? /connect-src 'none'/ : /connect-src https:\/\/\*\.google-analytics\.com https:\/\/\*\.analytics\.google\.com https:\/\/\*\.googletagmanager\.com;/);
+      assert.match(response.headers.get('content-security-policy'), /connect-src 'none'/);
+      assert.doesNotMatch(response.headers.get('content-security-policy'), /google|cloudflareinsights/);
     }
     const home = await (await fetch('/')).text();
     if (environment === 'staging') {

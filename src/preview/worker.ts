@@ -10,6 +10,7 @@ import {
 } from "../openMint/pages.js";
 import { siteSaleStatus } from "../openMint/sitePhase.js";
 import { galleryAnalytics } from "./analyticsMarkup.js";
+import { analyticsConfigured, CF_BEACON_SCRIPT, CF_BEACON_ENDPOINT, type AnalyticsConfig } from "./analytics.js";
 
 export const PREVIEW_STYLESHEET_PATH = "/assets/preview.css";
 export const PREVIEW_CLIENT_SCRIPT_PATH = "/assets/preview.js";
@@ -24,12 +25,11 @@ export interface PreviewWorkerEnv {
 }
 
 const CONTENT_SECURITY_POLICY = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
-// Production only: consent-gated GA4 needs Google's tag host and collection
-// hosts. Staging keeps connect-src 'none' and never loads Google.
-const PRODUCTION_CONTENT_SECURITY_POLICY = "default-src 'none'; script-src 'self' https://www.googletagmanager.com; style-src 'self'; img-src 'self' https://*.google-analytics.com https://*.googletagmanager.com; font-src 'self'; connect-src https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 /** One policy source for Worker HTML and the build's static asset headers. */
-export function previewContentSecurityPolicy(staging: boolean): string {
-  return staging ? CONTENT_SECURITY_POLICY : PRODUCTION_CONTENT_SECURITY_POLICY;
+export function previewContentSecurityPolicy(staging: boolean, config: AnalyticsConfig = galleryAnalytics(PREVIEW_PUBLIC_ORIGINS[1])): string {
+  if (staging || !analyticsConfigured(config)) return CONTENT_SECURITY_POLICY;
+  return CONTENT_SECURITY_POLICY.replace("script-src 'self'", `script-src 'self' ${CF_BEACON_SCRIPT}`)
+    .replace("connect-src 'none'", `connect-src ${CF_BEACON_ENDPOINT}`);
 }
 const PREVIEW_READINESS = Object.freeze({
   live: true,
