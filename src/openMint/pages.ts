@@ -39,7 +39,7 @@ export interface OpenMintPageOptions {
   siteLaunchMode?: SiteLaunchMode;
   /** Relay presentation only; a fresh wallet quote still authorizes the active phase. */
   pulseSaleStatus?: SiteSaleStatus;
-  /** Consent-first GA4 choices; Google loads only when `production` is true. */
+  /** Quiet statistical measurement and browser exclusion; real preview config stays OFF. */
   analytics?: GalleryAnalyticsOptions;
   /** Active mint request/result context, never a permanent signature view. */
   mintProcess?: boolean;

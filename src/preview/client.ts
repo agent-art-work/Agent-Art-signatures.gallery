@@ -8,7 +8,7 @@ import { bindAnalytics } from "./analyticsUi.js";
 // Anonymous exploration only. No provider discovery, requests, wallet state,
 // transaction restoration, signing or background availability polling.
 bindPreviewWalletNotice(document);
-// Consent first: nothing loads from Google before Allow, and only in production.
+// Quiet Privacy and preserved browser exclusion; no popup or permission inference.
 bindAnalytics(document, window);
 bindDocumentPrompts(document, navigator.clipboard, renderInlineFeedback);
 const form = document.querySelector<HTMLFormElement>("[data-preview-explore-form]");

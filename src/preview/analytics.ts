@@ -1,3 +1,4 @@
+import { HOME_PILOT_BINDING, HOME_PILOT_MODE } from './homePilotBinding.js';
 // Local reconstruction of the reviewed OFF candidate; no custom event sender.
 export const ANALYTICS_ORIGIN = 'https://signatures.gallery';
 export const ANALYTICS_EXCLUSION_KEY = 'signatures.analytics.excluded.v1';
@@ -13,12 +14,26 @@ export interface AnalyticsConfig {
   manualRegionalModeQualified: boolean;
   documentBoundaryQualified: boolean;
   withdrawalQualified: boolean;
+  // Coarse trusted Worker decision; never the country or a client header.
+  regionEligible: boolean;
+  documentPath: string;
+  // Explicit bounded pilot purpose, separate from routine qualification.
+  homePilot?: typeof HOME_PILOT_MODE;
 }
+export function homePilotConfigured(config: AnalyticsConfig): boolean {
+  return config?.homePilot === HOME_PILOT_MODE && config.enabled === false && config.production === true &&
+    config.beaconToken === HOME_PILOT_BINDING.publicBeaconToken && config.regionEligible === true && config.documentPath === '/' &&
+    config.manualRegionalModeQualified === false && config.documentBoundaryQualified === false && config.withdrawalQualified === false;
+}
+export function homePilotUrlAllowed(value: string): boolean { return value === ANALYTICS_ORIGIN + '/'; }
+export function homePilotReferrerAllowed(value: string): boolean { return value === '' || value === ANALYTICS_ORIGIN + '/'; }
 export function analyticsConfigured(config: AnalyticsConfig): boolean {
+  if (config?.homePilot !== undefined) return homePilotConfigured(config);
   return config?.enabled === true && config.production === true &&
     typeof config.beaconToken === 'string' && /^[a-f0-9]{32}$/.test(config.beaconToken) &&
     config.manualRegionalModeQualified === true &&
-    config.documentBoundaryQualified === true && config.withdrawalQualified === true;
+    config.documentBoundaryQualified === true && config.withdrawalQualified === true &&
+    config.regionEligible === true && ANALYTICS_PATHS.includes(config.documentPath);
 }
 export function analyticsKnownAutomation(navigator: { webdriver?: unknown; userAgent?: unknown } = {}): boolean {
   return navigator.webdriver === true || /(?:HeadlessChrome|PhantomJS|Playwright|Puppeteer|Googlebot|bingbot|DuckDuckBot|Baiduspider|YandexBot|Applebot|facebookexternalhit|Twitterbot|LinkedInBot|Slackbot|Discordbot|PetalBot|Bytespider|GPTBot|ChatGPT-User|ClaudeBot|Claude-User|PerplexityBot|Perplexity-User|Amazonbot|OAI-SearchBot)/i.test(String(navigator.userAgent ?? ''));
@@ -55,8 +70,10 @@ export function createAnalytics({ window: win, document: doc = win.document, con
     } catch { /* Unknown exclusion means no measurement. */ }
     const allowed = !blocked && analyticsConfigured(settings) && storageAvailable && !excluded &&
       !analyticsKnownAutomation(win.navigator) && analyticsUrlAllowed(win.location.href) &&
-      analyticsReferrerAllowed(doc.referrer);
-    return { allowed, excluded, storageAvailable, started, reloadRequired: started && !allowed };
+      new URL(win.location.href).pathname === settings.documentPath && analyticsReferrerAllowed(doc.referrer);
+    const scoped = allowed && (settings.homePilot === undefined ||
+      homePilotUrlAllowed(win.location.href) && homePilotReferrerAllowed(doc.referrer));
+    return { allowed: scoped, excluded, storageAvailable, started, reloadRequired: started && !scoped };
   }
   function refresh() {
     const state = status();
@@ -86,6 +103,14 @@ export function createAnalytics({ window: win, document: doc = win.document, con
   win.__signaturesAnalyticsController = controller;
   win.addEventListener('storage', (event: any) => {
     if (event.key === ANALYTICS_EXCLUSION_KEY || event.key === null) { blocked = true; refresh(); }
+  });
+  // Full-document scope only. A lifecycle boundary cannot safely revoke vendor
+  // handlers already installed; block re-entry and tell the user to reload.
+  for (const name of ['pagehide', 'popstate', 'hashchange']) {
+    win.addEventListener(name, () => { blocked = true; refresh(); });
+  }
+  win.addEventListener('pageshow', (event: any) => {
+    if (event.persisted) { blocked = true; refresh(); }
   });
   refresh();
   return controller;

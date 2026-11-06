@@ -55,7 +55,7 @@ describe("hosted preview Worker", () => {
         const response = await request(path, environment(origin), { method });
         expect(response.status).toBe(200);
         expect(response.headers.get("Content-Type")).toMatch(/^text\/html/);
-        expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate, no-transform");
+        expect(response.headers.get("Cache-Control")).toBe("private, no-store, no-transform");
         expect(response.headers.get("Content-Security-Policy")).toBe("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
       }
     }
@@ -64,7 +64,7 @@ describe("hosted preview Worker", () => {
   it.each([STAGING, PRODUCTION])("renders quiet Privacy on %s with collection OFF", async origin => {
     const html = await (await request("/about", environment(origin))).text();
     const config = JSON.parse(/<script type="application\/json" id="analytics-config">([^<]*)<\/script>/.exec(html)![1]);
-    expect(config).toEqual({ enabled: false, production: origin === PRODUCTION, beaconToken: "", manualRegionalModeQualified: false, documentBoundaryQualified: false, withdrawalQualified: false });
+    expect(config).toEqual({ enabled: false, production: origin === PRODUCTION, beaconToken: "", manualRegionalModeQualified: false, documentBoundaryQualified: false, withdrawalQualified: false, regionEligible: false, documentPath: '' });
     expect(html).toContain('<details id="measurement-privacy">');
     expect(html).toContain('href="#measurement-privacy">Privacy</a>');
     expect(html).not.toMatch(/googletagmanager|google-analytics|analytics-notice|analytics-settings|Allow analytics|Reject analytics|<dialog/);
@@ -78,7 +78,7 @@ describe("hosted preview Worker", () => {
       for (const method of ["GET", "HEAD"]) {
         const response = await request(path, environment(origin), { method });
         expect(response.status).toBe(status);
-        expect(response.headers.get("Cache-Control")).toBe("no-store");
+        expect(response.headers.get("Cache-Control")).toBe(path === "/missing" ? "private, no-store, no-transform" : "no-store");
       }
     }
   });
