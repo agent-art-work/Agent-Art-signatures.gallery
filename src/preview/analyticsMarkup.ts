@@ -1,17 +1,22 @@
+import { HOME_PILOT_BINDING, HOME_PILOT_MODE } from './homePilotBinding.js';
 import { ANALYTICS_ORIGIN, type AnalyticsConfig } from './analytics.js';
 export type GalleryAnalyticsOptions = AnalyticsConfig;
+declare const __GALLERY_HOME_PILOT__: boolean;
+const homePilot = typeof __GALLERY_HOME_PILOT__ !== 'undefined' && __GALLERY_HOME_PILOT__ === true;
 // Owner-controlled source only. No activation from URL, preferences or env flags.
 export function galleryAnalytics(publicOrigin: string): GalleryAnalyticsOptions {
-  return { enabled: false, production: publicOrigin === ANALYTICS_ORIGIN, beaconToken: '',
+  return { enabled: false, production: publicOrigin === ANALYTICS_ORIGIN, beaconToken: homePilot ? HOME_PILOT_BINDING.publicBeaconToken : '',
     manualRegionalModeQualified: false, documentBoundaryQualified: false, withdrawalQualified: false,
-    regionEligible: false, documentPath: '' };
+    regionEligible: false, documentPath: '', ...(homePilot ? { homePilot: HOME_PILOT_MODE } : {}) };
 }
 export const ANALYTICS_OPEN_BUTTON = '<a class="measurement-privacy-link" href="#measurement-privacy">Privacy</a>';
 export function analyticsMarkup(config: GalleryAnalyticsOptions): string {
   const json = JSON.stringify(config).replace(/</g, '\\u003c');
   return `<script type="application/json" id="analytics-config">${json}</script>`
     + '<details id="measurement-privacy"><summary>Privacy and measurement</summary>'
-    + (config.enabled
+    + (config.homePilot === HOME_PILOT_MODE
+      ? '<p>Home-only measurement pilot. Routine audience measurement is not yet qualified. Exclude this browser and reload to prevent the next SDK load; a final public Home beacon may complete before reload.</p>'
+      : config.enabled
       ? '<p>Statistical measurement is enabled only for qualified public pages and regions. This page may remain unmeasured because of its route, region, browser settings or referrer. Previews and functional browser storage work independently.</p>'
       : '<p>Browser audience measurement is off in this version. No analytics permission prompt is shown. Previews and functional browser storage work independently.</p>')
     + '<p>When qualified and enabled, Cloudflare statistical measurement covers selected public pages, not handle previews, saved collections, wallet or mint flows. It receives network and browser information; reports are estimates, not unique people. Restricted or unknown regions are unmeasured. Hosting security and service counters are separate.</p>'

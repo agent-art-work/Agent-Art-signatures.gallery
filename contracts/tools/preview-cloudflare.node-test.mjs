@@ -1,3 +1,4 @@
+import { HOME_PILOT_BINDING, HOME_PILOT_MODE } from '../../src/preview/homePilotBinding.ts';
 import assert from 'node:assert/strict';
 import { before, after, test } from 'node:test';
 import { createHash } from 'node:crypto';
@@ -592,3 +593,77 @@ for (const environment of ['staging', 'production']) {
     assert.equal(outbound, 0, 'The actual Worker does not call an RPC, host or external API.');
   });
 }
+
+
+test('real Home pilot requires explicit exact binding and cannot target staging', async () => {
+  for (const homePilot of [true, 'true', 1, null, {},
+    { ...HOME_PILOT_BINDING, publicBeaconToken: 'a'.repeat(32) },
+    { ...HOME_PILOT_BINDING, origin: 'https://staging.signatures.gallery' },
+    { ...HOME_PILOT_BINDING, publicBeaconTokenSha256: 'a'.repeat(64) },
+    { ...HOME_PILOT_BINDING, homePilotFixture: true },
+    { ...HOME_PILOT_BINDING, siteTag: 'b'.repeat(32) }]) {
+    await assert.rejects(buildPreviewCloudflare({ environment: 'production', homePilot }), /Exact reviewed public Home pilot binding/);
+  }
+  await assert.rejects(buildPreviewCloudflare({ environment: 'staging', homePilot: HOME_PILOT_BINDING }), /production origin/);
+  await assert.rejects(runPreviewCli(['production','--home-pilot']), error => /Usage:/.test(error.stderr));
+});
+
+test('real-binding pilot inventory and local workerd keep the exact Home boundary', { timeout: 60000 }, async t => {
+  const result = await buildPreviewCloudflare({ environment: 'production', homePilot: HOME_PILOT_BINDING,
+    destination: join(directory, 'home-pilot') });
+  const config = JSON.parse(await readFile(result.config, 'utf8'));
+  assert.equal(result.manifest.localOnly, undefined);
+  assert.deepEqual(result.manifest.measurement, { mode: HOME_PILOT_MODE, origin: HOME_PILOT_BINDING.origin,
+    publicBeaconTokenSha256: HOME_PILOT_BINDING.publicBeaconTokenSha256, livePilotApprovalRequired: true });
+  assert.equal(result.manifest.worker, 'signatures-gallery');
+  assert.equal(config.account_id, 'a54e5847cc16e612aa3ad45a5dadb563');
+  assert.deepEqual(config.routes, [{ pattern: 'signatures.gallery', custom_domain: true }]);
+  assert.equal(config.workers_dev, false); assert.equal(config.preview_urls, false);
+  const local = await loadPreviewArtifact(result.destination);
+  const req = new Request('https://signatures.gallery/'); Object.defineProperty(req,'cf',{ value:{country:'US'} });
+  const html = await (await local.worker.fetch(req,local.env)).text();
+  assert.match(html, /Home-only measurement pilot/);
+  let outbound = 0;
+  const runtime = new Miniflare(convertV4MiniflareOptions({ workers: [{
+    name: 'pilot-ingress', rootPath: result.destination, modules: true,
+    compatibilityDate: config.compatibility_date, compatibilityFlags: config.compatibility_flags,
+    serviceBindings: { PREVIEW: config.name },
+    script: `export default { fetch(request, env) {
+      const headers = new Headers(request.headers); headers.set('Host', new URL(request.url).host);
+      return env.PREVIEW.fetch(new Request(request, { headers }));
+    } };`,
+  }, {
+    name: config.name, rootPath: result.destination, modules: true, scriptPath: join(result.destination,'worker.mjs'),
+    compatibilityDate: config.compatibility_date, compatibilityFlags: config.compatibility_flags,
+    bindings: config.vars,
+    assets: { directory: join(result.destination,'public'), binding: config.assets.binding,
+      run_worker_first: config.assets.run_worker_first, routerConfig: {has_user_worker:true},
+      assetConfig: {html_handling:config.assets.html_handling,not_found_handling:config.assets.not_found_handling} },
+    outboundService() { outbound++; return new Response('Blocked', {status:503}); },
+  }] }));
+  t.after(() => runtime.dispose());
+  for (const [path,country,referer,allowed] of [
+    ['/','US','',true], ['/','US','https://signatures.gallery/',true], ['/','DE','',false],
+    ['/','XX','',false], ['/about','US','',false], ['/explore','US','',false],
+    ['/p/Alice/INTJ','US','',false], ['/mint','US','',false], ['/me','US','',false],
+    ['/?secret=1','US','',false], ['/','US','https://external.invalid/',false],
+  ]) {
+    const response = await runtime.dispatchFetch('https://signatures.gallery'+path,
+      {cf:{country},headers:{Host:'signatures.gallery',Referer:referer,'CF-IPCountry':'US'},redirect:'manual'});
+    if (path.includes('?')) {
+      assert.equal(response.status,400);
+      assert.doesNotMatch(await response.text(), /analytics-config|cloudflareinsights/);
+      continue;
+    }
+    assert.equal(response.status,200,path);
+    const cfg = JSON.parse(/id="analytics-config">([^<]*)</.exec(await response.text())[1]);
+    assert.equal(cfg.homePilot,HOME_PILOT_MODE); assert.equal(cfg.enabled,false);
+    assert.equal(cfg.beaconToken,HOME_PILOT_BINDING.publicBeaconToken);
+    assert.equal(cfg.manualRegionalModeQualified,false); assert.equal(cfg.documentBoundaryQualified,false); assert.equal(cfg.withdrawalQualified,false);
+    assert.equal(cfg.regionEligible,allowed,path+country+referer);
+    assert.equal(response.headers.get('referrer-policy'),allowed?'origin':'no-referrer');
+    assert.equal(response.headers.get('cache-control'),'private, no-store, no-transform');
+    assert.equal(response.headers.get('content-security-policy').includes('https://static.cloudflareinsights.com/beacon.min.js'),allowed);
+  }
+  assert.equal(outbound,0);
+});

@@ -8,6 +8,7 @@ import { build } from 'esbuild';
 import * as fonts from '../src/v1/fonts.ts';
 import { SITE_CSS } from '../src/v1/siteCss.ts';
 import { OPEN_MINT_CSS } from '../src/openMint/pages.ts';
+import { HOME_PILOT_BINDING, HOME_PILOT_MODE } from '../src/preview/homePilotBinding.ts';
 import { ANALYTICS_CSS, galleryAnalytics } from '../src/preview/analyticsMarkup.ts';
 import { previewContentSecurityPolicy } from '../src/preview/worker.ts';
 import { FAVICON_CSP, FAVICON_SVG, FAVICON_URL } from '../src/brand/favicon.ts';
@@ -24,13 +25,24 @@ export const PREVIEW_TARGETS = Object.freeze({
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
 /** Build only public presentation. No environment, local runtime or deployment keys are read. */
-export async function buildPreviewCloudflare({ environment = 'staging', destination } = {}) {
+export async function buildPreviewCloudflare({ environment = 'staging', destination, homePilot } = {}) {
   assert.ok(Object.hasOwn(PREVIEW_TARGETS, environment), 'Choose staging or production.');
   const target = PREVIEW_TARGETS[environment];
+  const pilotSelected = homePilot !== undefined;
+  if (pilotSelected) {
+    assert.equal(environment, 'production', 'Real Home pilot requires the production origin.');
+    assert.deepEqual(homePilot, HOME_PILOT_BINDING, 'Exact reviewed public Home pilot binding required.');
+    assert.equal(target.origin, HOME_PILOT_BINDING.origin);
+    assert.equal(target.name, 'signatures-gallery');
+    assert.equal(accountId, 'a54e5847cc16e612aa3ad45a5dadb563');
+    assert.equal(hash(homePilot.publicBeaconToken), 'b2c6800326322f58f759fbd3dcea266783f6b1df03fdd50c8054b8cb48990553', 'Public token identity drift.');
+    assert.equal(homePilot.publicBeaconTokenSha256, hash(homePilot.publicBeaconToken), 'Public binding hash mismatch.');
+  }
+  const defines = { __GALLERY_HOME_PILOT__: JSON.stringify(pilotSelected) };
   const analytics = galleryAnalytics(target.origin);
   assert.ok(analytics.enabled === false && analytics.beaconToken === '' &&
     analytics.manualRegionalModeQualified === false &&
-    analytics.documentBoundaryQualified === false && analytics.withdrawalQualified === false,
+    analytics.documentBoundaryQualified === false && analytics.withdrawalQualified === false && analytics.homePilot === undefined,
     'Only collection-OFF artifacts may be packaged; enabled qualification fixtures are not release inputs.');
   if (destination === undefined) {
     const parent = join(root, '.local/preview-cloudflare');
@@ -67,7 +79,7 @@ export async function buildPreviewCloudflare({ environment = 'staging', destinat
     .map(name => `export const ${name} = ${JSON.stringify(fonts[name])};`).join('\n');
   const worker = await build({
     entryPoints: [join(root, 'src/preview/cloudflare.ts')], bundle: true, write: false,
-    format: 'esm', platform: 'browser', target: 'es2022', minify: true, metafile: true,
+    format: 'esm', platform: 'browser', target: 'es2022', minify: true, metafile: true, define: defines,
     external: ['node:crypto'], plugins: [{ name: 'build-time-public-fonts', setup(builder) {
       builder.onResolve({ filter: /(?:^|\/)fonts\.js$/ }, args => {
         if (resolve(args.resolveDir, args.path) === join(root, 'src/v1/fonts.js')) return { path: 'fonts', namespace: 'public-fonts' };
@@ -85,7 +97,7 @@ export async function buildPreviewCloudflare({ environment = 'staging', destinat
   const workerBytes = worker.outputFiles[0].contents;
   files.set('worker.mjs', workerBytes);
   const client = await build({ entryPoints: [join(root, 'src/preview/client.ts')], bundle: true, write: false,
-    format: 'iife', platform: 'browser', target: 'es2022', minify: true, metafile: true });
+    format: 'iife', platform: 'browser', target: 'es2022', minify: true, metafile: true, define: defines });
   const clientText = client.outputFiles[0].text;
   assert.ok(!/eth_requestAccounts|personal_sign|eth_sendTransaction|wallet_switchEthereumChain|fetch\(/.test(clientText), 'Preview client contains a network/wallet action.');
   asset('/assets/preview.js', clientText);
@@ -118,10 +130,12 @@ export async function buildPreviewCloudflare({ environment = 'staging', destinat
   files.set('wrangler.json', JSON.stringify(config, null, 2) + '\n');
   files.set('metafile.json', JSON.stringify(worker.metafile, null, 2) + '\n');
   const manifest = { schema: 'signatures-gallery.preview-cloudflare.v1', environment,
-    origin: target.origin, worker: target.name, mintingEnabled: false, walletConnectionEnabled: false,
+    origin: target.origin, worker: config.name, mintingEnabled: false, walletConnectionEnabled: false,
     artifactSha256: hash(workerBytes), fontVersion,
     files: [...files].map(([name, bytes]) => ({ path: name, bytes: Buffer.byteLength(bytes), sha256: hash(bytes) })).sort((a, b) => a.path.localeCompare(b.path)),
   };
+  if (pilotSelected) manifest.measurement = { mode: HOME_PILOT_MODE, origin: HOME_PILOT_BINDING.origin,
+    publicBeaconTokenSha256: HOME_PILOT_BINDING.publicBeaconTokenSha256, livePilotApprovalRequired: true };
   for (const [name, bytes] of files) {
     const path = join(destination, name); await mkdir(dirname(path), { recursive: true }); await writeFile(path, bytes);
   }

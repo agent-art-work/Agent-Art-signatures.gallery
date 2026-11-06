@@ -1,4 +1,4 @@
-import { analyticsConfigured, analyticsReferrerAllowed, analyticsUrlAllowed, type AnalyticsConfig } from './analytics.js';
+import { analyticsConfigured, analyticsReferrerAllowed, analyticsUrlAllowed, homePilotUrlAllowed, homePilotReferrerAllowed, type AnalyticsConfig } from './analytics.js';
 
 // Accepted 32-country policy, including EEA, UK and Switzerland.
 export const ANALYTICS_DENIED_COUNTRIES = Object.freeze('AT BE BG HR CY CZ DK EE FI FR DE GR HU IS IE IT LV LI LT LU MT NL NO PL PT RO SK SI ES SE CH GB'.split(' '));
@@ -15,7 +15,9 @@ export function analyticsForRequest(request: Request, config: AnalyticsConfig): 
   const allowed = (request.method === 'GET' || request.method === 'HEAD') &&
     analyticsUrlAllowed(request.url) && analyticsReferrerAllowed(request.headers.get('Referer') ?? '') &&
     analyticsCountryEligible(request);
-  return { ...config, regionEligible: allowed, documentPath: allowed ? new URL(request.url).pathname : '' };
+  const scoped = allowed && (config.homePilot === undefined ||
+    homePilotUrlAllowed(request.url) && homePilotReferrerAllowed(request.headers.get('Referer') ?? ''));
+  return { ...config, regionEligible: scoped, documentPath: scoped ? new URL(request.url).pathname : '' };
 }
 
 export function analyticsHtmlHeaders(config: AnalyticsConfig): Record<string, string> {

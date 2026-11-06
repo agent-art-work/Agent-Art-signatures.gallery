@@ -1,3 +1,4 @@
+import { HOME_PILOT_BINDING, HOME_PILOT_MODE } from './homePilotBinding.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ANALYTICS_PATHS, analyticsConfigured, type AnalyticsConfig } from './analytics.js';
 import { analyticsCountryEligible, analyticsForRequest, analyticsHtmlHeaders, ANALYTICS_DENIED_COUNTRIES } from './analyticsRequest.js';
@@ -90,5 +91,30 @@ describe('actual Worker consistency and cache isolation', () => {
       expect(res.headers.has('set-cookie')).toBe(false);
     }
     expect(network).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('real-binding Home-only pilot request scope', () => {
+  const pilot: AnalyticsConfig = { ...markup.galleryAnalytics(origin), homePilot: HOME_PILOT_MODE, beaconToken: HOME_PILOT_BINDING.publicBeaconToken };
+  it.each(ANALYTICS_DENIED_COUNTRIES)('fails closed for %s despite spoofed eligible headers', country => {
+    expect(analyticsConfigured(analyticsForRequest(request('/',country,{'CF-IPCountry':'US'}),pilot))).toBe(false);
+  });
+  it.each([undefined, null, '', 'XX', 'T1', 'ZZ', 'us'])('fails closed for unknown %j', country => {
+    const req = new Request(origin+'/'); Object.defineProperty(req, 'cf', { value: {country} });
+    expect(analyticsConfigured(analyticsForRequest(req,pilot))).toBe(false);
+  });
+  it.each(['/about','/explore','/INTJ/','/mint','/me','/api','/p/Alice/INTJ','/?','/?secret=1','/#private'])('closes %s', path => {
+    const cfg = analyticsForRequest(request(path),pilot);
+    expect(cfg.regionEligible).toBe(false); expect(analyticsConfigured(cfg)).toBe(false);
+  });
+  it.each(['',origin+'/'])('allows exact Home with referrer %s', Referer => {
+    const cfg = analyticsForRequest(request('/','US',{Referer}),pilot);
+    expect(analyticsConfigured(cfg)).toBe(true);
+    expect(analyticsHtmlHeaders(cfg)['Referrer-Policy']).toBe('origin');
+    expect(JSON.stringify(cfg)).not.toContain('US');
+  });
+  it.each([origin+'/about','https://external.invalid/',origin+'/?',origin+'/#',origin+'/mint'])('rejects referrer %s', Referer => {
+    expect(analyticsConfigured(analyticsForRequest(request('/','US',{Referer}),pilot))).toBe(false);
   });
 });

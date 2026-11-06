@@ -1,3 +1,4 @@
+import { HOME_PILOT_BINDING, HOME_PILOT_MODE } from './homePilotBinding.js';
 // Local reconstruction of the reviewed OFF candidate; no custom event sender.
 export const ANALYTICS_ORIGIN = 'https://signatures.gallery';
 export const ANALYTICS_EXCLUSION_KEY = 'signatures.analytics.excluded.v1';
@@ -16,8 +17,18 @@ export interface AnalyticsConfig {
   // Coarse trusted Worker decision; never the country or a client header.
   regionEligible: boolean;
   documentPath: string;
+  // Explicit bounded pilot purpose, separate from routine qualification.
+  homePilot?: typeof HOME_PILOT_MODE;
 }
+export function homePilotConfigured(config: AnalyticsConfig): boolean {
+  return config?.homePilot === HOME_PILOT_MODE && config.enabled === false && config.production === true &&
+    config.beaconToken === HOME_PILOT_BINDING.publicBeaconToken && config.regionEligible === true && config.documentPath === '/' &&
+    config.manualRegionalModeQualified === false && config.documentBoundaryQualified === false && config.withdrawalQualified === false;
+}
+export function homePilotUrlAllowed(value: string): boolean { return value === ANALYTICS_ORIGIN + '/'; }
+export function homePilotReferrerAllowed(value: string): boolean { return value === '' || value === ANALYTICS_ORIGIN + '/'; }
 export function analyticsConfigured(config: AnalyticsConfig): boolean {
+  if (config?.homePilot !== undefined) return homePilotConfigured(config);
   return config?.enabled === true && config.production === true &&
     typeof config.beaconToken === 'string' && /^[a-f0-9]{32}$/.test(config.beaconToken) &&
     config.manualRegionalModeQualified === true &&
@@ -60,7 +71,9 @@ export function createAnalytics({ window: win, document: doc = win.document, con
     const allowed = !blocked && analyticsConfigured(settings) && storageAvailable && !excluded &&
       !analyticsKnownAutomation(win.navigator) && analyticsUrlAllowed(win.location.href) &&
       new URL(win.location.href).pathname === settings.documentPath && analyticsReferrerAllowed(doc.referrer);
-    return { allowed, excluded, storageAvailable, started, reloadRequired: started && !allowed };
+    const scoped = allowed && (settings.homePilot === undefined ||
+      homePilotUrlAllowed(win.location.href) && homePilotReferrerAllowed(doc.referrer));
+    return { allowed: scoped, excluded, storageAvailable, started, reloadRequired: started && !scoped };
   }
   function refresh() {
     const state = status();

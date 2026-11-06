@@ -1,3 +1,4 @@
+import { HOME_PILOT_BINDING, HOME_PILOT_MODE } from './homePilotBinding.js';
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createAnalytics, analyticsConfigured, analyticsUrlAllowed, analyticsReferrerAllowed,
@@ -150,5 +151,48 @@ describe('reconstructed analytics-OFF candidate — offline fixtures', () => {
   it('contains no Google loader, custom collector/cookie writer or new visitor identity', () => {
     const source=readFileSync(new URL('./analytics.ts',import.meta.url),'utf8');
     expect(source).not.toMatch(/googletagmanager|google-analytics|signaturesAnalyticsLayer|fetch\(|sendBeacon\(|doc\.cookie|randomUUID|Math\.random/);
+  });
+});
+
+
+describe('real-binding Home-only pilot controller (offline DOM only)', () => {
+  const pilot: AnalyticsConfig = { ...galleryAnalytics(origin), homePilot: HOME_PILOT_MODE,
+    beaconToken: HOME_PILOT_BINDING.publicBeaconToken, regionEligible: true, documentPath: '/' };
+  it('loads only the exact pilot binding without claiming routine qualification', () => {
+    expect(analyticsConfigured(pilot)).toBe(true);
+    expect(pilot.enabled).toBe(false);
+    for (const k of ['manualRegionalModeQualified','documentBoundaryQualified','withdrawalQualified'] as const) {
+      expect(pilot[k]).toBe(false);
+      expect(analyticsConfigured({ ...pilot, [k]: true })).toBe(false);
+    }
+    for (const config of [{ ...pilot, homePilot: false }, { ...pilot, homePilot: undefined },
+      { ...pilot, beaconToken: 'a'.repeat(32) }, { ...pilot, beaconToken: 'b'.repeat(32) }, { ...pilot, enabled: true }, { ...qualified, homePilot: HOME_PILOT_MODE }]) {
+      expect(analyticsConfigured(config as AnalyticsConfig)).toBe(false);
+    }
+    const f = fixture(pilot); f.start();
+    expect(f.scripts).toHaveLength(1);
+    expect(JSON.parse(f.scripts[0].attributes['data-cf-beacon'])).toEqual({ token: HOME_PILOT_BINDING.publicBeaconToken, spa: false });
+    expect(f.writes).toEqual([]);
+  });
+  it.each(['/about', '/explore', ...ANALYTICS_MBTI_TYPES.map(t => `/${t}/`), '/p/Alice/INTJ', '/mint', '/me',
+    '/api', '/preview/Alice/INTJ.svg', '/?', '/#', '/?private=1', '/#private'])('does not load on %s', path => {
+    const f = fixture(pilot); f.win.location.href = origin + path; f.start(); expect(f.scripts).toEqual([]);
+  });
+  it.each([origin+'/about', 'https://other.invalid/', origin+'/?', origin+'/#', origin+'/p/Alice/INTJ'])('closes referrer %s', referrer => {
+    const f = fixture(pilot); f.doc.referrer = referrer; f.start(); expect(f.scripts).toEqual([]);
+  });
+  it.each(['', origin+'/'])('accepts only blank or literal Home referrer %s', referrer => {
+    const f = fixture(pilot); f.doc.referrer = referrer; f.start(); expect(f.scripts).toHaveLength(1);
+  });
+  it('preserves exclusion, work and lifecycle reload semantics', () => {
+    const f = fixture(pilot); const c = f.start(); c.exclude();
+    expect(c.status()).toMatchObject({ allowed: false, reloadRequired: true });
+    expect(f.data.get('work')).toBe('KEEP'); expect(f.data.get('auth')).toBe('KEEP');
+    expect(f.writes).toEqual([ANALYTICS_EXCLUSION_KEY]); expect(f.scripts).toHaveLength(1);
+    const next = fixture(pilot); next.data.set(ANALYTICS_EXCLUSION_KEY,'1'); next.start(); expect(next.scripts).toEqual([]);
+    const life = fixture(pilot); const lc = life.start(); life.listeners.pagehide({}); life.listeners.pageshow({ persisted: true });
+    expect(lc.status()).toMatchObject({ allowed: false, reloadRequired: true }); expect(life.scripts).toHaveLength(1);
+    const bot = fixture(pilot); bot.win.navigator.webdriver = true; bot.start(); expect(bot.scripts).toEqual([]);
+    const unreadable = fixture(pilot); unreadable.fail('read'); unreadable.start(); expect(unreadable.scripts).toEqual([]);
   });
 });
