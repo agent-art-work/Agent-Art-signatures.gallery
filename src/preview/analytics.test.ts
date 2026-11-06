@@ -9,7 +9,8 @@ import { MBTI_TYPES } from '../openMint/identity.js';
 const origin = 'https://signatures.gallery';
 const site = { site_token: 'a'.repeat(32), site_tag: 'b'.repeat(32) };
 const qualified: AnalyticsConfig = { enabled: true, production: true, beaconToken: site.site_token,
-  manualRegionalModeQualified: true, documentBoundaryQualified: true, withdrawalQualified: true };
+  manualRegionalModeQualified: true, documentBoundaryQualified: true, withdrawalQualified: true,
+  regionEligible: true, documentPath: '/' };
 // Offline DOM only. Appended scripts are recorded, never downloaded/executed.
 function fixture(config: AnalyticsConfig = qualified) {
   const data = new Map([['work', 'KEEP'], ['auth', 'KEEP'], ['signatures.analytics.preference.v1', '{"choice":"allow"}']]);
@@ -108,6 +109,20 @@ describe('reconstructed analytics-OFF candidate — offline fixtures', () => {
     f.listeners.storage({key:ANALYTICS_EXCLUSION_KEY}); expect(c.status().reloadRequired).toBe(true);
     f.data.set(ANALYTICS_EXCLUSION_KEY,'0'); f.listeners.storage({key:ANALYTICS_EXCLUSION_KEY});
     expect(c.status().allowed).toBe(false); expect(f.scripts).toHaveLength(1);
+  });
+  it.each(['pagehide','popstate','hashchange'])('blocks reuse after %s without pretending to stop vendor handlers', name => {
+    const f=fixture(); const c=f.start(); f.listeners[name]({});
+    expect(c.status().allowed).toBe(false); expect(c.status().reloadRequired).toBe(true);
+    c.refresh(); expect(f.scripts).toHaveLength(1);
+  });
+  it('does not restart a restored BFCache document', () => {
+    const f=fixture(); const c=f.start(); f.listeners.pageshow({persisted:true});
+    expect(c.status().allowed).toBe(false); expect(f.scripts).toHaveLength(1);
+  });
+  it('requires the trusted coarse bit and matching document path independently of qualification flags', () => {
+    for (const config of [{...qualified,regionEligible:false}, {...qualified,documentPath:'/about'}]) {
+      const f=fixture(config); f.start(); expect(f.scripts).toEqual([]);
+    }
   });
   it('renders quiet functional Privacy/exclusion controls, not consent UI', () => {
     const html=analyticsMarkup(galleryAnalytics(origin));

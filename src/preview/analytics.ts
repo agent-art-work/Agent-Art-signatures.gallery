@@ -13,12 +13,16 @@ export interface AnalyticsConfig {
   manualRegionalModeQualified: boolean;
   documentBoundaryQualified: boolean;
   withdrawalQualified: boolean;
+  // Coarse trusted Worker decision; never the country or a client header.
+  regionEligible: boolean;
+  documentPath: string;
 }
 export function analyticsConfigured(config: AnalyticsConfig): boolean {
   return config?.enabled === true && config.production === true &&
     typeof config.beaconToken === 'string' && /^[a-f0-9]{32}$/.test(config.beaconToken) &&
     config.manualRegionalModeQualified === true &&
-    config.documentBoundaryQualified === true && config.withdrawalQualified === true;
+    config.documentBoundaryQualified === true && config.withdrawalQualified === true &&
+    config.regionEligible === true && ANALYTICS_PATHS.includes(config.documentPath);
 }
 export function analyticsKnownAutomation(navigator: { webdriver?: unknown; userAgent?: unknown } = {}): boolean {
   return navigator.webdriver === true || /(?:HeadlessChrome|PhantomJS|Playwright|Puppeteer|Googlebot|bingbot|DuckDuckBot|Baiduspider|YandexBot|Applebot|facebookexternalhit|Twitterbot|LinkedInBot|Slackbot|Discordbot|PetalBot|Bytespider|GPTBot|ChatGPT-User|ClaudeBot|Claude-User|PerplexityBot|Perplexity-User|Amazonbot|OAI-SearchBot)/i.test(String(navigator.userAgent ?? ''));
@@ -55,7 +59,7 @@ export function createAnalytics({ window: win, document: doc = win.document, con
     } catch { /* Unknown exclusion means no measurement. */ }
     const allowed = !blocked && analyticsConfigured(settings) && storageAvailable && !excluded &&
       !analyticsKnownAutomation(win.navigator) && analyticsUrlAllowed(win.location.href) &&
-      analyticsReferrerAllowed(doc.referrer);
+      new URL(win.location.href).pathname === settings.documentPath && analyticsReferrerAllowed(doc.referrer);
     return { allowed, excluded, storageAvailable, started, reloadRequired: started && !allowed };
   }
   function refresh() {
@@ -86,6 +90,14 @@ export function createAnalytics({ window: win, document: doc = win.document, con
   win.__signaturesAnalyticsController = controller;
   win.addEventListener('storage', (event: any) => {
     if (event.key === ANALYTICS_EXCLUSION_KEY || event.key === null) { blocked = true; refresh(); }
+  });
+  // Full-document scope only. A lifecycle boundary cannot safely revoke vendor
+  // handlers already installed; block re-entry and tell the user to reload.
+  for (const name of ['pagehide', 'popstate', 'hashchange']) {
+    win.addEventListener(name, () => { blocked = true; refresh(); });
+  }
+  win.addEventListener('pageshow', (event: any) => {
+    if (event.persisted) { blocked = true; refresh(); }
   });
   refresh();
   return controller;

@@ -476,12 +476,22 @@ for (const environment of ['staging', 'production']) {
       assert.equal(response.status, 200, path);
       assert.equal(response.headers.get('x-preview-test-user-worker'), 'invoked', path + ' dynamic user handler');
       assert.match(response.headers.get('content-type'), /^text\/html/);
-      assert.equal(response.headers.get('cache-control'), 'public, max-age=0, must-revalidate, no-transform', path);
+      assert.equal(response.headers.get('cache-control'), 'private, no-store, no-transform', path);
       assert.equal(response.headers.get('set-cookie'), null);
       assert.match(html, /data-preview-wallet-notice/);
       assert.doesNotMatch(html, /data-connect-wallet|data-wallet-controls|data-mint-process|data-request-submit|Checking for minted signatures|RPC unavailable|deterministic fixture/);
       assert.match(response.headers.get('content-security-policy'), /connect-src 'none'/);
       assert.doesNotMatch(response.headers.get('content-security-policy'), /google|cloudflareinsights/);
+    }
+    for (const country of ['US', 'DE', 'XX']) {
+      const response = await fetch('/', { cf: { country }, headers: { 'CF-IPCountry': 'US' } });
+      const config = JSON.parse(/id="analytics-config">([^<]*)</.exec(await response.text())[1]);
+      assert.equal(config.regionEligible, environment === 'production' && country === 'US');
+      assert.equal(config.enabled, false);
+      assert.equal(config.beaconToken, '');
+      assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+      assert.equal(response.headers.get('cdn-cache-control'), 'no-store');
+      assert.equal(response.headers.get('cloudflare-cdn-cache-control'), 'no-store');
     }
     const home = await (await fetch('/')).text();
     if (environment === 'staging') {
@@ -549,7 +559,7 @@ for (const environment of ['staging', 'production']) {
       const missing = await fetch(path);
       assert.equal(missing.status, 404, path);
       assert.equal(missing.headers.get('x-preview-test-user-worker'), 'invoked', path + ' missing asset uses explicit Worker 404');
-      assert.equal(missing.headers.get('cache-control'), 'no-store');
+      assert.equal(missing.headers.get('cache-control'), 'private, no-store, no-transform');
       assert.doesNotMatch(await missing.text(), /data-home-mint-cta|data-preview-explorer|Content-Security-Policy:/, path + ' no public-file or home fallback');
     }
     for (const path of ['/api/session', '/api/test/options', '/api/mint', '/api/admin']) {
@@ -568,11 +578,11 @@ for (const environment of ['staging', 'production']) {
     for (const [path, status] of [['/explore?handle=Alice&phase=free', 400], ['/.env.local', 404]]) {
       const response = await fetch(path);
       assert.equal(response.status, status, path);
-      assert.equal(response.headers.get('cache-control'), 'no-store', path);
+      assert.equal(response.headers.get('cache-control'), status === 404 ? 'private, no-store, no-transform' : 'no-store', path);
     }
     assert.equal((await fetch('/about', { method: 'POST' })).status, 405);
     const head = await fetch('/', { method: 'HEAD' }); assert.equal(head.status, 200); assert.equal(await head.text(), '');
-    assert.equal(head.headers.get('cache-control'), 'public, max-age=0, must-revalidate, no-transform');
+    assert.equal(head.headers.get('cache-control'), 'private, no-store, no-transform');
     const wrong = await runtime.dispatchFetch('https://evil.example/', { redirect: 'manual' });
     assert.equal(wrong.status, 421);
     const http = await runtime.dispatchFetch(config.vars.PUBLIC_ORIGIN.replace('https:', 'http:') + '/about', { redirect: 'manual' });

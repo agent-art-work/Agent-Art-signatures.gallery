@@ -8,7 +8,7 @@ import { build } from 'esbuild';
 import * as fonts from '../src/v1/fonts.ts';
 import { SITE_CSS } from '../src/v1/siteCss.ts';
 import { OPEN_MINT_CSS } from '../src/openMint/pages.ts';
-import { ANALYTICS_CSS } from '../src/preview/analyticsMarkup.ts';
+import { ANALYTICS_CSS, galleryAnalytics } from '../src/preview/analyticsMarkup.ts';
 import { previewContentSecurityPolicy } from '../src/preview/worker.ts';
 import { FAVICON_CSP, FAVICON_SVG, FAVICON_URL } from '../src/brand/favicon.ts';
 import { SLOGAN_MBTI_HERO_SCRIPT, SLOGAN_MBTI_HERO_SCRIPT_URL } from '../src/brand/sloganMbtiHero.ts';
@@ -27,6 +27,11 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 export async function buildPreviewCloudflare({ environment = 'staging', destination } = {}) {
   assert.ok(Object.hasOwn(PREVIEW_TARGETS, environment), 'Choose staging or production.');
   const target = PREVIEW_TARGETS[environment];
+  const analytics = galleryAnalytics(target.origin);
+  assert.ok(analytics.enabled === false && analytics.beaconToken === '' &&
+    analytics.manualRegionalModeQualified === false &&
+    analytics.documentBoundaryQualified === false && analytics.withdrawalQualified === false,
+    'Only collection-OFF artifacts may be packaged; enabled qualification fixtures are not release inputs.');
   if (destination === undefined) {
     const parent = join(root, '.local/preview-cloudflare');
     await mkdir(parent, { recursive: true });

@@ -12,7 +12,7 @@ export function bindAnalytics(document: Document, window: Window): void {
       ? 'Save your work and reload this tab to end the old measurement document. A final in-flight measurement may complete.'
       : !state.storageAvailable ? 'Measurement is off here. Browser exclusion could not be read or saved.'
       : state.excluded ? 'This browser is excluded from audience measurement.'
-      : state.started ? 'Qualified statistical measurement is active on this public page.'
+      : state.started ? 'Statistical measurement was requested for this qualified public page.'
       : 'Browser measurement is off. No new analytics cookie or visitor identifier is created by this site.';
     for (const control of document.querySelectorAll<HTMLButtonElement>('[data-analytics-action]')) {
       control.hidden = control.dataset.analyticsAction === 'include' ? !state.excluded : state.excluded;

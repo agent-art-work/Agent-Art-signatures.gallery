@@ -10,6 +10,7 @@ import {
 } from "../openMint/pages.js";
 import { siteSaleStatus } from "../openMint/sitePhase.js";
 import { galleryAnalytics } from "./analyticsMarkup.js";
+import { analyticsForRequest, analyticsHtmlHeaders } from "./analyticsRequest.js";
 import { analyticsConfigured, CF_BEACON_SCRIPT, CF_BEACON_ENDPOINT, type AnalyticsConfig } from "./analytics.js";
 
 export const PREVIEW_STYLESHEET_PATH = "/assets/preview.css";
@@ -46,7 +47,7 @@ const staticAssetPaths = new Set([
   new URL(SLOGAN_TOOLTIP_SCRIPT_URL, PREVIEW_PUBLIC_ORIGINS[0]).pathname,
 ]);
 
-function previewOptions(origin: string): OpenMintPageOptions {
+function previewOptions(origin: string, analytics = galleryAnalytics(origin)): OpenMintPageOptions {
   return {
     publicOrigin: origin,
     stylesheetUrl: PREVIEW_STYLESHEET_PATH,
@@ -56,7 +57,7 @@ function previewOptions(origin: string): OpenMintPageOptions {
     siteLaunchMode: "prelaunch",
     pulseSaleStatus: siteSaleStatus("prelaunch"),
     mintObservationManaged: true,
-    analytics: galleryAnalytics(origin),
+    analytics,
   };
 }
 
@@ -126,7 +127,8 @@ export async function handlePreviewRequest(request: Request, env: PreviewWorkerE
     return send(405, "Method not allowed.", undefined, { Allow: "GET, HEAD" });
   }
 
-  const options = previewOptions(env.PUBLIC_ORIGIN);
+  const analytics = analyticsForRequest(request, galleryAnalytics(env.PUBLIC_ORIGIN));
+  const options = previewOptions(env.PUBLIC_ORIGIN, analytics);
   const html = (value: string, status = 200) => {
     // Shared development/mint pages stay noindex; public production documents
     // receive canonical metadata here, without changing those shared defaults.
@@ -136,9 +138,8 @@ export async function handlePreviewRequest(request: Request, env: PreviewWorkerE
       value = value.replace("</head>", `<link rel="canonical" href="${env.PUBLIC_ORIGIN}${path}"></head>`);
     }
     return send(status, value, "text/html; charset=utf-8", {
-      // Cloudflare Web Analytics respects no-transform when deciding whether
-      // to inject its beacon. Public HTML must still revalidate on every use.
-      ...(status === 200 ? { "Cache-Control": "public, max-age=0, must-revalidate, no-transform" } : {}),
+      ...analyticsHtmlHeaders(status === 200 ? analytics : galleryAnalytics(env.PUBLIC_ORIGIN)),
+      "Content-Security-Policy": previewContentSecurityPolicy(staging, status === 200 ? analytics : galleryAnalytics(env.PUBLIC_ORIGIN)),
       ...(indexable ? {} : { "X-Robots-Tag": "noindex" }),
     });
   };
