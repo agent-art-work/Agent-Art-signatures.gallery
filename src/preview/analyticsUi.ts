@@ -1,5 +1,6 @@
 import { createAnalytics } from './analytics.js';
 import { galleryAnalytics } from './analyticsMarkup.js';
+import { HOME_MEASUREMENT_MODE } from './homePilotBinding.js';
 /** Quiet information/exclusion only; never a popup or permission request. */
 export function bindAnalytics(document: Document, window: Window): void {
   if (!document.getElementById('measurement-privacy')) return;
@@ -12,10 +13,12 @@ export function bindAnalytics(document: Document, window: Window): void {
       ? 'Save your work and reload this tab to end the old measurement document. A final in-flight measurement may complete.'
       : !state.storageAvailable ? 'Measurement is off here. Browser exclusion could not be read or saved.'
       : state.excluded ? 'This browser is excluded from audience measurement.'
-      : state.started ? (config.homePilot
+      : state.started ? (config.homeMeasurement === HOME_MEASUREMENT_MODE
+        ? 'Home-page measurement was requested. Exclude this browser and reload to stop its next load.'
+        : config.homePilot
         ? 'Home-only measurement pilot requested. Exclude and reload to prevent its next load; a final public beacon may complete.'
         : 'Statistical measurement was requested for this qualified public page.')
-      : 'Browser measurement is off. No new analytics cookie or visitor identifier is created by this site.';
+      : 'Browser measurement is off.';
     for (const control of document.querySelectorAll<HTMLButtonElement>('[data-analytics-action]')) {
       control.hidden = control.dataset.analyticsAction === 'include' ? !state.excluded : state.excluded;
     }

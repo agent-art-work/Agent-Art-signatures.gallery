@@ -8,7 +8,7 @@ import { build } from 'esbuild';
 import * as fonts from '../src/v1/fonts.ts';
 import { SITE_CSS } from '../src/v1/siteCss.ts';
 import { OPEN_MINT_CSS } from '../src/openMint/pages.ts';
-import { HOME_PILOT_BINDING, HOME_PILOT_MODE } from '../src/preview/homePilotBinding.ts';
+import { HOME_PILOT_BINDING, HOME_PILOT_MODE, HOME_MEASUREMENT_MODE } from '../src/preview/homePilotBinding.ts';
 import { ANALYTICS_CSS, galleryAnalytics } from '../src/preview/analyticsMarkup.ts';
 import { previewContentSecurityPolicy } from '../src/preview/worker.ts';
 import { FAVICON_CSP, FAVICON_SVG, FAVICON_URL } from '../src/brand/favicon.ts';
@@ -25,25 +25,31 @@ export const PREVIEW_TARGETS = Object.freeze({
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
 /** Build only public presentation. No environment, local runtime or deployment keys are read. */
-export async function buildPreviewCloudflare({ environment = 'staging', destination, homePilot } = {}) {
+export async function buildPreviewCloudflare({ environment = 'staging', destination, homePilot, homeMeasurement } = {}) {
   assert.ok(Object.hasOwn(PREVIEW_TARGETS, environment), 'Choose staging or production.');
   const target = PREVIEW_TARGETS[environment];
   const pilotSelected = homePilot !== undefined;
-  if (pilotSelected) {
-    assert.equal(environment, 'production', 'Real Home pilot requires the production origin.');
-    assert.deepEqual(homePilot, HOME_PILOT_BINDING, 'Exact reviewed public Home pilot binding required.');
+  const measurementSelected = homeMeasurement !== undefined;
+  assert.ok(!(pilotSelected && measurementSelected), 'Choose one Home measurement purpose, never both.');
+  if (pilotSelected || measurementSelected) {
+    const binding = pilotSelected ? homePilot : homeMeasurement;
+    const purpose = pilotSelected ? 'pilot' : 'measurement';
+    assert.equal(environment, 'production', `Real Home ${purpose} requires the production origin.`);
+    assert.deepEqual(binding, HOME_PILOT_BINDING, `Exact reviewed public Home ${purpose} binding required.`);
     assert.equal(target.origin, HOME_PILOT_BINDING.origin);
     assert.equal(target.name, 'signatures-gallery');
     assert.equal(accountId, 'a54e5847cc16e612aa3ad45a5dadb563');
-    assert.equal(hash(homePilot.publicBeaconToken), 'b2c6800326322f58f759fbd3dcea266783f6b1df03fdd50c8054b8cb48990553', 'Public token identity drift.');
-    assert.equal(homePilot.publicBeaconTokenSha256, hash(homePilot.publicBeaconToken), 'Public binding hash mismatch.');
+    assert.equal(hash(binding.publicBeaconToken), 'b2c6800326322f58f759fbd3dcea266783f6b1df03fdd50c8054b8cb48990553', 'Public token identity drift.');
+    assert.equal(binding.publicBeaconTokenSha256, hash(binding.publicBeaconToken), 'Public binding hash mismatch.');
   }
-  const defines = { __GALLERY_HOME_PILOT__: JSON.stringify(pilotSelected) };
+  const defines = { __GALLERY_HOME_PILOT__: JSON.stringify(pilotSelected),
+    __GALLERY_HOME_MEASUREMENT__: JSON.stringify(measurementSelected) };
   const analytics = galleryAnalytics(target.origin);
   assert.ok(analytics.enabled === false && analytics.beaconToken === '' &&
     analytics.manualRegionalModeQualified === false &&
-    analytics.documentBoundaryQualified === false && analytics.withdrawalQualified === false && analytics.homePilot === undefined,
-    'Only collection-OFF artifacts may be packaged; enabled qualification fixtures are not release inputs.');
+    analytics.documentBoundaryQualified === false && analytics.withdrawalQualified === false &&
+    analytics.homePilot === undefined && analytics.homeMeasurement === undefined,
+    'Ordinary builds must stay OFF; measurement requires an explicit reviewed purpose.');
   if (destination === undefined) {
     const parent = join(root, '.local/preview-cloudflare');
     await mkdir(parent, { recursive: true });
@@ -136,6 +142,9 @@ export async function buildPreviewCloudflare({ environment = 'staging', destinat
   };
   if (pilotSelected) manifest.measurement = { mode: HOME_PILOT_MODE, origin: HOME_PILOT_BINDING.origin,
     publicBeaconTokenSha256: HOME_PILOT_BINDING.publicBeaconTokenSha256, livePilotApprovalRequired: true };
+  if (measurementSelected) manifest.measurement = { mode: HOME_MEASUREMENT_MODE, scope: 'literal-production-home',
+    purpose: 'Home-page usage and performance statistics', origin: HOME_PILOT_BINDING.origin,
+    publicBeaconTokenSha256: HOME_PILOT_BINDING.publicBeaconTokenSha256, ongoingActivationApprovalRequired: true };
   for (const [name, bytes] of files) {
     const path = join(destination, name); await mkdir(dirname(path), { recursive: true }); await writeFile(path, bytes);
   }
