@@ -1,4 +1,4 @@
-import { HOME_PILOT_BINDING, HOME_PILOT_MODE } from '../../src/preview/homePilotBinding.ts';
+import { HOME_PILOT_BINDING, HOME_PILOT_MODE, HOME_MEASUREMENT_MODE } from '../../src/preview/homePilotBinding.ts';
 import assert from 'node:assert/strict';
 import { before, after, test } from 'node:test';
 import { createHash } from 'node:crypto';
@@ -608,13 +608,18 @@ test('real Home pilot requires explicit exact binding and cannot target staging'
   await assert.rejects(runPreviewCli(['production','--home-pilot']), error => /Usage:/.test(error.stderr));
 });
 
-test('real-binding pilot inventory and local workerd keep the exact Home boundary', { timeout: 60000 }, async t => {
-  const result = await buildPreviewCloudflare({ environment: 'production', homePilot: HOME_PILOT_BINDING,
-    destination: join(directory, 'home-pilot') });
+for (const purpose of ['pilot', 'ongoing statistics']) test(`real-binding ${purpose} inventory and local workerd keep the exact Home boundary`, { timeout: 60000 }, async t => {
+  const ongoing = purpose === 'ongoing statistics';
+  const selection = ongoing ? { homeMeasurement: HOME_PILOT_BINDING } : { homePilot: HOME_PILOT_BINDING };
+  const result = await buildPreviewCloudflare({ environment: 'production', ...selection,
+    destination: join(directory, ongoing ? 'home-measurement' : 'home-pilot') });
   const config = JSON.parse(await readFile(result.config, 'utf8'));
   assert.equal(result.manifest.localOnly, undefined);
-  assert.deepEqual(result.manifest.measurement, { mode: HOME_PILOT_MODE, origin: HOME_PILOT_BINDING.origin,
-    publicBeaconTokenSha256: HOME_PILOT_BINDING.publicBeaconTokenSha256, livePilotApprovalRequired: true });
+  assert.deepEqual(result.manifest.measurement, ongoing
+    ? { mode: HOME_MEASUREMENT_MODE, scope: 'literal-production-home', purpose: 'Home-page usage and performance statistics',
+      origin: HOME_PILOT_BINDING.origin, publicBeaconTokenSha256: HOME_PILOT_BINDING.publicBeaconTokenSha256, ongoingActivationApprovalRequired: true }
+    : { mode: HOME_PILOT_MODE, origin: HOME_PILOT_BINDING.origin,
+      publicBeaconTokenSha256: HOME_PILOT_BINDING.publicBeaconTokenSha256, livePilotApprovalRequired: true });
   assert.equal(result.manifest.worker, 'signatures-gallery');
   assert.equal(config.account_id, 'a54e5847cc16e612aa3ad45a5dadb563');
   assert.deepEqual(config.routes, [{ pattern: 'signatures.gallery', custom_domain: true }]);
@@ -622,7 +627,8 @@ test('real-binding pilot inventory and local workerd keep the exact Home boundar
   const local = await loadPreviewArtifact(result.destination);
   const req = new Request('https://signatures.gallery/'); Object.defineProperty(req,'cf',{ value:{country:'US'} });
   const html = await (await local.worker.fetch(req,local.env)).text();
-  assert.match(html, /Home-only measurement pilot/);
+  assert.match(html, ongoing ? /estimate usage and performance of the public Home page/ : /Home-only measurement pilot/);
+  if (ongoing) assert.doesNotMatch(html, /Home-only measurement pilot|Routine audience measurement is not yet qualified/);
   let outbound = 0;
   const runtime = new Miniflare(convertV4MiniflareOptions({ workers: [{
     name: 'pilot-ingress', rootPath: result.destination, modules: true,
@@ -644,7 +650,8 @@ test('real-binding pilot inventory and local workerd keep the exact Home boundar
   t.after(() => runtime.dispose());
   for (const [path,country,referer,allowed] of [
     ['/','US','',true], ['/','US','https://signatures.gallery/',true], ['/','DE','',false],
-    ['/','XX','',false], ['/about','US','',false], ['/explore','US','',false],
+    ['/','XX','',false], ['/','US',HOME_PILOT_BINDING.origin+'/about',false],
+    ...['/about','/explore', ...MBTI_TYPES.map(t => `/${t}/`)].map(path => [path,'US','',false]),
     ['/p/Alice/INTJ','US','',false], ['/mint','US','',false], ['/me','US','',false],
     ['/?secret=1','US','',false], ['/','US','https://external.invalid/',false],
   ]) {
@@ -657,7 +664,8 @@ test('real-binding pilot inventory and local workerd keep the exact Home boundar
     }
     assert.equal(response.status,200,path);
     const cfg = JSON.parse(/id="analytics-config">([^<]*)</.exec(await response.text())[1]);
-    assert.equal(cfg.homePilot,HOME_PILOT_MODE); assert.equal(cfg.enabled,false);
+    assert.equal(cfg.homePilot,ongoing ? undefined : HOME_PILOT_MODE);
+    assert.equal(cfg.homeMeasurement,ongoing ? HOME_MEASUREMENT_MODE : undefined); assert.equal(cfg.enabled,false);
     assert.equal(cfg.beaconToken,HOME_PILOT_BINDING.publicBeaconToken);
     assert.equal(cfg.manualRegionalModeQualified,false); assert.equal(cfg.documentBoundaryQualified,false); assert.equal(cfg.withdrawalQualified,false);
     assert.equal(cfg.regionEligible,allowed,path+country+referer);
@@ -666,4 +674,21 @@ test('real-binding pilot inventory and local workerd keep the exact Home boundar
     assert.equal(response.headers.get('content-security-policy').includes('https://static.cloudflareinsights.com/beacon.min.js'),allowed);
   }
   assert.equal(outbound,0);
+});
+
+
+test('ongoing Home mode is explicit, bound, production-only and separate from the pilot', async () => {
+  for (const homeMeasurement of [true, 'true', null, {},
+    { ...HOME_PILOT_BINDING, publicBeaconToken: 'a'.repeat(32) },
+    { ...HOME_PILOT_BINDING, origin: 'https://staging.signatures.gallery' },
+    { ...HOME_PILOT_BINDING, publicBeaconTokenSha256: 'a'.repeat(64) },
+    { ...HOME_PILOT_BINDING, siteTag: 'b'.repeat(32) }]) {
+    await assert.rejects(buildPreviewCloudflare({ environment: 'production', homeMeasurement }), /Exact reviewed public Home measurement binding/);
+  }
+  await assert.rejects(buildPreviewCloudflare({ environment: 'staging', homeMeasurement: HOME_PILOT_BINDING }), /production origin/);
+  await assert.rejects(buildPreviewCloudflare({ environment: 'production', homePilot: HOME_PILOT_BINDING,
+    homeMeasurement: HOME_PILOT_BINDING }), /one Home measurement purpose/);
+  await assert.rejects(runPreviewCli(['production','--home-measurement']), error => /Usage:/.test(error.stderr));
+  assert.equal(builds.staging.manifest.measurement,undefined);
+  assert.equal(builds.production.manifest.measurement,undefined);
 });

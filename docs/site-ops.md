@@ -10,7 +10,19 @@ Central OPS owns Signatures Gallery operations: hosting/provider settings, monit
 
 Central OPS accepted the completed handback on October 4, 2026 and recorded ownership in its `AGENTS.md` and `docs/ops-portfolio-ownership-2026-10-04.md`. This document preserves the handback baseline; subsequent operational records belong there. Further OPS implementation remains paused by the operator. This handoff authorizes no provider action, account migration, credential sharing, new automation or change to production, billing, credential or signing approval boundaries. Keep the existing Agent Art accounts and `this.agent.art@gmail.com` alert recipient separate. Do not independently resume the unfinished Cloudflare email follow-through here. OPS accepted the outstanding Cloudflare email-receipt verification and quota/expiry inventory gaps. UptimeRobot's four first checks and both simulated DOWN/UP email receipts are verified; no repeat tests are needed. Historical monitor cleanup remains optional and unauthorized.
 
-## Current state — October 4, 2026 (Asia/Shanghai)
+## Browser measurement release boundary
+
+The current local candidate offers an explicit `home-only-statistics-v1` build mode for estimating usage and performance of the exact public Home page. It is a proposal for a separately reviewed ongoing release, not a statement that collection is ON. Ordinary production and staging builds remain OFF. The existing qualification-pilot mode is temporary and must not be left serving as an ongoing audience release. See [the packaging and request boundaries](cloudflare-preview-hosting.md#browser-measurement-modes).
+
+Development may prepare isolated candidates, focused tests and local packages. Central OPS coordinates an approved staging review and any separately approved ongoing purpose/Privacy/configuration and production release. A successful technical pilot or receiver response does not authorize activation or prove processed data. Use the existing Cloudflare analytics/reporting system; do not add a custom collector, new credential consumer, automatic provider injection or a polling framework.
+
+Keep all three broad qualification flags false and reports explicitly Home-only. OPS owns the accepted report tuple and processed evidence. Quarantine actual diagnostic China dates, including November 7, and leave `firstFullProductionDay` unset until a separately approved ongoing release and an eligible closed full day satisfy the scoped policy. Do not count diagnostic visits as organic people or broaden Home evidence to the whole site.
+
+The quiet Privacy controls preserve browser exclusion. Removing exclusion affects a later reload or visit and does not reload unsaved work. An OFF deployment prevents new SDK loads but cannot retract already-sent data or guarantee an immediate stop in every old public tab. Retain an exact OFF recovery target and verify both deployed identity/traffic and served OFF configuration/entry assets after any approved rollback.
+
+These instructions do not change the October 4 monitor/email/account baseline below or authorize provider, billing, credential, alert or deployment changes. Reconcile this candidate with any independent OPS documentation changes during review rather than overwriting them.
+
+## Recorded baseline — October 4, 2026 (Asia/Shanghai)
 
 | Control | State | Owner / mechanism |
 | --- | --- | --- |

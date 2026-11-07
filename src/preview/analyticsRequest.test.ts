@@ -1,4 +1,4 @@
-import { HOME_PILOT_BINDING, HOME_PILOT_MODE } from './homePilotBinding.js';
+import { HOME_PILOT_BINDING, HOME_PILOT_MODE, HOME_MEASUREMENT_MODE } from './homePilotBinding.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ANALYTICS_PATHS, analyticsConfigured, type AnalyticsConfig } from './analytics.js';
 import { analyticsCountryEligible, analyticsForRequest, analyticsHtmlHeaders, ANALYTICS_DENIED_COUNTRIES } from './analyticsRequest.js';
@@ -95,8 +95,11 @@ describe('actual Worker consistency and cache isolation', () => {
 });
 
 
-describe('real-binding Home-only pilot request scope', () => {
-  const pilot: AnalyticsConfig = { ...markup.galleryAnalytics(origin), homePilot: HOME_PILOT_MODE, beaconToken: HOME_PILOT_BINDING.publicBeaconToken };
+describe.each([
+  { purpose: 'pilot', selection: { homePilot: HOME_PILOT_MODE } },
+  { purpose: 'ongoing statistics', selection: { homeMeasurement: HOME_MEASUREMENT_MODE } },
+] as const)('real-binding Home-only $purpose request scope', ({ selection }) => {
+  const pilot: AnalyticsConfig = { ...markup.galleryAnalytics(origin), ...selection, beaconToken: HOME_PILOT_BINDING.publicBeaconToken };
   it.each(ANALYTICS_DENIED_COUNTRIES)('fails closed for %s despite spoofed eligible headers', country => {
     expect(analyticsConfigured(analyticsForRequest(request('/',country,{'CF-IPCountry':'US'}),pilot))).toBe(false);
   });
@@ -104,7 +107,7 @@ describe('real-binding Home-only pilot request scope', () => {
     const req = new Request(origin+'/'); Object.defineProperty(req, 'cf', { value: {country} });
     expect(analyticsConfigured(analyticsForRequest(req,pilot))).toBe(false);
   });
-  it.each(['/about','/explore','/INTJ/','/mint','/me','/api','/p/Alice/INTJ','/?','/?secret=1','/#private'])('closes %s', path => {
+  it.each([...ANALYTICS_PATHS.filter(p => p !== '/'),'/mint','/me','/admin','/auth','/api','/health/ready','/p/Alice/INTJ','/?','/?secret=1','/#private'])('closes %s', path => {
     const cfg = analyticsForRequest(request(path),pilot);
     expect(cfg.regionEligible).toBe(false); expect(analyticsConfigured(cfg)).toBe(false);
   });
@@ -116,5 +119,15 @@ describe('real-binding Home-only pilot request scope', () => {
   });
   it.each([origin+'/about','https://external.invalid/',origin+'/?',origin+'/#',origin+'/mint'])('rejects referrer %s', Referer => {
     expect(analyticsConfigured(analyticsForRequest(request('/','US',{Referer}),pilot))).toBe(false);
+  });
+  it('keeps writes, staging and mixed purposes closed even with eligible metadata', () => {
+    expect(analyticsConfigured(analyticsForRequest(request('/','US',{},'POST'),pilot))).toBe(false);
+    const staged = new Request('https://staging.signatures.gallery/');
+    Object.defineProperty(staged,'cf',{value:{country:'US'}});
+    expect(analyticsConfigured(analyticsForRequest(staged,pilot))).toBe(false);
+    const mixed = { ...pilot, homePilot: HOME_PILOT_MODE, homeMeasurement: HOME_MEASUREMENT_MODE };
+    const config = analyticsForRequest(request(), mixed);
+    expect(analyticsConfigured(config)).toBe(false);
+    expect(previewContentSecurityPolicy(false,config)).toContain("connect-src 'none'");
   });
 });

@@ -1,4 +1,4 @@
-import { HOME_PILOT_BINDING, HOME_PILOT_MODE } from './homePilotBinding.js';
+import { HOME_PILOT_BINDING, HOME_PILOT_MODE, HOME_MEASUREMENT_MODE } from './homePilotBinding.js';
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createAnalytics, analyticsConfigured, analyticsUrlAllowed, analyticsReferrerAllowed,
@@ -155,18 +155,22 @@ describe('reconstructed analytics-OFF candidate — offline fixtures', () => {
 });
 
 
-describe('real-binding Home-only pilot controller (offline DOM only)', () => {
-  const pilot: AnalyticsConfig = { ...galleryAnalytics(origin), homePilot: HOME_PILOT_MODE,
+describe.each([
+  { purpose: 'pilot', selection: { homePilot: HOME_PILOT_MODE }, marker: 'homePilot' },
+  { purpose: 'ongoing statistics', selection: { homeMeasurement: HOME_MEASUREMENT_MODE }, marker: 'homeMeasurement' },
+] as const)('real-binding Home-only $purpose controller (offline DOM only)', ({ selection, marker }) => {
+  const pilot: AnalyticsConfig = { ...galleryAnalytics(origin), ...selection,
     beaconToken: HOME_PILOT_BINDING.publicBeaconToken, regionEligible: true, documentPath: '/' };
-  it('loads only the exact pilot binding without claiming routine qualification', () => {
+  it('loads only the exact binding without claiming broad qualification', () => {
     expect(analyticsConfigured(pilot)).toBe(true);
     expect(pilot.enabled).toBe(false);
     for (const k of ['manualRegionalModeQualified','documentBoundaryQualified','withdrawalQualified'] as const) {
       expect(pilot[k]).toBe(false);
       expect(analyticsConfigured({ ...pilot, [k]: true })).toBe(false);
     }
-    for (const config of [{ ...pilot, homePilot: false }, { ...pilot, homePilot: undefined },
-      { ...pilot, beaconToken: 'a'.repeat(32) }, { ...pilot, beaconToken: 'b'.repeat(32) }, { ...pilot, enabled: true }, { ...qualified, homePilot: HOME_PILOT_MODE }]) {
+    for (const config of [{ ...pilot, [marker]: false }, { ...pilot, [marker]: undefined },
+      { ...pilot, beaconToken: 'a'.repeat(32) }, { ...pilot, beaconToken: 'b'.repeat(32) }, { ...pilot, enabled: true }, { ...qualified, ...selection },
+      { ...pilot, homePilot: HOME_PILOT_MODE, homeMeasurement: HOME_MEASUREMENT_MODE }]) {
       expect(analyticsConfigured(config as AnalyticsConfig)).toBe(false);
     }
     const f = fixture(pilot); f.start();
@@ -195,4 +199,29 @@ describe('real-binding Home-only pilot controller (offline DOM only)', () => {
     const bot = fixture(pilot); bot.win.navigator.webdriver = true; bot.start(); expect(bot.scripts).toEqual([]);
     const unreadable = fixture(pilot); unreadable.fail('read'); unreadable.start(); expect(unreadable.scripts).toEqual([]);
   });
+  it('removing exclusion requires a later document and never changes saved work or broad flags', () => {
+    const f = fixture(pilot); f.data.set(ANALYTICS_EXCLUSION_KEY,'1'); const c = f.start();
+    expect(f.scripts).toEqual([]); c.include(); c.refresh();
+    expect(c.status().allowed).toBe(false); expect(f.scripts).toEqual([]);
+    expect(f.data.get(ANALYTICS_EXCLUSION_KEY)).toBe('0');
+    expect(f.data.get('work')).toBe('KEEP'); expect(f.data.get('auth')).toBe('KEEP');
+    const next = fixture(pilot); next.data.set(ANALYTICS_EXCLUSION_KEY, f.data.get(ANALYTICS_EXCLUSION_KEY)!);
+    next.start(); expect(next.scripts).toHaveLength(1);
+    expect(pilot.manualRegionalModeQualified).toBe(false); expect(pilot.documentBoundaryQualified).toBe(false);
+    expect(pilot.withdrawalQualified).toBe(false);
+  });
+});
+
+it('uses accurate ongoing Home purpose, status and reload copy without pilot or identifier promises', () => {
+  const ongoing: AnalyticsConfig = { ...galleryAnalytics(origin), homeMeasurement: HOME_MEASUREMENT_MODE,
+    beaconToken: HOME_PILOT_BINDING.publicBeaconToken, regionEligible: true, documentPath: '/' };
+  const html = analyticsMarkup(ongoing);
+  expect(html).toContain('estimate usage and performance of the public Home page');
+  expect(html).toContain('after a reload or later visit');
+  expect(html).not.toMatch(/measurement pilot|Routine audience measurement is not yet qualified|Allow analytics|<dialog/);
+  const f = fixture(ongoing); bindAnalytics(f.doc, f.win);
+  expect(f.message.textContent).toContain('Home-page measurement was requested');
+  expect(f.scripts).toHaveLength(1);
+  const off = fixture(galleryAnalytics(origin)); bindAnalytics(off.doc, off.win);
+  expect(off.message.textContent).toBe('Browser measurement is off.');
 });
