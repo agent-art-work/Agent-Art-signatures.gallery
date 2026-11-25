@@ -40,6 +40,7 @@ const INHERITED_CAMPAIGNS = {
     'test:generative:staging-recovery-pg', 'test:generative:staging-recovery-flow',
   ],
 };
+const CURATOR_CAMPAIGN = ['test:candidates', 'test:candidates:workers'];
 const jobBlocks = workflow => {
   const boundary = workflow.indexOf('\njobs:\n');
   assert.ok(boundary >= 0, 'Workflow must declare jobs');
@@ -99,13 +100,15 @@ function verifyInheritedLanes(workflow) {
   assert.deepEqual(Object.keys(jobs), ['verify', 'preview', 'admission', 'staging', 'mint', 'runtime', 'recovery', 'pulse']);
   const budgets = { verify: 35, preview: 10, admission: 20, staging: 25, mint: 20, runtime: 30, recovery: 20, pulse: 10 };
   for (const [name, commands] of Object.entries(INHERITED_CAMPAIGNS)) {
-    assert.deepEqual(npmCampaign(jobs[name]), commands, `Lost, duplicated, reordered or changed command in ${name}`);
+    const expected = name === 'recovery' ? [...commands, ...CURATOR_CAMPAIGN] : commands;
+    assert.deepEqual(npmCampaign(jobs[name]), expected, `Lost, duplicated, reordered or changed command in ${name}`);
   }
   assert.equal(Object.values(INHERITED_CAMPAIGNS).flat().length, 44);
   assert.equal(executableLines(jobs.verify).filter(line => line === COVERAGE_RUNNER).length, 1,
     'Verify must execute exactly one unchanged coverage evidence runner');
   assert.deepEqual(Object.keys(INHERITED_CAMPAIGNS).flatMap(name => npmCampaign(jobs[name])).sort(),
-    Object.values(INHERITED_CAMPAIGNS).flat().sort(), 'Every inherited campaign command must run exactly once');
+    [...Object.values(INHERITED_CAMPAIGNS).flat(), ...CURATOR_CAMPAIGN].sort(),
+    'Every inherited and curator campaign command must run exactly once');
   for (const [name, job] of Object.entries(jobs)) {
     assert.match(job, /runs-on: ubuntu-24\.04/);
     assert.match(job, new RegExp(`\n    timeout-minutes: ${budgets[name]}\n`));
@@ -190,6 +193,7 @@ test('independent lanes preserve all 44 inherited campaign commands exactly once
 test('lane guards reject omitted commands, duplicate campaigns, lost local-effect fences and unsafe coupling', () => {
   const workflow = read('../../.github/workflows/verify.yml');
   for (const changed of [
+    workflow.replace('          npm run test:candidates:workers\n', ''),
     workflow.replace('          npm run test:generative:staging-assessment\n', ''),
     workflow.replace('          npm run test:generative:staging-assessment\n',
       '          # npm run test:generative:staging-assessment\n'),
