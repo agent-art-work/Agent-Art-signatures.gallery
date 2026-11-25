@@ -366,6 +366,10 @@ jobs:
           npm run test:generative:staging-recovery-pg
       - name: Rehearse explicit v2 staging recovery and restore with disposable infrastructure
         run: npm run test:generative:staging-recovery-flow
+      - name: Verify the local curator encounter and both candidate formats
+        run: |
+          npm run test:candidates
+          npm run test:candidates:workers
 
   pulse:
     runs-on: ubuntu-24.04

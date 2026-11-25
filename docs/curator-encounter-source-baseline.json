@@ -1,0 +1,56 @@
+{
+  "schema": "signatures-local-source-baseline/1",
+  "worktreeBase": "1b29335d280e294a6c1b459e54e95c454f1bba70",
+  "primaryHeadAtReview": "aa9f97b10152dcd3da112b85d4bd063c020165bb",
+  "sourceStatus": "candidate study, PLAN and curve-reference document were untracked; primary checkout consulted read-only",
+  "sourceFiles": [
+    {
+      "path": "src/candidates/archive.ts",
+      "sha256": "100bf2c562694f48455cef0da4796e7ebcef53cb27ca092757b6fb4f02516d32"
+    },
+    {
+      "path": "src/candidates/curve.ts",
+      "sha256": "ec4ee90f8c985ecf88cf7fa778b38f16d607ad116b01ffbebf662bb4e519e275"
+    },
+    {
+      "path": "src/candidates/envelope.ts",
+      "sha256": "70ed7f7385b6d0074a901b51c2a5a4903df4242c9e56e5832646faa5bb426e05"
+    },
+    {
+      "path": "src/candidates/http.ts",
+      "sha256": "1ac275c22c3b46cc7a6a731455d024de3c4d76ec52d8162623f0354dc1ac9c41"
+    },
+    {
+      "path": "src/candidates/restore.ts",
+      "sha256": "460645c308404622eae971f6dd9eae1695372cee8f582dd9aedecc374be62397"
+    },
+    {
+      "path": "src/candidates/schema.ts",
+      "sha256": "e1bb2a1a1dc9c4974df8f66f8f4d7ae8b522d6fde925784e1a891c6530563ec3"
+    },
+    {
+      "path": "src/candidates/service.ts",
+      "sha256": "87d9f82597e7cab073af2b51e4782a9082dd3aa3da3ac27bf6e7b6d3834aca41"
+    },
+    {
+      "path": "src/candidates/store.ts",
+      "sha256": "525721d30ce93a232eaa3c8587ceea8098c1d6e07389b7cebfdaf59b0d3c90c2"
+    },
+    {
+      "path": "services/signatures/candidate-fixture-store.mjs",
+      "sha256": "f7679a88628b60f9957b04a81ad898b0fb939299609f772b58556663a1c43321"
+    },
+    {
+      "path": "services/signatures/candidate-fixture.test.mjs",
+      "sha256": "7d11cfb927f87f5c2d6be90d39fe26aa05ee42656c61ae42ce84e6dcbccbd9dd"
+    },
+    {
+      "path": "PLAN.md",
+      "sha256": "6dcfae6d3d6d49a735eb612b4319253cd36a9eedd9407642c36e96b9c5f5f549"
+    },
+    {
+      "path": "docs/curve-editing-and-references.md",
+      "sha256": "2dbdf500fe6895ad64f927ea704419cd4f73ee572a820f2a4a44834d6c3f51b9"
+    }
+  ]
+}

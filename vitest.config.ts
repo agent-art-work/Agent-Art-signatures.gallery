@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 // Operational entrypoints are exercised by the local rehearsal commands
 // (`npm run local:up`, `local:test`, `test:postgres:local`), not by vitest.
@@ -18,6 +18,8 @@ const OPERATIONAL_ENTRYPOINTS = [
 
 export default defineConfig({
   test: {
+    // The recovery job runs these Node test files against compiled fixtures.
+    exclude: [...configDefaults.exclude, "services/signatures/**/*.test.mjs"],
     coverage: {
       provider: "v8",
       reporter: ["text", "json-summary"],
@@ -29,6 +31,8 @@ export default defineConfig({
         "src/v1/fixtures.ts",
         "src/v2/fixtures.ts",
         "src/v2/galleryFixtures.ts",
+        // Local-only curator qualification runs under Node and Workerd in the recovery job.
+        "src/candidates/**",
         ...OPERATIONAL_ENTRYPOINTS,
       ],
       // A ratchet, not a target: raise these as coverage improves, never lower

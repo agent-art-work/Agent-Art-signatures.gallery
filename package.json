@@ -4,6 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "candidates:fixture:build": "tsc --noCheck --target ES2022 --module NodeNext --moduleResolution NodeNext --rootDir src --outDir .local/candidate-build src/candidates/http.ts src/candidates/schema.ts src/candidates/archive.ts src/candidates/restore.ts src/candidates/encounterApp.ts",
+    "test:candidates": "npm run candidates:fixture:build && node --test services/signatures/candidate-fixture.test.mjs services/signatures/curator-encounter.test.mjs",
+    "test:candidates:workers": "npm run candidates:fixture:build && node --test services/signatures/candidate-worker.test.mjs services/signatures/qualification/d1-recovery.test.mjs services/signatures/qualification/d1-recovery-controls.test.mjs",
+    "typecheck:candidates": "tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck src/candidates/http.ts src/candidates/schema.ts src/candidates/archive.ts src/candidates/restore.ts src/candidates/encounterApp.ts",
+    "curator:local": "npm run candidates:fixture:build && node scripts/curator-encounter.mjs",
+    "curator:fixtures": "npm run candidates:fixture:build && node scripts/curator-encounter-fixtures.mjs",
+    "curator:restore": "npm run candidates:fixture:build && node scripts/curator-encounter-restore.mjs",
     "renderer:verify": "node --import tsx scripts/verify-renderer-lock.mjs",
     "prebuild": "npm run renderer:verify",
     "build": "tsc -p tsconfig.build.json",

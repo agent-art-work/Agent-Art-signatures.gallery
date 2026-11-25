@@ -1,0 +1,11 @@
+--- a/services/signatures/qualification/d1-recovery-fixture.mjs
++++ b/services/signatures/qualification/d1-recovery-fixture.mjs
+@@ -87,7 +87,7 @@
+ const fieldNames = [
+   "encounter", "work_instance", "definition", "policy", "curator", "agent", "handle", "handle_key",
+   "original_svg", "original_sha", "original_points", "draft_digest", "edit_json", "intention", "final_svg", "final_sha",
+-  "approved_digest", "approved_at", "write_until", "recover_until",
++  "approved_digest", "approved_at", "write_until", "recover_until", "candidate_format", "posts_json", "local_state",
+ ];
+ const insertCandidate = `INSERT INTO curve_attempts (${fieldNames.join(", ")}) VALUES (${fieldNames.map(() => "?").join(", ")})`;
+ 
