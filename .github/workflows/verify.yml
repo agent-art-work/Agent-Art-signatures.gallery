@@ -358,6 +358,10 @@ jobs:
         run: forge build --offline
       - name: Check prerequisite release identity without generating a lock
         run: node scripts/verify-generative-release.mjs
+      - name: Verify the local curator encounter and both candidate formats
+        run: |
+          npm run test:candidates
+          npm run test:candidates:workers
       - name: Rehearse isolated RC1 backup, restore and projection recovery
         run: npm run test:generative:staging-restore
       - name: Verify bounded staging recovery inspection, proof and operator approval

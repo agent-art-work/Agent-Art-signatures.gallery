@@ -29,6 +29,8 @@ export default defineConfig({
         "src/v1/fixtures.ts",
         "src/v2/fixtures.ts",
         "src/v2/galleryFixtures.ts",
+        // Local-only curator qualification runs under Node and Workerd in the recovery job.
+        "src/candidates/**",
         ...OPERATIONAL_ENTRYPOINTS,
       ],
       // A ratchet, not a target: raise these as coverage improves, never lower

@@ -1,0 +1,200 @@
+{
+  "schema": "signatures-cross-host-fixture/1",
+  "status": "synthetic-inputs-only",
+  "baselineManifestSha256": "b1a35dc2175b9f193b38fbade58b7af44e3cde6078d0d09b2729f1b8517d1495",
+  "profile": "unminted-study/1",
+  "renderer": "signatures-study-centerline-renderer/1",
+  "editPolicy": "single-coordinate-study/1",
+  "bindingLabels": {
+    "sealed": "sg-restore-sealed",
+    "unsealed": "sg-restore-unsealed"
+  },
+  "actorLabels": {
+    "curator": "restore-fixture-curator",
+    "agent": "restore-fixture-agent"
+  },
+  "sourceWriterGeneration": 1,
+  "proposedReplacementGeneration": 2,
+  "scope": {
+    "maximumAccepted": 2,
+    "maximumPending": 1,
+    "replacementMutations": 0,
+    "externalPublication": false,
+    "runWindowMinutes": 120,
+    "guestWorkMinutes": 90,
+    "cleanupMinutes": 30,
+    "maximumArchiveBytes": 33554432,
+    "writablePromotionSelected": false,
+    "allowedExecutionStage": "pinning-and-static-validation"
+  },
+  "fixtureClock": {
+    "writeUntil": "2026-11-21T00:15:00.000Z",
+    "recoverUntil": "2026-11-22T00:00:00.000Z",
+    "sealedCutoff": "2026-11-21T00:00:05.000Z",
+    "laterRevision": "2026-11-21T00:16:00.000Z",
+    "exactRecoveryProbe": "2026-11-21T00:17:00.000Z",
+    "expiryProbe": "2026-11-22T00:00:00.000Z"
+  },
+  "candidates": [
+    {
+      "role": "visible",
+      "handle": "RestoreMe",
+      "operation": "3214869b-660b-4a71-a2da-000000000001",
+      "edit": {
+        "point": 0,
+        "part": "outgoing",
+        "dx": 0,
+        "dy": 12
+      },
+      "intention": "Keep the unminted bend.",
+      "approvalAt": "2026-11-21T00:00:00.000Z",
+      "commitAt": "2026-11-21T00:00:01.000Z",
+      "originalGeometrySha256": "399f9333dd3bdd7f34a32e62300144455d62a6e9497473670bb3c80b567aec1b",
+      "originalSvgSha256": "2a300462e5687c4fa64c5a51c53c30e8ef692dfb217040bf6758ae0882319a86",
+      "intentionSha256": "4e897d8c152cf2b604c24d9385ff29e4075b3dc7912ead261d02aec136afc4a5",
+      "editedSvgSha256": "17e8853a4946c914a17c968b8784b2075c9f009813e906c44d6c13cd3222005a"
+    },
+    {
+      "role": "restricted-after-cutoff",
+      "handle": "restoreme",
+      "operation": "3214869b-660b-4a71-a2da-000000000002",
+      "edit": {
+        "point": 0,
+        "part": "outgoing",
+        "dx": 0,
+        "dy": 10
+      },
+      "intention": "An alternate turn after the first beat.",
+      "approvalAt": "2026-11-21T00:00:00.000Z",
+      "commitAt": "2026-11-21T00:00:02.000Z",
+      "originalGeometrySha256": "00aec03ed96923ec35b8c15188228da0daf08902fb285ac35d2a453337b8e32a",
+      "originalSvgSha256": "3abac82afd479c44786789066b665da26ac547f3aa97488fd76153e58f9ed01a",
+      "intentionSha256": "c72649f118250ac8cb28914d15a1f50ea792601bcd723a7c74cb2caf2865c6f9",
+      "editedSvgSha256": "47e2f3aee483078efd747e9ea37b6900788b82026b7602d8846fd980ba390b40"
+    },
+    {
+      "role": "unsealed-pending",
+      "handle": "PendingFixture",
+      "operation": "3214869b-660b-4a71-a2da-000000000003",
+      "edit": {
+        "point": 1,
+        "part": "anchor",
+        "dx": 0,
+        "dy": -8
+      },
+      "intention": "Hold the next turn in private.",
+      "approvalAt": "2026-11-21T00:00:00.000Z",
+      "commitAt": "2026-11-21T00:00:03.000Z",
+      "originalGeometrySha256": "43bdf80dd1c8b75d59262976db4de6b9fda3e232fe14538973ed4e991c5d59b6",
+      "originalSvgSha256": "68fd726c97b5f7c64bd24d9445f4498d317f655762ce1a9a23bf3fc51ad57886",
+      "intentionSha256": "c43fc1d6e93e1fe58e6d69b4c2d09b4db265d459b9e3d67e732950b87a6056ba",
+      "editedSvgSha256": "9afb0469a595ae9e0979fbc21fc094fefe39ade3252a680022e62a6fe9cfc8a5"
+    }
+  ],
+  "controls": [
+    "primary_commit_before_archive",
+    "archive_verified_before_visibility",
+    "lost_acceptance_response",
+    "exact_retry_after_write_expiry",
+    "expired_recovery_denied",
+    "post_cutoff_recovery_and_disclosure_revoked",
+    "retired_writer_mutation_denied",
+    "retired_archive_append_denied",
+    "retired_projection_denied",
+    "missing_final_cutoff_holds_unsealed_scope",
+    "stale_or_missing_current_authority_denied",
+    "missing_tampered_or_extra_envelope_denied",
+    "absent_source_fence_denied"
+  ],
+  "runtimeObservation": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "node": "v22.16.0",
+    "nodeExecutableSha256": "a45751fbfe88440bebff63cd44814e4ed6deb642bc3e3c4a14c4f8ae0ed9e019",
+    "sqlite": "3.49.1",
+    "sqliteSourceId": "2025-02-18 13:38:58 873d4e274b4988d260ba8354a9718324a1c26187a4ab4c1cc0227c03d0f10e70",
+    "typescript": "5.9.3"
+  },
+  "acceptance": {
+    "sealed": {
+      "acceptedArchiveRecords": 2,
+      "visibleCandidates": 1,
+      "restrictedCandidates": 1,
+      "restrictedRights": [
+        "recovery",
+        "disclosure"
+      ],
+      "exactApprovedOperationReplays": 1,
+      "changedFingerprintProbes": 1,
+      "recoveryExpiryProbes": 1
+    },
+    "unsealed": {
+      "pendingOperations": 1,
+      "requiredCutoff": null,
+      "terminalResponses": 0,
+      "publicCandidates": 0,
+      "replacementWrites": 0,
+      "allowedDisposition": "private-pending-or-unknown"
+    },
+    "retirement": {
+      "retiredSourceGeneration": 1,
+      "probePerBoundary": 1,
+      "protectedBoundaries": [
+        "application-write",
+        "archive-append",
+        "projection"
+      ],
+      "effectsAllowed": 0
+    },
+    "requiredVerification": {
+      "custodyReadback": [
+        "drillIdentity",
+        "binding",
+        "writerGeneration",
+        "candidate",
+        "operation",
+        "envelopeSha256",
+        "receiptSha256",
+        "bytes",
+        "retainedVersion"
+      ],
+      "authority": [
+        "cutoffSha256",
+        "authorityRevision",
+        "predecessorSha256",
+        "authorityHeadSha256",
+        "destinationIdentity",
+        "retirementEvidenceSha256"
+      ]
+    }
+  },
+  "commissioning": {
+    "sourceCurrentHostIdentity": null,
+    "sourceRuntimeReceiptSha256": null,
+    "sourceScratchStorageIdentity": null,
+    "destinationCurrentHostIdentity": null,
+    "destinationRuntimeReceiptSha256": null,
+    "destinationScratchStorageIdentity": null,
+    "independentArchiveLocation": null,
+    "custodian": null,
+    "stopOperator": null,
+    "evidenceRetention": null,
+    "authorizedAccessAndTransfer": null,
+    "archiveTrustRootFingerprint": null,
+    "authorityTrustRootFingerprint": null,
+    "transferAdapterSha256": null,
+    "enforcingFenceAdapterSha256": null,
+    "drillControllerSha256": null,
+    "attendedWindow": null
+  },
+  "capturedDuringFutureRun": {
+    "sealedBindingIdentity": null,
+    "unsealedBindingIdentity": null,
+    "encounterAndWorkIdentities": null,
+    "envelopeAndOriginalReceiptDigests": null,
+    "sealedCutoffSha256": null,
+    "latestAuthorityHeadSha256": null,
+    "sourceRetirementEvidenceSha256": null,
+    "destinationOutcomeDigest": null
+  }
+}
